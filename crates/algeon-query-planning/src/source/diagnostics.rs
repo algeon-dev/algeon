@@ -110,6 +110,18 @@ pub struct SourceDiagnostics {
 }
 
 impl SourceDiagnostics {
+    /// Sets the read strategy, credential mode, and byte-cache labels to the
+    /// ones a source over the resolved `files` reports, and direct device read
+    /// to whether those files prove it and no feature was rejected.
+    pub fn set_resolved_read_labels(&mut self, files: &[LocalParquetFile]) {
+        self.source_read_strategy = summarize_source_read_strategy(files);
+        self.credential_mode = summarize_credential_mode(files);
+        self.lakehouse_cache_status = summarize_lakehouse_cache_status(files);
+        self.lakehouse_cache_read_mode = summarize_lakehouse_cache_read_mode(files);
+        self.lakehouse_cache_fill_mode = summarize_lakehouse_cache_fill_mode(files);
+        self.direct_device_read = self.rejected_features.is_empty() && files_have_proven_direct_device_read(files);
+    }
+
     pub(super) fn for_local_parquet_files(
         files: &[LocalParquetFile],
         columns: LocalParquetDiagnosticColumns<'_>,
@@ -622,6 +634,8 @@ pub enum RejectedSourceFeature {
     ZeroColumnCount,
     /// Logical-to-source column mapping is invalid.
     SchemaMapping,
+    /// A remote object's footer was not available to planning.
+    RemoteFooterUnavailable,
 }
 
 impl RejectedSourceFeature {
@@ -643,6 +657,7 @@ impl RejectedSourceFeature {
             Self::RowSelection => "row_selection",
             Self::ZeroColumnCount => "zero_column_count",
             Self::SchemaMapping => "schema_mapping",
+            Self::RemoteFooterUnavailable => "remote_footer_unavailable",
         }
     }
 }

@@ -21,6 +21,10 @@ use e2e::cugraph_bfs_predicate_fixture;
 use e2e::embedded_backend_e2e;
 #[cfg(not(test))]
 use e2e::flight_sql_cugraph_smoke;
+#[cfg(all(feature = "iceberg-local-e2e", not(test)))]
+use e2e::iceberg_local_e2e;
+#[cfg(all(feature = "s3-parquet-e2e", not(test)))]
+use e2e::s3_parquet_e2e;
 #[cfg(all(feature = "server-runtime-observability-e2e", not(test)))]
 use e2e::server_runtime_observability;
 
@@ -84,6 +88,8 @@ async fn main() -> ToolResult<()> {
             run_server_runtime_observability_e2e(env::args().skip(2).collect()).await
         },
         Some("embedded-backend-e2e") => run_embedded_backend_e2e(env::args().skip(2).collect()).await,
+        Some("s3-parquet-e2e") => run_s3_parquet_e2e(env::args().skip(2).collect()).await,
+        Some("iceberg-local-e2e") => run_iceberg_local_e2e(env::args().skip(2).collect()).await,
         Some("cugraph-fixture-e2e") => run_cugraph_fixture_e2e(env::args().nth(2)).await,
         Some("validate-query") => run_validate_query(env::args().skip(2).collect()).await,
         Some("clickbench-stage-probe") => run_clickbench_stage_probe(env::args().skip(2).collect()).await,
@@ -118,6 +124,8 @@ fn print_usage() {
            cargo run -p tools [--features flight-sql-stress-check] -- flight-sql-stress --config flight-stress-profile.json --out-dir DIR\n\
            flock /tmp/cudf-gpu.lock cargo run -p tools --features server-runtime-observability-e2e -- server-runtime-observability-e2e [OPTIONS]\n\
            flock /tmp/cudf-gpu.lock cargo run -p tools --features embedded-backend-e2e -- embedded-backend-e2e [--citation-data DIR]\n\
+           flock /tmp/cudf-gpu.lock cargo run -p tools --features s3-parquet-e2e -- s3-parquet-e2e\n\
+           flock /tmp/cudf-gpu.lock cargo run -p tools --features iceberg-local-e2e -- iceberg-local-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>\n\
            flock /tmp/cudf-gpu.lock cargo run -p tools --features datafusion-baseline-contract-validate -- datafusion-baseline-contract-validate [--out-dir DIR]\n\
            cargo run -p tools --features single-node-multi-gpu-validate -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --dry-run\n           cargo run -p tools --features single-node-multi-gpu-validate -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --fixture-preflight\n           flock /tmp/cudf-gpu.lock cargo run --release -p tools --features single-node-multi-gpu-validate-run -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --measured-run [--nsight-trace PATH]"
@@ -225,6 +233,26 @@ async fn run_embedded_backend_e2e(args: Vec<String>) -> ToolResult<()> {
 #[cfg(not(all(feature = "embedded-backend-e2e", not(test))))]
 async fn run_embedded_backend_e2e(_args: Vec<String>) -> ToolResult<()> {
     Err("embedded-backend-e2e requires --features embedded-backend-e2e and normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "s3-parquet-e2e", not(test)))]
+async fn run_s3_parquet_e2e(args: Vec<String>) -> ToolResult<()> {
+    s3_parquet_e2e::run(args).await
+}
+
+#[cfg(not(all(feature = "s3-parquet-e2e", not(test))))]
+async fn run_s3_parquet_e2e(_args: Vec<String>) -> ToolResult<()> {
+    Err("s3-parquet-e2e requires --features s3-parquet-e2e and normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "iceberg-local-e2e", not(test)))]
+async fn run_iceberg_local_e2e(args: Vec<String>) -> ToolResult<()> {
+    iceberg_local_e2e::run(args).await
+}
+
+#[cfg(not(all(feature = "iceberg-local-e2e", not(test))))]
+async fn run_iceberg_local_e2e(_args: Vec<String>) -> ToolResult<()> {
+    Err("iceberg-local-e2e requires --features iceberg-local-e2e and normal cargo run execution".into())
 }
 
 #[cfg(all(feature = "cugraph-oracle", not(test)))]

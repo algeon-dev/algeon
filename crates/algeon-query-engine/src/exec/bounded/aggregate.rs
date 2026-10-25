@@ -478,10 +478,10 @@ mod tests {
 
     fn throughput_like_policy() -> SourceChunkPlanningPolicy {
         let mut policy = SourceChunkPlanningPolicy::new(Some(32 * 1024 * 1024 * 1024), 1024);
-        // Mirror LocalParquetThroughput widening without needing a real source.
+        // Mirror ParquetThroughput widening without needing a real source.
         policy.max_row_groups_per_chunk = 1024;
-        policy.mark_downstream_cap("local_parquet_throughput_admitted");
-        let _ = SourceChunkPlanningMode::LocalParquetThroughput;
+        policy.mark_downstream_cap("parquet_throughput_admitted");
+        let _ = SourceChunkPlanningMode::ParquetThroughput;
         policy
     }
 

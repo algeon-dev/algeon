@@ -1,6 +1,6 @@
 ---
 sidebar_position: 5
-description: Configure the Flight SQL server with one TOML file and derived environment overrides, covering admission, native execution, authentication, TLS, observability, startup SQL and the command line.
+description: Configure the Flight SQL server with one TOML file and derived environment overrides, covering admission, native execution, S3 storage, Iceberg catalogs, authentication, TLS, observability, startup SQL and the command line.
 ---
 
 # Configuration
@@ -22,8 +22,8 @@ setting has one TOML location, and its environment variable is
 `ALGEON_SERVER_` followed by the TOML path in upper case with `.` written as
 `_`: `native.execution_mode` becomes `ALGEON_SERVER_NATIVE_EXECUTION_MODE`.
 Only strings, integers and booleans have an environment form. The
-`[[admission.device_profiles]]` and `[[auth.mode.users]]` arrays live in the
-file only. An unknown TOML field stops startup with `invalid_configuration` and the
+`[[admission.device_profiles]]`, `[[iceberg.catalogs]]` and
+`[[auth.mode.users]]` arrays live in the file only. An unknown TOML field stops startup with `invalid_configuration` and the
 error lists the table's valid keys; an unknown `ALGEON_SERVER_*` variable
 stops startup the same way and names the closest known variable when one is
 similar.
@@ -80,7 +80,7 @@ execution_mode = "native_preferred"             # ALGEON_SERVER_NATIVE_EXECUTION
 max_row_groups_per_chunk = 1                    # ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
 max_retry_attempts = 3                          # ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS
 max_source_reads_in_flight = 2                  # ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT
-source_chunk_planning_mode = "local_parquet_throughput"  # ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE
+source_chunk_planning_mode = "parquet_throughput"  # ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE
 statistical_aggregate_execution_mode = "gpu_native_tolerant"  # ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
 
 [observability]
@@ -104,6 +104,18 @@ max_output_staging_bytes = 1073741824           # ALGEON_SERVER_CUGRAPH_MAX_OUTP
 
 [data]
 # root = "/data"                                # ALGEON_SERVER_DATA_ROOT
+
+# [s3]                                          # absent: s3:// locations fail
+# endpoint = "http://127.0.0.1:9000"            # ALGEON_SERVER_S3_ENDPOINT
+# region = "us-east-1"                          # ALGEON_SERVER_S3_REGION
+# path_style = true                             # ALGEON_SERVER_S3_PATH_STYLE
+# unsigned = false                              # ALGEON_SERVER_S3_UNSIGNED
+
+# [[iceberg.catalogs]]                          # file only; requires [s3]
+# name = "lake"
+# kind = "rest"
+# uri = "http://127.0.0.1:8181"
+# auth = { kind = "none" }
 
 [auth.mode]
 kind = "disabled"                               # ALGEON_SERVER_AUTH_MODE_KIND
@@ -238,7 +250,7 @@ commit and enabled features.
 | `max_row_groups_per_chunk` | `1` |
 | `max_retry_attempts` | `3` |
 | `max_source_reads_in_flight` | `2` |
-| `source_chunk_planning_mode` | `local_parquet_throughput` (or `conservative`) |
+| `source_chunk_planning_mode` | `parquet_throughput` (or `conservative`) |
 | `statistical_aggregate_execution_mode` | `gpu_native_tolerant` (or `datafusion_exact_host_welford`) |
 
 - Device capacity comes only from [`[[admission.device_profiles]]`](#admission).
@@ -250,9 +262,13 @@ commit and enabled features.
 - Both targets bound a chunk's decoded size, estimated from the Parquet
   footer. A dictionary-encoded string column counts at its decoded width, not
   its encoded size.
-- `local_parquet_throughput` lets one chunk of a local Parquet source hold up
-  to 1,024 row groups within the target when `max_row_groups_per_chunk` is `1`.
-  Other sources keep one row group per chunk. `conservative` plans
+- `parquet_throughput` lets one chunk of a Parquet file hold up to 1,024 row
+  groups within the target when `max_row_groups_per_chunk` is `1`. It applies
+  to local files and to `s3://` objects whose footers planning read, and needs
+  no remote-specific setting: on a g7e.8xlarge reading same-region S3, a `SUM` over the 17.2 GB
+  TPC-DS SF100 `store_sales` file takes 1.1 s against 270 s with one row group
+  per chunk. A chunk never spans files, so a table of many small remote files
+  reads one chunk per file. Other sources keep one row group per chunk. `conservative` plans
   `max_row_groups_per_chunk` row groups per chunk; compatible chunks then
   coalesce into batched reads under the same target.
 - When the grant rejects an allocation while a chunk is read, staged through
@@ -480,6 +496,115 @@ The log prints one `registered data root table` line with the table name and
 path for each table, then the total count. The tables live in the
 [shared catalog](./flight-sql-server.mdx#shared-catalog). Startup SQL can build
 views over them or replace one with `CREATE OR REPLACE EXTERNAL TABLE`.
+
+## S3 storage {/* #s3-storage */}
+
+```toml
+[s3]
+endpoint = "http://127.0.0.1:9000"
+region = "us-east-1"
+path_style = true
+```
+
+An `[s3]` table lets `CREATE EXTERNAL TABLE`, [startup SQL](#startup-sql)
+and queries read `s3://` Parquet locations. Without the table those
+locations fail. An empty `[s3]` enables them with the defaults below, and so
+does setting any `ALGEON_SERVER_S3_*` variable. Native reads, footer pruning
+and DataFusion scans of `s3://` sources all use these settings.
+
+| `[s3]` field | Default | Environment variable |
+|---|---|---|
+| `endpoint` | Unset: AWS S3, or the endpoint the AWS environment names | `ALGEON_SERVER_S3_ENDPOINT` |
+| `region` | Unset: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then `us-east-1` | `ALGEON_SERVER_S3_REGION` |
+| `path_style` | Unset | `ALGEON_SERVER_S3_PATH_STYLE` |
+| `unsigned` | `false` | `ALGEON_SERVER_S3_UNSIGNED` |
+
+- Credentials come from the default AWS credential chain:
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, a web
+  identity token, then container or EC2 instance profile credentials. The
+  table has no key fields.
+- `unsigned = true` sends anonymous requests and reads no credentials, for
+  public buckets.
+- `path_style = true` addresses objects as `<endpoint>/<bucket>/<key>`;
+  `false` selects virtual-hosted addressing (`<bucket>.<endpoint>/<key>`).
+- A custom `endpoint`, such as MinIO or RustFS, is read with path-style
+  addressing only. Startup and `--check-config` fail with
+  `invalid_configuration` on `s3.path_style` when `endpoint` is set together
+  with `path_style = false`. Set `path_style = true` or leave it unset.
+
+Embedded sessions pass the same settings as an `S3SourceStorageProfile` to
+`AlgeonNativeExecutionConfig::with_s3_storage`.
+
+## Iceberg catalogs {/* #iceberg-catalogs */}
+
+```toml
+[s3]
+region = "eu-west-2"
+
+[[iceberg.catalogs]]
+name = "lake"
+kind = "rest"
+uri = "http://127.0.0.1:8181"
+warehouse = "s3://warehouse/"
+auth = { kind = "oauth2", credential = "client-id:client-secret" }
+
+[[iceberg.catalogs]]
+name = "glue"
+kind = "glue"
+warehouse = "s3://bucket/warehouse"
+```
+
+Each `[[iceberg.catalogs]]` entry names an Iceberg catalog that becomes a
+DataFusion catalog called `name`. A server binary reads these catalogs only
+when it is built with the `iceberg` feature; a server without it refuses a
+non-empty `[[iceberg.catalogs]]` at startup. Supported catalogs, scan behavior
+and rejected table features are in
+[Iceberg support](./overview.mdx#iceberg-support).
+
+| Key | Kind | Default | Meaning |
+|---|---|---|---|
+| `name` | Both | Required | DataFusion catalog name |
+| `kind` | Both | Required | `rest` or `glue` |
+| `uri` | `rest` | Required | Catalog base URI |
+| `warehouse` | `rest` | Unset | Warehouse identifier sent to the catalog |
+| `prefix` | `rest` | Unset | Path prefix after the catalog's `/v1` segment |
+| `auth` | `rest` | `{ kind = "none" }` | Catalog authentication, below |
+| `warehouse` | `glue` | Required | Warehouse location, such as `s3://bucket/warehouse` |
+| `catalog_id` | `glue` | Unset: the caller's AWS account | Glue catalog account ID |
+| `region` | `glue` | Unset: the AWS environment | Glue service region |
+| `endpoint` | `glue` | Unset: the AWS Glue endpoint | Glue service endpoint override |
+
+| `auth.kind` | Keys |
+|---|---|
+| `none` | None. Requests carry no authorization |
+| `oauth2` | `credential` (required), as `client_id:client_secret` or a client secret alone; `server_uri`, the token endpoint, defaulting to the catalog's own; `scope` |
+| `token` | `token` (required), a bearer token sent with every request |
+
+A Glue catalog uses the default AWS credential chain described under
+[S3 storage](#s3-storage).
+
+The `iceberg` table is file-only. An array of tables has no environment form,
+and no `ALGEON_SERVER_ICEBERG_*` variable exists. `credential` and `token`
+can therefore be set only in the file. `--check-config` prints
+`# credential is set` or `# token is set` in their place, and the `Debug`
+output of `ServerConfig` prints `<redacted>`.
+
+Startup and `--check-config` stop with `invalid_configuration` when:
+
+- an entry is present without an [`[s3]` table](#s3-storage), which the
+  server reads Iceberg data files through (reason
+  `iceberg_catalogs_require_s3`);
+- an entry lacks a required key, or holds a key that belongs to the other
+  kind, to another `auth.kind`, or to neither, such as a property map;
+- two entries share a `name` (`duplicate_iceberg_catalog`), or a `name` is
+  empty or `datafusion`, the default DataFusion catalog
+  (`iceberg_catalog_name_reserved`);
+- a Glue entry sets `endpoint` while `[s3]` names no `endpoint`
+  (`iceberg_glue_endpoint_requires_s3_endpoint`). iceberg-rust's Glue catalog
+  then reads table metadata through the Glue endpoint, so set `s3.endpoint`,
+  for example to the regional S3 endpoint.
+
+Embedded Rust reads the validated entries from `ServerConfig::iceberg_catalogs`.
 
 ## Startup SQL {/* #startup-sql */}
 

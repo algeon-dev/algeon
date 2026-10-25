@@ -67,7 +67,7 @@ It cannot create their cuDF, cuVS, cuML, or cuGraph artifacts itself.
 
 :::
 
-The image build selects `cugraph`, `cuvs`, and `cuml` by default. NVML device
+The image build selects `cugraph`, `cuvs`, `cuml` and `iceberg` by default. NVML device
 diagnostics are opt-in through `FEATURES`. A `FEATURES=cuml` payload also
 stages the canonical cuVS runtime dependency.
 
@@ -175,14 +175,14 @@ bash docker/build-image.sh
 ```
 
 The default image carries the Flight SQL server with cuVS, cuGraph and cuML
-SQL. An unset `FEATURES` selects that list; `FEATURES=''` selects no optional
-feature and builds the cuDF-only server. Add `nvml` to any list for device
+SQL and Iceberg catalogs. An unset `FEATURES` selects that list;
+`FEATURES=''` selects no optional feature and builds the cuDF-only server. Add `nvml` to any list for device
 diagnostics:
 
 ```bash
 FEATURES='' bash docker/build-image.sh
 FEATURES=nvml bash docker/build-image.sh
-FEATURES=cugraph,cuml,cuvs,nvml bash docker/build-image.sh
+FEATURES=cugraph,cuml,cuvs,iceberg,nvml bash docker/build-image.sh
 ```
 
 The tag is `<version>-<cpu baseline>` for the default feature set, such as
@@ -190,8 +190,8 @@ The tag is `<version>-<cpu baseline>` for the default feature set, such as
 any other feature set appends its sorted features joined by `-`. The builds
 above produce `algeon-server:0.1.2-x86-64-v3-cudf`,
 `algeon-server:0.1.2-x86-64-v3-nvml` and
-`algeon-server:0.1.2-x86-64-v3-cugraph-cuml-cuvs-nvml`, and leave the default
-image in place. The build record, payload manifest and `dev.algeon.features`
+`algeon-server:0.1.2-x86-64-v3-cugraph-cuml-cuvs-iceberg-nvml`, and leave the
+default image in place. The build record, payload manifest and `dev.algeon.features`
 label record the selected list, which is empty for `FEATURES=''`.
 `IMAGE_REPOSITORY` replaces `algeon-server`. The image labels record the
 version, source revision, whether the worktree had uncommitted changes,
@@ -211,7 +211,8 @@ cuGraph execution is requested. Set `ALGEON_SERVER_CUGRAPH_ENABLED=false` to
 hide it.
 
 The script always runs its own clean build of `algeon_server`, from an
-isolated working directory and a clean `CARGO_HOME`, with the fixed target
+isolated working directory and a clean `CARGO_HOME` (an `iceberg` build
+fetches iceberg-rust from GitHub into it), with the fixed target
 triple and `target-cpu=x86-64-v3` from `.config/policies/cpu-packaging.toml`.
 That file also fixes the tool paths `/usr/bin/gcc-14`, `/usr/bin/g++-14`,
 `/usr/bin/ar`, `/usr/bin/cmake` and `/usr/bin/ninja`. The build shell and
@@ -220,7 +221,7 @@ Cargo `[env]` do not apply, so those paths must exist as described in
 It writes a build record (binary hash, policy fingerprint, features, target
 triple, codegen flags, version, source revision and CUDA toolkit release)
 beside the binary. An ordinary `target/release` build has no such record and
-is not reused. A packaging build with `FEATURES=cugraph,cuml,cuvs,nvml`
+is not reused. A packaging build with `FEATURES=cugraph,cuml,cuvs,iceberg,nvml`
 typically takes 7 to 8 minutes with a warm native prefix and compiler cache,
 or 3 minutes when built with `FEATURES=nvml`.
 

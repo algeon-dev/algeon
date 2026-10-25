@@ -155,7 +155,10 @@ fn plan_blocker_category(blocker: &PlanBlocker) -> Option<String> {
             WindowDefect::UnsupportedFrame(frame) => Some(format!("window_frame_{}", window_frame_identifier(frame))),
             WindowDefect::Arguments => None,
         },
-        PlanBlocker::ParentOperator(_) | PlanBlocker::DistributedAggregate(_) | PlanBlocker::Ordering { .. } => None,
+        PlanBlocker::ParentOperator(_)
+        | PlanBlocker::DistributedAggregate(_)
+        | PlanBlocker::Ordering { .. }
+        | PlanBlocker::Source { .. } => None,
     }
 }
 

@@ -354,7 +354,7 @@ measures execution through result collection, including reads and GPU result
 transfer. Successful-query SQL and physical planning time are excluded.
 
 GPU runs use the `sf100_gpu_throughput` profile with
-`local_parquet_throughput` source planning, an explicit 32 GiB
+`parquet_throughput` source planning, an explicit 32 GiB
 `max_source_chunk_bytes` target and at most 1,024 row groups per chunk.
 The byte target groups source data; the query's separate
 [memory grant](../../design/admission.mdx#device-profiles-and-grants) limits

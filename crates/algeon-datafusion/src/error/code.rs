@@ -110,6 +110,9 @@ error_codes! {
     UnsupportedExpression => "unsupported_expression", Unsupported, Permanent;
     /// A data type, physical representation, or type combination is unsupported.
     UnsupportedType => "unsupported_type", Unsupported, Permanent;
+    /// A table uses a table-format feature that Algeon does not read, such as
+    /// delete files; the `reason` fact names the feature.
+    UnsupportedTableFeature => "unsupported_table_feature", Unsupported, Permanent;
     /// A DataFusion physical plan is invalid for the adapter boundary.
     ///
     /// Use this only for malformed or inconsistent plans. A well-formed plan

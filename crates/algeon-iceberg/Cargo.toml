@@ -1,0 +1,40 @@
+[package]
+name = "algeon-iceberg"
+description = "Iceberg REST and Glue catalogs whose tables Algeon plans and reads as native Parquet scans."
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+license.workspace = true
+publish = false
+repository.workspace = true
+homepage.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+algeon-datafusion = { workspace = true, default-features = false, features = ["server"] }
+async-trait = { workspace = true }
+# Direct sys edge so build.rs bakes the native runtime path into test binaries.
+cudf-sys = { workspace = true }
+datafusion = { workspace = true }
+futures = { workspace = true }
+iceberg = { workspace = true }
+iceberg-catalog-glue = { workspace = true }
+iceberg-catalog-rest = { workspace = true }
+iceberg-storage-opendal = { workspace = true }
+# Names the credential source of the `[s3]` storage profile.
+query-runtime = { workspace = true }
+# Typed cause of Iceberg FileIO errors, read by error classification.
+opendal = { version = "0.58", default-features = false }
+# iceberg-rust builds reqwest without TLS; REST catalogs behind HTTPS need it.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[build-dependencies]
+rapids-build-support = { workspace = true }

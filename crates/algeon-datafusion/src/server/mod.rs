@@ -63,7 +63,9 @@ mod session;
 pub use auth::{AuthConfig, AuthMode, PasswordHashError, StaticUserConfig, hash_password, verify_password};
 pub use config::{
     ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_LOG_ENV, ConfigValueSource, CugraphServerConfig, Http2Keepalive,
-    LoadedServerConfig, ServerConfig, ServerObservabilityConfig,
+    LoadedServerConfig, ServerConfig, ServerIcebergCatalogConfig, ServerIcebergCatalogKind,
+    ServerIcebergGlueCatalogConfig, ServerIcebergRestAuth, ServerIcebergRestCatalogConfig, ServerIcebergSecret,
+    ServerObservabilityConfig,
 };
 pub use error::{
     BLOCKING_KIND_METADATA_KEY, BLOCKING_SUBJECT_METADATA_KEY, ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY,
@@ -188,7 +190,9 @@ impl FlightSqlServerBuilder {
     /// Injects the shared base DataFusion session.
     ///
     /// An injected backend is required. [`Self::build`] validates that the session
-    /// is bound to that backend and satisfies the configured SQL-family and catalog contracts.
+    /// is bound to that backend and, under an execution mode that rejects
+    /// DataFusion CPU operators, that it plans one target partition. Catalogs
+    /// and SQL families registered on the session are used as supplied.
     pub fn session_context(mut self, ctx: Arc<SessionContext>) -> Self {
         self.session_context = Some(ctx);
         self
@@ -420,6 +424,8 @@ fn transport_server(config: &ServerConfig) -> Result<Server> {
     let Some(tls) = &config.tls else {
         return Ok(server);
     };
+    // A config assembled in Rust skips the loader, which installs the provider.
+    config::install_rustls_crypto_provider();
     server.tls_config(tls.clone()).map_err(|error| {
         ServerError::invalid_config_with_source(
             "tls",

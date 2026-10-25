@@ -20,7 +20,7 @@ use crate::server::{
     coordinator::QueryCoordinatorConfig,
     cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
     cuml_sql::CumlModelStoreConfig,
-    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
+    native_exec::{AlgeonNativeExecutionConfig, S3SourceStorageProfile, SourceChunking},
     planner::AlgeonNativeOptimizerConfig,
 };
 
@@ -30,9 +30,11 @@ mod data;
 mod effective;
 mod env;
 mod file;
+mod iceberg;
 mod models;
 mod native;
 mod observability;
+mod s3;
 mod tls;
 
 use admission::{server_device_profiles, server_queue_policy};
@@ -43,10 +45,17 @@ pub(crate) use effective::non_default_settings;
 pub use env::{ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_LOG_ENV};
 use env::{EnvOverride, ServerEnvironment};
 use file::{ServerFile, ServerTlsFileConfig, load_file};
+use iceberg::iceberg_catalogs;
+pub use iceberg::{
+    ServerIcebergCatalogConfig, ServerIcebergCatalogKind, ServerIcebergGlueCatalogConfig, ServerIcebergRestAuth,
+    ServerIcebergRestCatalogConfig, ServerIcebergSecret,
+};
 use models::models_config;
 use native::native_optimizer_config;
 pub use observability::ServerObservabilityConfig;
 use observability::server_observability_config;
+use s3::s3_storage;
+pub(super) use tls::install_rustls_crypto_provider;
 use tls::tls_config;
 
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:50051";
@@ -144,6 +153,10 @@ pub struct ServerConfig {
     ///
     /// [`FlightSqlServerBuilder::build`]: crate::server::FlightSqlServerBuilder::build
     pub init_sql: Option<PathBuf>,
+    /// Iceberg catalogs from the `[[iceberg.catalogs]]` array, in file order.
+    /// Loading requires `[s3]` when any entry is present and rejects
+    /// duplicate names and the name `datafusion`.
+    pub iceberg_catalogs: Vec<ServerIcebergCatalogConfig>,
 }
 
 impl ServerConfig {
@@ -156,6 +169,12 @@ impl ServerConfig {
     ) -> Self {
         self.gpu_memory_ownership = ownership.into_iter().collect();
         self
+    }
+
+    /// The `[s3]` storage every `s3://` source reads through, or `None`
+    /// without the table.
+    pub fn s3_storage(&self) -> Option<&S3SourceStorageProfile> {
+        self.native_optimizer_config.native_execution_config().s3_storage()
     }
 
     /// The selected CUDA ordinals: the ordinals of
@@ -203,7 +222,9 @@ impl ServerConfig {
         let queue_policy = server_queue_policy(&file.admission, sources)?;
         let (gpu_device_profiles, device_profiles_defaulted) = server_device_profiles(&file.admission)?;
         let observability = server_observability_config(&file.observability, sources)?;
-        let native_optimizer_config = native_optimizer_config(&file.native, sources)?;
+        let s3_storage = s3_storage(file.s3.as_ref(), sources)?;
+        let iceberg_catalogs = iceberg_catalogs(file.iceberg, s3_storage.as_ref(), sources)?;
+        let native_optimizer_config = native_optimizer_config(&file.native, s3_storage, sources)?;
         let cugraph = cugraph_config(&file.cugraph, sources)?;
         let models = models_config(&file.models, sources)?;
         let data_root = data_root(&file.data, sources)?;
@@ -226,6 +247,7 @@ impl ServerConfig {
             data_root,
             tls,
             init_sql,
+            iceberg_catalogs,
         };
         config.validate_gpu_device_profiles()?;
         config.check_admission_within_live_query_capacity(sources)?;

@@ -198,6 +198,7 @@ pub(super) fn lower_local_parquet_source_input(
         Arc::clone(&table_schema),
         Some(&column_requirements),
         SourceRead { reader_pushdown, row_count_only: false, ordered: demand.ordered },
+        source_reads,
     );
     preserve_resolved_source_diagnostics(&mut native_source.diagnostics, &source_contract_diagnostics);
     if source_scan_limit.is_none() && post_predicate_scan_limit.is_some() {
@@ -307,6 +308,7 @@ fn lower_local_parquet_row_count(
         table_schema,
         Some(&column_requirements),
         SourceRead { reader_pushdown: false, row_count_only: true, ordered: false },
+        source_reads,
     );
     preserve_resolved_source_diagnostics(&mut source.diagnostics, &source_contract_diagnostics);
     source.diagnostics.selected_row_group_stats = selected_row_group_stats;

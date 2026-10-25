@@ -35,7 +35,7 @@ use std::{
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
-    execution::{SessionState, SessionStateBuilder, context::TaskContext},
+    execution::{SessionState, context::TaskContext},
     physical_plan::{
         ExecutionPlan, RecordBatchStream, SendableRecordBatchStream, execute_stream as execute_physical_stream,
     },
@@ -517,10 +517,10 @@ impl AlgeonAttempt {
         Ok(owner)
     }
 
-    fn invocation_state(&self, state: SessionState) -> SessionState {
-        let mut builder = SessionStateBuilder::new_from_existing(state);
-        self.invocation.install(builder.config().get_or_insert_with(Default::default));
-        builder.build()
+    fn invocation_state(&self, mut state: SessionState) -> SessionState {
+        let runtime_env = Arc::clone(state.runtime_env());
+        self.invocation.install(state.config_mut(), &runtime_env);
+        state
     }
 
     fn invocation_context(&self, ctx: &SessionContext) -> SessionContext {
@@ -711,7 +711,7 @@ pub(crate) fn execute_in_internal_attempt(
     let owner = attempt.take_owner()?;
     attempt.state.set_sealed_metrics_target(index);
     let mut session_config = task_context.session_config().clone();
-    attempt.invocation.install(&mut session_config);
+    attempt.invocation.install(&mut session_config, &task_context.runtime_env());
     let task_context = Arc::new(TaskContext::new(
         task_context.task_id(),
         task_context.session_id(),

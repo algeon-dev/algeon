@@ -68,12 +68,12 @@ pub enum SourceChunkPlanningMode {
     /// Each chunk is then the smallest retry unit, but per-chunk work such as
     /// partial aggregation grows with the table's row-group count.
     Conservative,
-    /// Raises a one-row-group cap so a chunk of a local Parquet source can hold
-    /// many row groups up to the source-byte target; `crate::chunk` owns the
-    /// row-group cap and the source conditions. A source that does not qualify
-    /// keeps conservative chunks.
+    /// Raises a one-row-group cap so a chunk of a Parquet source, local or
+    /// remote, can hold many row groups up to the source-byte target;
+    /// `crate::chunk` owns the row-group cap and the source conditions. A
+    /// source that does not qualify keeps conservative chunks.
     #[default]
-    LocalParquetThroughput,
+    ParquetThroughput,
 }
 
 impl SourceChunkPlanningMode {
@@ -81,7 +81,7 @@ impl SourceChunkPlanningMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Conservative => "conservative",
-            Self::LocalParquetThroughput => "local_parquet_throughput",
+            Self::ParquetThroughput => "parquet_throughput",
         }
     }
 }

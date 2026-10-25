@@ -5,53 +5,50 @@ use crate::{
     source::{LocalParquetFile, LocalParquetSource, ParquetReadStrategy},
 };
 
-/// Row-group cap used by local-throughput source planning when the configured
+/// Row-group cap used by throughput source planning when the configured
 /// policy is the conservative one-row-group shape. It bounds how much source
 /// one chunk retry reads again; the source-byte target sizes the chunk.
-pub const LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize =
-    SourceChunkPlanningOptions::DEFAULT_LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK;
+pub const PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize =
+    SourceChunkPlanningOptions::DEFAULT_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK;
 
-/// Expert policy for local Parquet source chunk planning heuristics.
+/// Expert policy for Parquet source chunk planning heuristics.
 ///
-/// This controls when [`SourceChunkPlanningMode::LocalParquetThroughput`] may
+/// This controls when [`SourceChunkPlanningMode::ParquetThroughput`] may
 /// widen conservative one-row-group chunks. It is intentionally a Rust-only
 /// policy until production evidence shows a stable tuning model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SourceChunkPlanningOptions {
-    local_parquet_throughput_max_row_groups_per_chunk: usize,
+    parquet_throughput_max_row_groups_per_chunk: usize,
 }
 
 impl SourceChunkPlanningOptions {
-    pub(crate) const DEFAULT_LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
+    pub(crate) const DEFAULT_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
 
-    pub(crate) fn local_parquet_throughput_max_row_groups_per_chunk(&self) -> usize {
-        self.local_parquet_throughput_max_row_groups_per_chunk
+    pub(crate) fn parquet_throughput_max_row_groups_per_chunk(&self) -> usize {
+        self.parquet_throughput_max_row_groups_per_chunk
     }
 
-    /// Sets the row-group cap available when local-throughput planning widens a
+    /// Sets the row-group cap available when throughput planning widens a
     /// conservative chunk. The value must be nonzero; call [`Self::validate`]
     /// after changing options.
-    pub fn with_local_parquet_throughput_max_row_groups_per_chunk(mut self, row_groups: usize) -> Self {
-        self.local_parquet_throughput_max_row_groups_per_chunk = row_groups;
+    pub fn with_parquet_throughput_max_row_groups_per_chunk(mut self, row_groups: usize) -> Self {
+        self.parquet_throughput_max_row_groups_per_chunk = row_groups;
         self
     }
 
     /// Rejects a zero row-group limit with [`QueryErrorCode::InvalidConfiguration`].
     pub fn validate(&self) -> QueryResult<()> {
         validate_source_chunk_planning_nonzero_usize(
-            "local_parquet_throughput_max_row_groups_per_chunk",
-            self.local_parquet_throughput_max_row_groups_per_chunk,
+            "parquet_throughput_max_row_groups_per_chunk",
+            self.parquet_throughput_max_row_groups_per_chunk,
         )
     }
 }
 
 impl Default for SourceChunkPlanningOptions {
     fn default() -> Self {
-        Self {
-            local_parquet_throughput_max_row_groups_per_chunk:
-                Self::DEFAULT_LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
-        }
+        Self { parquet_throughput_max_row_groups_per_chunk: Self::DEFAULT_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK }
     }
 }
 
@@ -138,7 +135,7 @@ impl SourceChunkPlanningPolicy {
         policy
     }
 
-    /// Derives a source-task policy with explicit local-throughput planning options.
+    /// Derives a source-task policy with explicit throughput planning options.
     pub fn for_source_task_with_mode_and_options(
         source: &LocalParquetSource,
         memory_policy: MemoryControlPolicy,
@@ -163,7 +160,7 @@ impl SourceChunkPlanningPolicy {
         )
     }
 
-    /// Derives a source policy with explicit local-throughput planning options.
+    /// Derives a source policy with explicit throughput planning options.
     pub fn from_memory_policy_with_mode_and_options(
         source: &LocalParquetSource,
         memory_policy: MemoryControlPolicy,
@@ -183,17 +180,17 @@ impl SourceChunkPlanningPolicy {
         mode: SourceChunkPlanningMode,
         options: SourceChunkPlanningOptions,
     ) -> Self {
-        if mode != SourceChunkPlanningMode::LocalParquetThroughput {
+        if mode != SourceChunkPlanningMode::ParquetThroughput {
             return self;
         }
         self.source_chunk_planning_mode = mode;
-        if !local_parquet_throughput_planning_admitted(source, self) {
-            self.source_chunk_planning_reason = "local_parquet_throughput_rejected";
+        if !parquet_throughput_planning_admitted(source, self) {
+            self.source_chunk_planning_reason = "parquet_throughput_rejected";
             return self;
         }
         self.max_row_groups_per_chunk =
-            self.max_row_groups_per_chunk.max(options.local_parquet_throughput_max_row_groups_per_chunk());
-        self.source_chunk_planning_reason = "local_parquet_throughput_admitted";
+            self.max_row_groups_per_chunk.max(options.parquet_throughput_max_row_groups_per_chunk());
+        self.source_chunk_planning_reason = "parquet_throughput_admitted";
         self
     }
 }
@@ -231,7 +228,7 @@ impl From<MemoryControlPolicy> for SourceChunkPlanningPolicy {
 /// Whether throughput planning may raise a one-row-group cap for `source`.
 /// The grant does not enter here: the source-byte target already scales the
 /// widened chunks with it.
-fn local_parquet_throughput_planning_admitted(source: &LocalParquetSource, policy: SourceChunkPlanningPolicy) -> bool {
+fn parquet_throughput_planning_admitted(source: &LocalParquetSource, policy: SourceChunkPlanningPolicy) -> bool {
     if policy.max_row_groups_per_chunk != 1 || policy.max_source_chunk_bytes.is_none() {
         return false;
     }
@@ -244,25 +241,24 @@ fn local_parquet_throughput_planning_admitted(source: &LocalParquetSource, polic
         return false;
     }
     source.files.iter().all(|file| {
-        local_parquet_throughput_file_uses_supported_reader_path(file)
+        parquet_throughput_file_uses_supported_reader_path(file)
             && file.partition_values.is_empty()
-            && matches!(
-                file.resolved_source.read_strategy(),
-                ParquetReadStrategy::LocalKvikio | ParquetReadStrategy::LocalCacheKvikio
-            )
-            && local_parquet_throughput_file_has_source_read_bytes(source, file)
+            && parquet_throughput_file_has_source_read_bytes(source, file)
     })
 }
 
-fn local_parquet_throughput_file_uses_supported_reader_path(file: &LocalParquetFile) -> bool {
+/// A remote file qualifies like a local one: one chunk is one reader call
+/// over its row groups, and the reader fetches their byte ranges in parallel.
+/// Both need the row-group byte metadata that planning reads from the footer.
+fn parquet_throughput_file_uses_supported_reader_path(file: &LocalParquetFile) -> bool {
     match file.resolved_source.read_strategy() {
         ParquetReadStrategy::LocalKvikio => file.location.is_local_path(),
         ParquetReadStrategy::LocalCacheKvikio => file.path.is_file(),
-        ParquetReadStrategy::RemoteDirect => false,
+        ParquetReadStrategy::RemoteDirect => !file.location.is_local_path(),
     }
 }
 
-fn local_parquet_throughput_file_has_source_read_bytes(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
+fn parquet_throughput_file_has_source_read_bytes(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
     let selected_row_groups = match &file.row_groups {
         Some(row_groups) if !row_groups.is_empty() => row_groups.clone(),
         Some(_) => return false,
@@ -284,4 +280,52 @@ fn local_parquet_throughput_file_has_source_read_bytes(source: &LocalParquetSour
     let pure_filter_covers_selection = source.pure_filter_columns.is_empty()
         || file.pure_filter_row_group_uncompressed_bytes.as_ref().is_some_and(|bytes| max_row_group < bytes.len());
     projected_covers_selection && pure_filter_covers_selection
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
+    use crate::source::{CredentialMode, ResolvedParquetSource};
+
+    fn one_row_group_policy() -> MemoryControlPolicy {
+        MemoryControlPolicy {
+            device_budget_bytes: 64 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 64 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        }
+    }
+
+    fn remote_source(file: LocalParquetFile) -> LocalParquetSource {
+        let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int64, true)]));
+        LocalParquetSource::from_files(vec![file], schema, vec!["c0".to_string()])
+    }
+
+    fn remote_file() -> LocalParquetFile {
+        let resolved =
+            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv);
+        LocalParquetFile::from_resolved_parquet_source(resolved).unwrap().with_stable_id("part-0")
+    }
+
+    #[test]
+    fn throughput_planning_widens_remote_chunks_when_the_footer_supplied_row_group_bytes() {
+        let file = remote_file()
+            .with_row_group_bytes(vec![1024; 7])
+            .with_projected_row_group_bytes(vec![512; 7], vec![1024; 7])
+            .with_row_group_rows(vec![1; 7]);
+
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+            &remote_source(file),
+            one_row_group_policy(),
+            SourceChunkPlanningMode::ParquetThroughput,
+        );
+
+        assert_eq!(policy.source_chunk_planning_reason(), "parquet_throughput_admitted");
+        assert_eq!(policy.max_row_groups_per_chunk, PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+    }
 }

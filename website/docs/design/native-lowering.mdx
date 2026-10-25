@@ -269,6 +269,33 @@ operator, at the site that rejected it.
 A missing memory estimate cannot reject a candidate. Allocation limits are
 enforced during [execution](./admission.mdx#allocation-enforcement).
 
+### Parquet source schema {/* #parquet-source-schema */}
+
+Lowering reads the footer of every distinct object in a Parquet scan, local or
+remote, and counts byte-range entries of one object once. All footers must
+hold the same columns in the same order with the same Arrow types; metadata on
+nested fields is ignored. A column may be required in one file and optional in
+another when the table schema declares it nullable. Any other difference,
+including a file that declares a column optional while the table declares it
+non-null, rejects the scan with `native_source_file_schema_mismatch`. The
+source diagnostics then report `schema_mapping_disposition` as `rejected` with
+rejected feature `schema_mapping`. Column indices, byte metadata and
+row-group statistics follow the footer's column order, which can differ from
+DataFusion's file schema. A remote scan of one object whose footer is not
+cached takes its schema from DataFusion's file schema and gets no footer
+pruning or byte metadata.
+
+Byte ranges that cover a whole object coalesce on any store. A partial range
+maps to row groups through the footer, so a remote partial range needs the
+cached footer described under
+[Object storage](./data-path.mdx#object-storage-and-libcurl). A remote scan
+without its footers is rejected with `native_source_remote_footer_unavailable`
+and rejected feature `remote_footer_unavailable`. A rejected remote scan still
+reports the read strategy and credential mode of the read it would make, such
+as `remote_direct` and `shared_process_env`. Both reasons carry a
+[remedy](../reference/gpu-coverage-report.mdx#remedies-for-sources) and a
+[`source` blocking subject](../reference/gpu-coverage-report.mdx#what-blocked-a-candidate).
+
 ### Uncorrelated scalar subqueries {/* #uncorrelated-scalar-subqueries */}
 
 DataFusion plans an uncorrelated scalar subquery as a `ScalarSubqueryExec`

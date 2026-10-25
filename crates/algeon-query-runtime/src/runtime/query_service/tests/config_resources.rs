@@ -26,7 +26,7 @@ fn query_service_handle_exposes_configured_execution_policies() {
     let aggregate_strategy_execution_options =
         AggregateStrategyExecutionOptions::default().with_encoded_key_partial_min_input_rows(22);
     let source_chunk_planning_options =
-        SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(33);
+        SourceChunkPlanningOptions::default().with_parquet_throughput_max_row_groups_per_chunk(33);
     let config = QueryExecutionConfig {
         source_scheduler_policy: SourceSchedulerPolicy::new(4),
         source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
@@ -104,14 +104,14 @@ fn query_service_rejects_invalid_aggregate_strategy_execution_policy() {
 fn query_service_rejects_invalid_source_chunk_planning_policy() {
     let config = QueryExecutionConfig {
         source_chunk_planning_options: SourceChunkPlanningOptions::default()
-            .with_local_parquet_throughput_max_row_groups_per_chunk(0),
+            .with_parquet_throughput_max_row_groups_per_chunk(0),
         ..QueryExecutionConfig::default()
     };
 
     let error = config.validate().unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
-    assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
+    assert_eq!(error.fact_value("field"), Some("parquet_throughput_max_row_groups_per_chunk"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 #[test]

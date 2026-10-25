@@ -80,6 +80,13 @@ pub enum CapabilityReason {
     NativeSourceRowSelection,
     /// Source schema mapping cannot be represented natively.
     NativeSourceSchemaMapping,
+    /// The Parquet objects of one scan differ in column names, order, or
+    /// Arrow types, or one declares a column optional that the table declares
+    /// non-null.
+    NativeSourceFileSchemaMismatch,
+    /// Planning had no footer for a remote Parquet object of a scan that
+    /// needs one.
+    NativeSourceRemoteFooterUnavailable,
 }
 
 impl CapabilityReason {
@@ -88,7 +95,7 @@ impl CapabilityReason {
     /// Internal diagnostics projections use this list to assert that a new
     /// reason cannot accidentally ship without actionable guidance.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 23] = [
+    pub(crate) const ALL: [Self; 25] = [
         Self::UnsupportedOperator,
         Self::UnsupportedExpression,
         Self::UnsupportedType,
@@ -112,6 +119,8 @@ impl CapabilityReason {
         Self::NativeSourceByteRange,
         Self::NativeSourceRowSelection,
         Self::NativeSourceSchemaMapping,
+        Self::NativeSourceFileSchemaMismatch,
+        Self::NativeSourceRemoteFooterUnavailable,
     ];
 
     /// Stable snake-case reason code used by reports and tests.
@@ -261,6 +270,22 @@ impl CapabilityReason {
             Self::NativeSourceByteRange => source_gap("native_source_byte_range"),
             Self::NativeSourceRowSelection => source_gap("native_source_row_selection"),
             Self::NativeSourceSchemaMapping => source_gap("native_source_schema_mapping"),
+            Self::NativeSourceFileSchemaMismatch => ReasonFacts {
+                remedy: QueryGpuRemedy::new(
+                    "unify_file_schemas",
+                    QueryGpuRemedyKind::UserAction,
+                    "The scan's Parquet files differ in column names, column order, or Arrow types, or a file declares a column optional that the table declares non-null. Rewrite the files to one schema, or declare the column nullable in the table.",
+                ),
+                ..source_gap("native_source_file_schema_mismatch")
+            },
+            Self::NativeSourceRemoteFooterUnavailable => ReasonFacts {
+                remedy: QueryGpuRemedy::new(
+                    "cache_remote_footers",
+                    QueryGpuRemedyKind::ConfigAction,
+                    "Planning reads remote Parquet footers from the session's DataFusion file metadata cache, which the table scan fills while planning. Plan through an `AlgeonAttempt` or the Flight SQL server and keep `datafusion.execution.collect_statistics` enabled. A table whose footers exceed the cache limit (`datafusion.runtime.metadata_cache_limit`, 50 MB by default) evicts its own entries; an embedded session can raise the limit, the Flight SQL server keeps the default.",
+                ),
+                ..source_gap("native_source_remote_footer_unavailable")
+            },
         }
     }
 }

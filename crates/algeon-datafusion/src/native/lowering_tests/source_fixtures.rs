@@ -1,12 +1,18 @@
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
-    datasource::{listing::PartitionedFile, physical_plan::ParquetFileReaderFactory},
+    datasource::{
+        listing::PartitionedFile,
+        physical_plan::{ParquetFileReaderFactory, parquet::metadata::DFParquetMetadata},
+    },
+    execution::{cache::cache_manager::FileMetadataCache, runtime_env::RuntimeEnv},
+    object_store::{ObjectStoreExt, memory::InMemory},
     parquet::arrow::async_reader::AsyncFileReader,
     physical_plan::metrics::ExecutionPlanMetricsSet,
 };
 use futures::executor::block_on;
 
 use super::*;
+use crate::native::FooterCache;
 
 pub(super) fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(
@@ -948,6 +954,49 @@ pub(super) fn parquet_scan_with_object_store_url_and_location(
         .with_file_groups(file_groups)
         .build();
     DataSourceExec::from_data_source(file_scan)
+}
+
+/// Moves the objects of `scan`, a scan over local files, to keys
+/// `table/<file name>` of an in-memory store at `object_store_url`, so no
+/// local read can reach them. Returns the moved scan and a file metadata cache
+/// holding every object's footer, as DataFusion's async scan of a remote table
+/// leaves the session cache.
+pub(super) fn remote_scan_with_cached_footers(
+    scan: Arc<dyn ExecutionPlan>,
+    object_store_url: ObjectStoreUrl,
+) -> (Arc<dyn ExecutionPlan>, Arc<FileMetadataCache>) {
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let store = InMemory::new();
+    let cache = RuntimeEnv::default().cache_manager.get_file_metadata_cache();
+    let mut remote_file = |mut file: PartitionedFile| {
+        let local_path = std::path::Path::new("/").join(file.object_meta.location.as_ref());
+        let name = local_path.file_name().unwrap().to_str().unwrap();
+        file.object_meta.location = format!("table/{name}").into();
+        block_on(store.put(&file.object_meta.location, fs::read(&local_path).unwrap().into())).unwrap();
+        block_on(
+            DFParquetMetadata::new(&store, &file.object_meta)
+                .with_file_metadata_cache(Some(Arc::clone(&cache)))
+                .fetch_metadata(),
+        )
+        .unwrap();
+        file
+    };
+    let file_groups = file_scan
+        .file_groups
+        .iter()
+        .map(|group| FileGroup::new(group.files().iter().cloned().map(&mut remote_file).collect()))
+        .collect();
+    let file_scan = FileScanConfigBuilder::new(object_store_url, Arc::clone(file_scan.file_source()))
+        .with_file_groups(file_groups)
+        .build();
+    (DataSourceExec::from_data_source(file_scan), cache)
+}
+
+/// A footer scope whose remote footers come from `cache`.
+pub(super) fn remote_footer_scope(cache: Arc<FileMetadataCache>) -> FooterScope {
+    FooterScope::join(Arc::new(FooterCache::for_scope(Some(cache))))
 }
 
 pub(super) fn parquet_scan_with_partition_columns(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {

@@ -353,13 +353,13 @@ fn cache_fill_byte_budget_rejects_oversized_fetches() {
 fn execution_context_rejects_invalid_source_chunk_planning_options() {
     let error = ExecutionContext::standalone(StandaloneConfig {
         source_chunk_planning_options: SourceChunkPlanningOptions::default()
-            .with_local_parquet_throughput_max_row_groups_per_chunk(0),
+            .with_parquet_throughput_max_row_groups_per_chunk(0),
         ..StandaloneConfig::default()
     })
     .unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
-    assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
+    assert_eq!(error.fact_value("field"), Some("parquet_throughput_max_row_groups_per_chunk"));
 }
 
 #[test]

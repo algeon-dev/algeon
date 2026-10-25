@@ -76,7 +76,7 @@ fn benchmark_report_metadata_identifies_named_sf100_profile() {
     assert!(text.contains("# tpch_benchmark_native_device_budget_bytes=automatic\n"));
     assert!(text.contains("# tpch_benchmark_native_max_source_chunk_bytes=34359738368\n"));
     assert!(text.contains("# tpch_benchmark_native_max_row_groups_per_chunk=1024\n"));
-    assert!(text.contains("# tpch_benchmark_native_source_chunk_planning_mode=local_parquet_throughput\n"));
+    assert!(text.contains("# tpch_benchmark_native_source_chunk_planning_mode=parquet_throughput\n"));
 }
 
 #[test]

@@ -64,6 +64,7 @@ the one-line `text`, and structured fields for that kind:
 | `expression` | A rejected expression, or one the contract could not narrow further. | `expression`, `data_type` |
 | `column_type` | A column whose Arrow type is not native. | `column`, `data_type`, `role` |
 | `ordering` | The declared output ordering, or the input ordering a window needs, that the native plan cannot reproduce. | `required_by`, `ordering` |
+| `source` | A Parquet scan the native source contract cannot read. The candidate's `native_source_*` reason names the feature. | `object_store_url`, `object_count` |
 | `compiled_contract` | A rule of the compiled pipeline or plan validation contract, when no operator or expression is the cause. | `reason`, `boundary` |
 
 - An `aggregate_function` defect is the function itself, `DISTINCT`,
@@ -203,6 +204,24 @@ inside an executable plan, and the statement is not rejected.
   `unsupported_expression` for the key.
 - A union on the collected side of a join is merged into one partition, and the
   setting still removes the stages or the merge there.
+
+### Remedies for sources {/* #remedies-for-sources */}
+
+| `reason_code` | `remedy_code` (`remedy_kind`) | When it applies |
+| --- | --- | --- |
+| `native_source_file_schema_mismatch` | `unify_file_schemas` (`user_action`) | The scan's files differ in column names, order or Arrow types, or a file declares optional a column the table declares non-null. |
+| `native_source_remote_footer_unavailable` | `cache_remote_footers` (`config_action`) | Planning found no usable footer in the session's file metadata cache for an `s3://` object. |
+
+- The table scan fills the cache while `datafusion.execution.collect_statistics`
+  is true. Planning reads it only under an invocation: `AlgeonAttempt`
+  planning, the Flight SQL server, `plan_with_native_diagnostics` or
+  `validate_query`.
+- A table whose footers exceed `datafusion.runtime.metadata_cache_limit`
+  (50 MB by default) evicts its own entries during the scan. An embedded
+  session can raise the limit; the Flight SQL server runs with the default.
+- The cache key is the object path without the bucket. An entry is refused when
+  its size, last-modified time, or e_tag or version (when both sides have one)
+  differs from the scanned object.
 
 ## Validation context {/* #validated-under */}
 

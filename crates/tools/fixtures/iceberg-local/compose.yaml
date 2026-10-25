@@ -1,0 +1,51 @@
+# Local Iceberg REST and Glue catalogs over RustFS for the explicit
+# `iceberg-local-e2e` tool.
+#
+#   docker compose -f crates/tools/fixtures/iceberg-local/compose.yaml up -d --wait
+#   docker compose -f crates/tools/fixtures/iceberg-local/compose.yaml down -v
+#
+# RustFS and its bucket come from ../s3-local/compose.yaml: http://127.0.0.1:9000
+# (path-style), bucket `algeon-e2e`, access key `algeon-e2e` and secret key
+# `algeon-e2e-secret`. Both stacks bind port 9000, so run one at a time.
+# REST catalog: http://127.0.0.1:8181, warehouse `s3://algeon-e2e/warehouse/`.
+# Glue (moto): http://127.0.0.1:5001. Catalog state lives in the containers.
+
+name: algeon-iceberg-local
+
+include:
+  - ../s3-local/compose.yaml
+
+services:
+  # The fixture turns CATALOG_* variables into catalog properties: `__`
+  # becomes `-` and `_` becomes `.`, so CATALOG_S3_PATH__STYLE__ACCESS is
+  # `s3.path-style-access`. Its JDBC catalog is a SQLite file in the container.
+  rest:
+    image: apache/iceberg-rest-fixture:1.10.1
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+    environment:
+      - CATALOG_WAREHOUSE=s3://algeon-e2e/warehouse/
+      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      - CATALOG_S3_ENDPOINT=http://s3:9000
+      - CATALOG_S3_PATH__STYLE__ACCESS=true
+      - AWS_ACCESS_KEY_ID=algeon-e2e
+      - AWS_SECRET_ACCESS_KEY=algeon-e2e-secret
+      - AWS_REGION=us-east-1
+    ports:
+      - "127.0.0.1:8181:8181"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8181/v1/config"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  glue:
+    image: motoserver/moto:5.1.14
+    ports:
+      - "127.0.0.1:5001:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/moto-api/"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

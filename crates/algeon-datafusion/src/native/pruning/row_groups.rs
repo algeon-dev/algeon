@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::DataType;
-use datafusion::parquet::schema::types::SchemaDescriptor;
+use datafusion::{execution::object_store::ObjectStoreUrl, parquet::schema::types::SchemaDescriptor};
 use parquet::file::metadata::{ColumnChunkMetaData, RowGroupMetaData};
 use query_planning::parquet_stats::{integer_statistics_range, leaf_column_chunk, leaf_column_statistics};
 
@@ -9,9 +9,10 @@ use super::{
     BinaryExpr, CastExpr, Column, FileScanConfig, FileSource, FilterExec, InListExpr, IsNotNullExpr, IsNullExpr,
     Literal, Operator, ParquetSource, PartitionedFile, PhysicalExpr, ScalarValue, SchemaRef, Statistics,
     and_may_satisfy, coalesced_local_parquet_scan_files, float_range_may_satisfy, in_list_may_satisfy,
-    is_not_null_may_satisfy, is_null_may_satisfy, local_object_path_to_filesystem, or_may_satisfy,
-    ordered_range_may_satisfy, parquet_footer, range_comparison_from_operator, validate_pruning_only_parquet_predicate,
+    is_not_null_may_satisfy, is_null_may_satisfy, object_parquet_footer, or_may_satisfy, ordered_range_may_satisfy,
+    range_comparison_from_operator, validate_pruning_only_parquet_predicate,
 };
+use crate::native::source::native_physical_file_schema;
 
 pub(in crate::native) fn metadata_row_group_selections(
     files: &[&PartitionedFile],
@@ -20,10 +21,9 @@ pub(in crate::native) fn metadata_row_group_selections(
     filter: Option<&FilterExec>,
     source_schema: &SchemaRef,
 ) -> Option<Vec<Vec<usize>>> {
-    let coalesced_files = coalesced_local_parquet_scan_files(files).ok()?;
+    let coalesced_files = coalesced_local_parquet_scan_files(&file_scan.object_store_url, files).ok()?;
     let files = coalesced_files.iter().map(|file| file.file).collect::<Vec<_>>();
     if files.is_empty()
-        || !file_scan.object_store_url.as_str().starts_with("file://")
         || file_scan.expr_adapter_factory.is_some()
         || file_scan.limit.is_some()
         || file_scan.preserve_order
@@ -37,9 +37,14 @@ pub(in crate::native) fn metadata_row_group_selections(
     {
         return None;
     }
-    let predicate = row_group_pruning_expr(filter?.predicate(), file_scan.file_schema())?;
-    let selections =
-        files.iter().map(|file| metadata_row_group_selection(file, predicate.clone())).collect::<Option<Vec<_>>>()?;
+    // Footer statistics are addressed by physical column position, which the
+    // footer schema gives; DataFusion's file schema may order columns otherwise.
+    let physical_schema = native_physical_file_schema(file_scan).ok()?;
+    let predicate = row_group_pruning_expr(filter?.predicate(), &physical_schema)?;
+    let selections = files
+        .iter()
+        .map(|file| metadata_row_group_selection(&file_scan.object_store_url, file, predicate.clone()))
+        .collect::<Option<Vec<_>>>()?;
     let selected_row_groups = selections.iter().map(|selection| selection.row_groups.len()).sum::<usize>();
     let total_row_groups = selections.iter().map(|selection| selection.total_row_groups).sum::<usize>();
     if selected_row_groups > 0 && selected_row_groups < total_row_groups {
@@ -56,11 +61,11 @@ struct MetadataRowGroupSelection {
 }
 
 fn metadata_row_group_selection(
+    object_store_url: &ObjectStoreUrl,
     file: &PartitionedFile,
     predicate: RowGroupPruningExpr,
 ) -> Option<MetadataRowGroupSelection> {
-    let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
-    let metadata = parquet_footer(path.as_path()).ok()?;
+    let metadata = object_parquet_footer(object_store_url, &file.object_meta).ok()?;
     let schema = metadata.file_metadata().schema_descr();
     let total_row_groups = metadata.num_row_groups();
     if total_row_groups == 0 {

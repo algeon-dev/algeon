@@ -299,6 +299,8 @@ itself.
 | TPC-H execution report | `ALGEON_PARQUET_DIR=/path/to/complete/tpch-sf1 flock /tmp/cudf-gpu.lock cargo run -p bench --all-features --bin native_tpch_execution_report` | A complete TPC-H dataset |
 | Sustained-load goodput (`query_service_goodput`) | `crates/bench/scripts/run_goodput_matrix.sh calibrate g1` | The GPU and dataset recorded by `calibrate` |
 | Python-cuGraph comparison | `flock /tmp/cudf-gpu.lock cargo run -p tools --all-features -- cugraph-fixture-e2e bfs-include-edges` | A host with Python cuGraph installed |
+| S3 Parquet scans | `ALGEON_S3_PARQUET_E2E_BUCKET=<bucket> flock /tmp/cudf-gpu.lock cargo run -p tools --features s3-parquet-e2e -- s3-parquet-e2e` | An existing bucket and credentials from the default AWS chain. `ALGEON_S3_PARQUET_E2E_REGION` defaults to `AWS_REGION`, then `us-east-1` |
+| Iceberg REST and Glue catalogs | `AWS_ACCESS_KEY_ID=algeon-e2e AWS_SECRET_ACCESS_KEY=algeon-e2e-secret flock /tmp/cudf-gpu.lock cargo run -p tools --features iceberg-local-e2e -- iceberg-local-e2e` | The services of `crates/tools/fixtures/iceberg-local/compose.yaml` |
 
 - Scale-factor workloads validate their dataset before starting and fail when
   it is incomplete. The TPC-DS report emits one row per attempted query.
@@ -312,6 +314,33 @@ itself.
   `bfs-utf8-path`, or `bfs-utf8-predicates` for the other provisioned cases.
 - External-service E2E tests are invoked explicitly through
   `cargo run -p tools --all-features`.
+- `s3-parquet-e2e` uploads generated Parquet objects under a unique key prefix,
+  scans one object, a prefix of three objects and one object split into byte
+  ranges in library and server-configured sessions, compares each result with
+  the generated data, and deletes the objects. Setting
+  `ALGEON_S3_PARQUET_E2E_ENDPOINT` selects an S3-compatible service with
+  path-style addressing; without it the run uses real S3.
+- `iceberg-local-e2e` writes Iceberg tables through a REST catalog and a Glue
+  catalog, serves both from an in-process Flight SQL server in
+  `native_required` mode, and checks the Flight SQL catalog, schema and table
+  listings, a native aggregate over each catalog and the
+  `unsupported_table_feature` rejection of a snapshot with a position-delete
+  file. Its compose file adds the Iceberg REST fixture on
+  `http://127.0.0.1:8181` and moto as Glue on `http://127.0.0.1:5001` to the
+  RustFS service below. Both compose files bind port 9000; stop one stack
+  before starting the other.
+
+A local RustFS service for that run starts from the compose file in
+`crates/tools/fixtures/s3-local`. It listens on `http://127.0.0.1:9000` with
+bucket `algeon-e2e`, access key `algeon-e2e` and secret key `algeon-e2e-secret`.
+
+```bash
+docker compose -f crates/tools/fixtures/s3-local/compose.yaml up -d --wait
+ALGEON_S3_PARQUET_E2E_ENDPOINT=http://127.0.0.1:9000 ALGEON_S3_PARQUET_E2E_BUCKET=algeon-e2e \
+AWS_ACCESS_KEY_ID=algeon-e2e AWS_SECRET_ACCESS_KEY=algeon-e2e-secret \
+  flock /tmp/cudf-gpu.lock cargo run -p tools --features s3-parquet-e2e -- s3-parquet-e2e
+docker compose -f crates/tools/fixtures/s3-local/compose.yaml down -v
+```
 
 For any performance claim, use `--release` builds, compare rows produced by
 the same harness, and label warmup count, iteration count, source cache

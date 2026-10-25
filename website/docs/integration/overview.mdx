@@ -27,14 +27,73 @@ executable; see [Dependencies](./datafusion-session.mdx#dependencies).
 
 ## Iceberg support
 
-Iceberg tables are not a supported source. The earlier Algeon integration was
-removed together with its `iceberg` Cargo feature and its server catalog
-settings. A future integration would start from the upstream DataFusion
-Iceberg table provider in
-[apache/datafusion-iceberg](https://github.com/apache/datafusion-iceberg).
-Because the Flight SQL server registers no object store, `s3://` locations
-fail there; an embedded session can read `s3://` Parquet through
-`AlgeonNativeExecutionConfig::with_s3_storage`.
+A server built with the `iceberg` feature registers each
+[`[[iceberg.catalogs]]`](./configuration.mdx#iceberg-catalogs) entry as a
+DataFusion catalog. Two catalog kinds connect: Iceberg REST catalogs that need
+no SigV4 request signing, such as `iceberg-rest-fixture`, Polaris and
+Lakekeeper (authentication `none`, OAuth2 client credentials or a bearer
+token), and AWS Glue with the default AWS credential chain. Glue's Iceberg REST
+endpoint and S3 Tables REST require SigV4, which iceberg-rust does not
+implement, so they are not supported. GCP catalogs are out of scope.
+
+Data files must be in S3. Native scans read them with KvikIO through the
+server's [`[s3]` table](./configuration.mdx#s3-storage), and the catalog's
+metadata files (table metadata, manifest lists and manifests) are read through
+iceberg-rust's FileIO with the endpoint, region and path style of the same
+table, which `[[iceberg.catalogs]]` therefore requires. A loaded table whose
+FileIO endpoint differs from `[s3]`, or whose region or path style differs
+when both sides set one, fails with `iceberg_storage_properties_mismatch`.
+Credentials a catalog returns for a table are neither requested nor used. An
+embedded session uses `AlgeonNativeExecutionConfig::with_s3_storage`.
+
+Access is read-only. Every scan loads the table again and plans its current
+snapshot; there is no time-travel syntax and no metadata table. A table
+without a snapshot scans as empty. Namespaces and table names are listed once,
+at server startup, and only single-level namespaces appear. A query loads a table
+by name, so a table created after startup can be queried but is missing from
+the listings.
+
+Filters convert to Iceberg predicates that prune manifests and data files.
+DataFusion keeps every filter in a `FilterExec` above the scan, so a filter
+that does not convert only loses pruning. The scan is a standard Parquet
+`DataSourceExec` with one whole-file entry per data file, the exact row count
+from the manifest, and each footer placed in the session's file metadata
+cache. Native lowering therefore sees a multi-object `s3://` Parquet scan (see
+[Object storage and libcurl](../design/data-path.mdx#object-storage-and-libcurl)).
+String and binary columns use the view types that a `ListingTable` infers.
+Columns bind by name, after a per-file check that name and Iceberg field id
+(or the table's name mapping) select the same column.
+
+### Rejected table features {/* #iceberg-rejections */}
+
+A snapshot that a Parquet scan would read incorrectly fails with
+`unsupported_table_feature`; the
+[error page](./handling-errors.mdx#unsupported-table-feature) lists its
+metadata. The checks run in the provider's scan before native lowering, so
+they apply in every execution mode, and no CPU fallback exists.
+
+| `reason` | Raised when |
+| --- | --- |
+| `iceberg_delete_files` | A data file of the snapshot has delete files attached. |
+| `iceberg_field_id_mismatch` | In a file that carries field ids, a column's name and its field id select different file columns, as after a rename. |
+| `iceberg_missing_field_ids` | A file has no field ids and the table has no default name mapping, or the mapping resolves a column to another name than the file uses. |
+| `iceberg_partition_column_absent` | A file lacks an identity-partition column, whose value Iceberg keeps only in partition data. |
+| `iceberg_required_column_absent` | A file lacks a required column. A missing optional column reads as null. |
+| `iceberg_encrypted_file` | A data file has encryption key metadata. |
+| `iceberg_non_parquet_file` | A data file is not Parquet. |
+| `iceberg_multiple_buckets` | The data files left after pruning span more than one bucket. |
+| `iceberg_unsupported_location_scheme` | A data file location is not `s3://`, `s3a://` or `s3n://`. `file://` locations are read from local disk. |
+| `iceberg_storage_properties_mismatch` | The table's FileIO storage properties disagree with `[s3]`, as described above. |
+| `iceberg_column_type_mismatch` | A file stores a projected column with another type than the table declares, as after an `int` to `long` promotion. String and binary widths and dictionary encoding count as the same type. |
+
+Catalog and storage failures keep the existing codes. A missing namespace or
+table is `object_not_found`. Credential and access failures from the catalog or
+metadata storage are `source_unauthenticated` or `source_access_denied`. A
+retryable failure is `source_temporary_failure`, and any other is
+`source_dependency_failure`. A table schema that changes between name
+resolution and the scan fails with `source_temporary_failure`; a data file
+whose size differs from its manifest entry fails with
+`source_dependency_failure`.
 
 ## Common flow
 

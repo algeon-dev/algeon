@@ -36,7 +36,7 @@ fn native_profile_source_chunk_planning_reaches_execution_config() {
 
     let execution = config.native_execution_config_with_resources(&resources);
 
-    assert_eq!(execution.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(execution.source_chunk_planning_mode(), SourceChunkPlanningMode::ParquetThroughput);
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn native_profile_exact_overrides_resolve_to_named_profile() {
         (ALGEON_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1024"),
         (ALGEON_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "4"),
         (ALGEON_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "1"),
-        (ALGEON_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
+        (ALGEON_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "parquet_throughput"),
     ])
     .unwrap();
 
@@ -70,7 +70,7 @@ fn explicit_device_budget_override_is_custom_and_explicit() {
     assert_eq!(profile.max_row_groups_per_chunk, TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
     assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
-    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::ParquetThroughput);
 
     assert_eq!(NativeTpchDeviceBudget::Automatic.memory_limit(), GpuDeviceMemoryLimit::default());
 }
@@ -113,7 +113,7 @@ fn native_profile_rejects_invalid_profile_and_source_mode() {
 
     let error = tpch_native_profile_settings_from([(ALGEON_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "wide")])
         .expect_err("unknown source chunk planning modes must be rejected");
-    assert!(error.to_string().contains("expected conservative or local_parquet_throughput"));
+    assert!(error.to_string().contains("expected conservative or parquet_throughput"));
 }
 
 #[test]

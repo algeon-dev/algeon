@@ -146,12 +146,14 @@ pub algeon_datafusion::capability::CapabilityReason::NativeSortPreservingMergeUn
 pub algeon_datafusion::capability::CapabilityReason::NativeSourceByteRange
 pub algeon_datafusion::capability::CapabilityReason::NativeSourceEmpty
 pub algeon_datafusion::capability::CapabilityReason::NativeSourceExprAdapter
+pub algeon_datafusion::capability::CapabilityReason::NativeSourceFileSchemaMismatch
 pub algeon_datafusion::capability::CapabilityReason::NativeSourceNonLocalObjectStore
 pub algeon_datafusion::capability::CapabilityReason::NativeSourceOutputOrdering
 pub algeon_datafusion::capability::CapabilityReason::NativeSourceParquetFileReaderFactory
 pub algeon_datafusion::capability::CapabilityReason::NativeSourcePartitionValues
 pub algeon_datafusion::capability::CapabilityReason::NativeSourcePreserveOrder
 pub algeon_datafusion::capability::CapabilityReason::NativeSourcePushedDownParquetPredicate
+pub algeon_datafusion::capability::CapabilityReason::NativeSourceRemoteFooterUnavailable
 pub algeon_datafusion::capability::CapabilityReason::NativeSourceRowSelection
 pub algeon_datafusion::capability::CapabilityReason::NativeSourceSchemaMapping
 pub algeon_datafusion::capability::CapabilityReason::UnsupportedExpression
@@ -743,6 +745,7 @@ pub algeon_datafusion::error::ErrorCode::SourceUnauthenticated
 pub algeon_datafusion::error::ErrorCode::SqlParse
 pub algeon_datafusion::error::ErrorCode::UnsupportedExpression
 pub algeon_datafusion::error::ErrorCode::UnsupportedOperator
+pub algeon_datafusion::error::ErrorCode::UnsupportedTableFeature
 pub algeon_datafusion::error::ErrorCode::UnsupportedType
 impl algeon_datafusion::error::ErrorCode
 pub const algeon_datafusion::error::ErrorCode::ALL: &'static [Self]
@@ -1976,6 +1979,16 @@ pub algeon_datafusion::server::PasswordHashError::InvalidHash(alloc::string::Str
 impl core::error::Error for algeon_datafusion::server::PasswordHashError
 impl core::fmt::Display for algeon_datafusion::server::PasswordHashError
 pub fn algeon_datafusion::server::PasswordHashError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum algeon_datafusion::server::ServerIcebergCatalogKind
+pub algeon_datafusion::server::ServerIcebergCatalogKind::Glue(algeon_datafusion::server::ServerIcebergGlueCatalogConfig)
+pub algeon_datafusion::server::ServerIcebergCatalogKind::Rest(algeon_datafusion::server::ServerIcebergRestCatalogConfig)
+pub enum algeon_datafusion::server::ServerIcebergRestAuth
+pub algeon_datafusion::server::ServerIcebergRestAuth::None
+pub algeon_datafusion::server::ServerIcebergRestAuth::OAuth2
+pub algeon_datafusion::server::ServerIcebergRestAuth::OAuth2::credential: algeon_datafusion::server::ServerIcebergSecret
+pub algeon_datafusion::server::ServerIcebergRestAuth::OAuth2::scope: core::option::Option<alloc::string::String>
+pub algeon_datafusion::server::ServerIcebergRestAuth::OAuth2::server_uri: core::option::Option<alloc::string::String>
+pub algeon_datafusion::server::ServerIcebergRestAuth::Token(algeon_datafusion::server::ServerIcebergSecret)
 pub enum algeon_datafusion::server::ServerShutdown
 pub algeon_datafusion::server::ServerShutdown::OsSignals
 pub algeon_datafusion::server::ServerShutdown::Token(tokio_util::sync::cancellation_token::CancellationToken)
@@ -2022,6 +2035,7 @@ pub algeon_datafusion::server::ServerConfig::data_root: core::option::Option<std
 pub algeon_datafusion::server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<query_runtime::runtime::backend_core::GpuBackendDeviceProfile>
 pub algeon_datafusion::server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, query_runtime::runtime::backend_core::GpuMemoryOwnership)>
 pub algeon_datafusion::server::ServerConfig::http2_keepalive: algeon_datafusion::server::Http2Keepalive
+pub algeon_datafusion::server::ServerConfig::iceberg_catalogs: alloc::vec::Vec<algeon_datafusion::server::ServerIcebergCatalogConfig>
 pub algeon_datafusion::server::ServerConfig::init_sql: core::option::Option<std::path::PathBuf>
 pub algeon_datafusion::server::ServerConfig::models: core::option::Option<algeon_datafusion::cuml_sql::CumlModelStoreConfig>
 pub algeon_datafusion::server::ServerConfig::native_optimizer_config: algeon_datafusion::planner::AlgeonNativeOptimizerConfig
@@ -2035,6 +2049,7 @@ impl algeon_datafusion::server::ServerConfig
 pub fn algeon_datafusion::server::ServerConfig::from_env() -> algeon_datafusion::server::Result<Self>
 pub fn algeon_datafusion::server::ServerConfig::from_vars<K, V>(impl core::iter::traits::collect::IntoIterator<Item = (K, V)>) -> algeon_datafusion::server::Result<Self> where K: core::convert::Into<alloc::string::String>, V: core::convert::Into<alloc::string::String>
 pub fn algeon_datafusion::server::ServerConfig::gpu_devices(&self) -> alloc::vec::Vec<usize>
+pub fn algeon_datafusion::server::ServerConfig::s3_storage(&self) -> core::option::Option<&query_runtime::runtime::object_store::S3SourceStorageProfile>
 pub fn algeon_datafusion::server::ServerConfig::with_gpu_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, query_runtime::runtime::backend_core::GpuMemoryOwnership)>) -> Self
 pub struct algeon_datafusion::server::ServerError
 impl algeon_datafusion::server::ServerError
@@ -2057,6 +2072,25 @@ impl core::error::Error for algeon_datafusion::server::ServerError
 pub fn algeon_datafusion::server::ServerError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Display for algeon_datafusion::server::ServerError
 pub fn algeon_datafusion::server::ServerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct algeon_datafusion::server::ServerIcebergCatalogConfig
+pub algeon_datafusion::server::ServerIcebergCatalogConfig::kind: algeon_datafusion::server::ServerIcebergCatalogKind
+pub algeon_datafusion::server::ServerIcebergCatalogConfig::name: alloc::string::String
+pub struct algeon_datafusion::server::ServerIcebergGlueCatalogConfig
+pub algeon_datafusion::server::ServerIcebergGlueCatalogConfig::catalog_id: core::option::Option<alloc::string::String>
+pub algeon_datafusion::server::ServerIcebergGlueCatalogConfig::endpoint: core::option::Option<alloc::string::String>
+pub algeon_datafusion::server::ServerIcebergGlueCatalogConfig::region: core::option::Option<alloc::string::String>
+pub algeon_datafusion::server::ServerIcebergGlueCatalogConfig::warehouse: alloc::string::String
+pub struct algeon_datafusion::server::ServerIcebergRestCatalogConfig
+pub algeon_datafusion::server::ServerIcebergRestCatalogConfig::auth: algeon_datafusion::server::ServerIcebergRestAuth
+pub algeon_datafusion::server::ServerIcebergRestCatalogConfig::prefix: core::option::Option<alloc::string::String>
+pub algeon_datafusion::server::ServerIcebergRestCatalogConfig::uri: alloc::string::String
+pub algeon_datafusion::server::ServerIcebergRestCatalogConfig::warehouse: core::option::Option<alloc::string::String>
+pub struct algeon_datafusion::server::ServerIcebergSecret(_)
+impl algeon_datafusion::server::ServerIcebergSecret
+pub fn algeon_datafusion::server::ServerIcebergSecret::expose(&self) -> &str
+pub fn algeon_datafusion::server::ServerIcebergSecret::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::fmt::Debug for algeon_datafusion::server::ServerIcebergSecret
+pub fn algeon_datafusion::server::ServerIcebergSecret::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct algeon_datafusion::server::ServerObservabilityConfig
 pub algeon_datafusion::server::ServerObservabilityConfig::active_logical_capture_max_bytes: core::option::Option<u64>
 pub algeon_datafusion::server::ServerObservabilityConfig::global_sealed_max_bytes: u64

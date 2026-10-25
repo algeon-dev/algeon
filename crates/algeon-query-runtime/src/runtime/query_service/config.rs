@@ -83,7 +83,7 @@ pub struct QueryExecutionConfig {
     pub planning_policy: PlanningPolicy,
     /// Grouped aggregate strategy execution policy copied into admitted contexts.
     pub aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
-    /// Expert local-throughput source chunk planning policy copied into admitted contexts.
+    /// Expert throughput source chunk planning policy copied into admitted contexts.
     pub source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Source chunk byte target copied into admitted bounded contexts.
     /// `u64::MAX` derives a finite target from the immutable grant.

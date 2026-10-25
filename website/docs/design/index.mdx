@@ -51,10 +51,13 @@ their dependencies. Ownership across the query crates is:
 | `query-planning` | IR, optimizer, capability, proof, admission contracts and compiled pipeline | `crates/algeon-query-planning` |
 | `query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, cache, observation and metrics | `crates/algeon-query-runtime` |
 | `query-engine` | Native execution composition | `crates/algeon-query-engine` |
+| `algeon-iceberg` | Iceberg REST and Glue catalogs as DataFusion catalogs, and each table as a Parquet scan of its current snapshot with the `unsupported_table_feature` rejections | `crates/algeon-iceberg` |
 
 The adapter imports each query crate directly. The engine imports planning
 and runtime. Runtime imports planning. These three query crates have no
 DataFusion dependency. Imports come from the crate that owns the item.
+`algeon-iceberg` imports the adapter and iceberg-rust; only `algeon-server`
+imports it, behind its `iceberg` feature.
 
 Below them, the GPU component crates provide Rust APIs over NVIDIA's RAPIDS
 libraries:

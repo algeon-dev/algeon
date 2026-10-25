@@ -1,5 +1,7 @@
 //! Standalone Arrow Flight SQL server binary for `algeon-datafusion`.
 
+#[cfg(feature = "iceberg")]
+use std::sync::Arc;
 use std::{
     env,
     error::Error as StdError,
@@ -7,6 +9,8 @@ use std::{
     process::ExitCode,
 };
 
+#[cfg(feature = "iceberg")]
+use algeon_datafusion::server::{backend_from_server_config, build_session_context_with_backend};
 use algeon_datafusion::{
     backend::GpuMemoryOwnership,
     build_info::build_info,
@@ -113,9 +117,17 @@ fn main() -> ExitCode {
     }
 }
 
+/// Optional features of this binary beyond the library's engine features.
+const SERVER_FEATURES: &[&str] = &[
+    #[cfg(feature = "iceberg")]
+    "iceberg",
+];
+
 fn print_version() {
     let build = build_info();
-    let features = if build.features.is_empty() { "none".to_string() } else { build.features.join(",") };
+    let mut features = build.features.iter().chain(SERVER_FEATURES).copied().collect::<Vec<_>>();
+    features.sort_unstable();
+    let features = if features.is_empty() { "none".to_string() } else { features.join(",") };
     println!("algeon_server {}", build.version);
     println!("commit: {}", build.git_commit.unwrap_or("unknown"));
     println!("features: {features}");
@@ -213,7 +225,26 @@ async fn serve(mut loaded: LoadedServerConfig) -> Result<(), ServerError> {
         .map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive))
         .collect::<Vec<_>>();
     loaded.config = loaded.config.with_gpu_memory_ownership(ownership);
-    FlightSqlServer::builder().loaded_config(loaded).build().await?.serve().await
+    let builder = FlightSqlServer::builder();
+    #[cfg(feature = "iceberg")]
+    let builder = {
+        // Iceberg catalogs register on the shared session, which each
+        // statement session clones, so the launcher builds that session.
+        let backend = backend_from_server_config(&loaded.config)?;
+        let ctx = build_session_context_with_backend(&loaded.config, &backend).await?;
+        algeon_iceberg::register_iceberg_catalogs(&ctx, &loaded.config)
+            .await
+            .map_err(|error| ServerError::session("failed to register the Iceberg catalogs", error))?;
+        builder.backend(backend).session_context(Arc::new(ctx))
+    };
+    #[cfg(not(feature = "iceberg"))]
+    if !loaded.config.iceberg_catalogs.is_empty() {
+        return Err(ServerError::invalid_config(
+            "iceberg.catalogs",
+            "needs a server built with the `iceberg` feature; this binary was built without it",
+        ));
+    }
+    builder.loaded_config(loaded).build().await?.serve().await
 }
 
 /// Configuration error fields emitted as dedicated tracing attributes rather

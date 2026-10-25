@@ -247,7 +247,7 @@ export const tpcdsSf100Benchmark = {
     "nativeMaxRowGroupsPerChunk": 1024,
     "nativeMaxRetryAttempts": 3,
     "nativeMinRetryChunkRowGroups": 1,
-    "nativeSourceChunkPlanningMode": "local_parquet_throughput",
+    "nativeSourceChunkPlanningMode": "parquet_throughput",
     "nativeStatisticalAggregateExecutionMode": "gpu_native_tolerant",
     "kvikioCompatMode": "ON",
     "parity": {

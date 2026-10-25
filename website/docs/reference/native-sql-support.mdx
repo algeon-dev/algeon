@@ -113,8 +113,9 @@ other distinct aggregates and ordered aggregate arguments are not.
 Parquet is the native file format, read from local paths or `s3://` object
 stores. Schema mapping and remote read capability are validated before
 execution, and a scan that fails either check keeps the DataFusion baseline.
-Iceberg tables are not a supported source. See
-[Iceberg support](../integration/overview.mdx#iceberg-support).
+Iceberg tables from REST and Glue catalogs scan as Parquet; see
+[Iceberg support](../integration/overview.mdx#iceberg-support) for the table
+features that are rejected.
 Validate ad-hoc SQL with `algeon_explain_coverage`, or `EXPLAIN GPU` over
 Flight SQL, against the catalog and server configuration that will execute
 it. The [coverage page](../integration/gpu-coverage-validation.mdx) shows

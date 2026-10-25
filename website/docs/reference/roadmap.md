@@ -31,9 +31,12 @@ choice.
 
 ## Mid term
 
-- Lakehouse sources, Iceberg first, with the Glue and REST catalogs.
-  `iceberg-rust` and `datafusion-iceberg` are maturing upstream, and Algeon
-  will integrate them once a release can be pinned.
+- Iceberg reads beyond the current Parquet path: tables with delete files,
+  column binding by field id, tables spanning several buckets, per-table
+  catalog credentials and SigV4-signed REST catalogs. Today these are
+  [rejected](../integration/overview.mdx#iceberg-rejections) or unsupported.
+  `algeon-iceberg` moves from a pinned iceberg-rust Git revision to a
+  published release once one builds against the workspace's Arrow version.
 - Build against NVIDIA's own repositories instead of the current forks, so
   that users do not compile the shared libraries themselves. Each fork change
   either goes upstream as a pull request, stays as an Algeon-specific feature

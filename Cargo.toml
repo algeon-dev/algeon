@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/algeon-datafusion",
+  "crates/algeon-iceberg",
   "crates/workloads",
   "crates/algeon-query-engine",
   "crates/algeon-query-planning",
@@ -71,6 +72,7 @@ drop_non_drop = "deny"
 # `cuvs`/`cuvs-sys` by NVIDIA's own rapidsai/cuvs. The alias key stays bare so
 # Rust imports remain `use cudf::…` and `dep:` feature strings keep resolving.
 algeon-datafusion = { path = "crates/algeon-datafusion", version = "0.1.2", default-features = false }
+algeon-iceberg = { path = "crates/algeon-iceberg" }
 workloads = { path = "crates/workloads" }
 query-engine = { package = "algeon-query-engine", path = "crates/algeon-query-engine", version = "=0.1.2", default-features = false }
 query-planning = { package = "algeon-query-planning", path = "crates/algeon-query-planning", version = "=0.1.2", default-features = false }
@@ -102,6 +104,12 @@ datafusion = "55.1"
 fnv = "1"
 futures = "0.3"
 getrandom = "0.4"
+# Pinned to the revision apache/datafusion-iceberg pins: the first iceberg-rust
+# tree on Arrow 59. Only the unpublished `algeon-iceberg` crate depends on it.
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+iceberg-catalog-glue = { git = "https://github.com/apache/iceberg-rust.git", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
 indexmap = "2"
 libc = "0.2"
 object_store = { version = "0.13", default-features = false, features = ["aws"] }

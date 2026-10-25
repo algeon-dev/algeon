@@ -3,7 +3,8 @@
 //! A scan lowers when its object store, partition columns, reader factory,
 //! declared ordering, file groups and byte ranges can be represented by the
 //! native local or S3 Parquet source. Footers are read through the planning
-//! pass's `FooterScope`; nothing here opens data pages.
+//! pass's `FooterScope`, remote ones from the session's file metadata cache;
+//! nothing here opens data pages.
 
 use std::collections::BTreeSet;
 #[cfg(feature = "cugraph")]
@@ -17,6 +18,8 @@ use datafusion::{
         listing::PartitionedFile,
         physical_plan::{FileScanConfig, FileSource, ParquetSource},
     },
+    execution::object_store::ObjectStoreUrl,
+    object_store::ObjectMeta,
     physical_plan::filter::FilterExec,
 };
 use parquet::file::metadata::{KeyValue, ParquetMetaData};
@@ -40,7 +43,7 @@ use serde_json::Value;
 #[cfg(feature = "cugraph")]
 use super::footers::FooterScope;
 use super::{
-    footers::parquet_footer,
+    footers::object_parquet_footer,
     literal::{NativeLiteralContext, native_literal_value},
     pruning::{
         coalesced_local_parquet_scan_files, explicit_row_group_selection, local_object_path_to_filesystem,
@@ -54,8 +57,8 @@ mod diagnostics;
 mod s3_parquet;
 
 pub(super) use columns::{
-    NativeParquetColumnRequirements, native_source_output_schema, parquet_source_has_row_level_predicate,
-    required_parquet_column_requirements_for_scan_columns,
+    NativeParquetColumnRequirements, native_physical_file_schema, native_source_output_schema,
+    parquet_source_has_row_level_predicate, required_parquet_column_requirements_for_scan_columns,
 };
 pub(super) use diagnostics::{SourceRead, local_parquet_source_diagnostics, source_diagnostics_for_normalized_plan};
 pub(crate) use s3_parquet::{ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint};
@@ -310,7 +313,7 @@ pub(super) fn local_parquet_files(
     if local_parquet_scan_is_empty(file_scan) {
         return Err(CapabilityReason::NativeSourceEmpty);
     }
-    let scan_files = coalesced_local_parquet_scan_files(&files)?;
+    let scan_files = coalesced_local_parquet_scan_files(&file_scan.object_store_url, &files)?;
     let metadata_row_group_selections =
         metadata_row_group_selections(&files, file_scan, parquet_source, filter, &source_schema);
     let mut native_files = Vec::with_capacity(scan_files.len());
@@ -330,7 +333,13 @@ pub(super) fn local_parquet_files(
         {
             native_file = native_file.with_row_groups(row_groups.clone());
         }
-        native_file = attach_row_group_byte_metadata(native_file, &source_schema, column_requirements);
+        native_file = attach_row_group_byte_metadata(
+            native_file,
+            &file_scan.object_store_url,
+            &file.object_meta,
+            &source_schema,
+            column_requirements,
+        );
         native_files.push(native_file);
     }
     Ok(native_files)
@@ -340,7 +349,7 @@ pub(super) fn local_parquet_scan_is_empty(file_scan: &FileScanConfig) -> bool {
     file_scan.file_groups.iter().all(|group| group.files().is_empty())
 }
 
-fn native_parquet_file_for_scan(
+pub(super) fn native_parquet_file_for_scan(
     file_scan: &FileScanConfig,
     file: &PartitionedFile,
     source_reads: &ParquetReadStrategyConfig,
@@ -387,12 +396,16 @@ fn object_store_file_uri(file_scan: &FileScanConfig, file: &PartitionedFile) -> 
     Ok(format!("{base}/{key}"))
 }
 
+/// Attaches the row-group byte, row, null-count, and graph metadata of
+/// `object`'s footer. An object without a footer keeps none of it.
 pub(super) fn attach_row_group_byte_metadata(
     mut native_file: NativeLocalParquetFile,
+    object_store_url: &ObjectStoreUrl,
+    object: &ObjectMeta,
     source_schema: &Schema,
     column_requirements: &NativeParquetColumnRequirements,
 ) -> NativeLocalParquetFile {
-    let Ok(footer) = parquet_footer(native_file.path.as_path()) else {
+    let Ok(footer) = object_parquet_footer(object_store_url, object) else {
         return native_file;
     };
     let metadata = footer.as_ref();

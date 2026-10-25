@@ -86,7 +86,7 @@ class TpcdsNativeProfileSweepTest(unittest.TestCase):
         try:
             os.environ["ALGEON_TPCDS_NATIVE_PROFILE"] = "sf100_gpu_throughput"
             os.environ["ALGEON_TPCDS_NATIVE_DEVICE_BUDGET_BYTES"] = "102005473280"
-            os.environ["ALGEON_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE"] = "local_parquet_throughput"
+            os.environ["ALGEON_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE"] = "parquet_throughput"
             env = module.candidate_env(args, candidate)
         finally:
             restore_env("ALGEON_TPCDS_NATIVE_PROFILE", old_profile)

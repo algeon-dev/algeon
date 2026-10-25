@@ -51,7 +51,9 @@ fn an_unknown_server_variable_fails_and_names_the_closest_known_name() {
     assert_eq!(error.fact_value("reason"), Some("unknown_environment_variable"));
     // A name far from every setting gets no guess, so a removed setting is
     // not mistaken for an unrelated one.
-    for name in ["ALGEON_SERVER_GPU_DEVICES", "ALGEON_SERVER_S3_REGION", "ALGEON_SERVER_CUGRAPH_DIRECTED"] {
+    for name in
+        ["ALGEON_SERVER_GPU_DEVICES", "ALGEON_SERVER_WORKSPACE_BACKING_ALIASES", "ALGEON_SERVER_CUGRAPH_DIRECTED"]
+    {
         let error = load(BTreeMap::from([(name, "x".to_string())])).expect_err(name);
         assert_eq!(error.fact_value("suggestion"), None, "{error}");
         assert!(error.message().contains("no known setting has a similar name"), "{error}");

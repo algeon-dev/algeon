@@ -449,7 +449,7 @@ pub fn query_planning::chunk::SourceChunkPlan::row_group_count(&self) -> usize
 #[non_exhaustive] pub struct query_planning::chunk::SourceChunkPlanningOptions
 impl query_planning::chunk::SourceChunkPlanningOptions
 pub fn query_planning::chunk::SourceChunkPlanningOptions::validate(&self) -> query_planning::error::Result<()>
-pub fn query_planning::chunk::SourceChunkPlanningOptions::with_local_parquet_throughput_max_row_groups_per_chunk(self, usize) -> Self
+pub fn query_planning::chunk::SourceChunkPlanningOptions::with_parquet_throughput_max_row_groups_per_chunk(self, usize) -> Self
 impl core::default::Default for query_planning::chunk::SourceChunkPlanningOptions
 pub fn query_planning::chunk::SourceChunkPlanningOptions::default() -> Self
 pub struct query_planning::chunk::SourceChunkPlanningPolicy
@@ -482,7 +482,7 @@ pub const fn query_planning::chunk::SourceTaskMemoryModel::source_adjacent_opera
 pub const fn query_planning::chunk::SourceTaskMemoryModel::source_read_preflight_slack_slots(self) -> u64
 pub const fn query_planning::chunk::SourceTaskMemoryModel::source_read_slots(self) -> u64
 pub const fn query_planning::chunk::SourceTaskMemoryModel::unary_chain_frame() -> Self
-pub const query_planning::chunk::LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
+pub const query_planning::chunk::PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
 pub fn query_planning::chunk::annotate_source_chunk_batching_reasons(&mut [query_planning::chunk::SourceChunk], core::option::Option<&'static str>, core::option::Option<u64>)
 pub fn query_planning::chunk::plan_source_chunk_batches(&[query_planning::chunk::SourceChunk], core::option::Option<u64>) -> alloc::vec::Vec<query_planning::chunk::SourceChunkBatch>
 pub fn query_planning::chunk::plan_source_chunk_batches_with_row_cap(&[query_planning::chunk::SourceChunk], core::option::Option<u64>, core::option::Option<u64>) -> alloc::vec::Vec<query_planning::chunk::SourceChunkBatch>
@@ -852,7 +852,7 @@ pub type query_planning::error::Result<T> = core::result::Result<T, query_planni
 pub mod query_planning::execution_contracts
 pub enum query_planning::execution_contracts::SourceChunkPlanningMode
 pub query_planning::execution_contracts::SourceChunkPlanningMode::Conservative
-pub query_planning::execution_contracts::SourceChunkPlanningMode::LocalParquetThroughput
+pub query_planning::execution_contracts::SourceChunkPlanningMode::ParquetThroughput
 impl query_planning::execution_contracts::SourceChunkPlanningMode
 pub const fn query_planning::execution_contracts::SourceChunkPlanningMode::as_str(self) -> &'static str
 impl core::fmt::Display for query_planning::execution_contracts::SourceChunkPlanningMode
@@ -3360,6 +3360,7 @@ pub query_planning::source::RejectedSourceFeature::PartitionColumns
 pub query_planning::source::RejectedSourceFeature::PartitionValues
 pub query_planning::source::RejectedSourceFeature::PreserveOrder
 pub query_planning::source::RejectedSourceFeature::PushedDownParquetPredicate
+pub query_planning::source::RejectedSourceFeature::RemoteFooterUnavailable
 pub query_planning::source::RejectedSourceFeature::RowSelection
 pub query_planning::source::RejectedSourceFeature::ScanLimit
 pub query_planning::source::RejectedSourceFeature::SchemaMapping
@@ -3593,6 +3594,8 @@ pub query_planning::source::SourceDiagnostics::selected_row_group_stats: core::o
 pub query_planning::source::SourceDiagnostics::selected_row_groups: core::option::Option<usize>
 pub query_planning::source::SourceDiagnostics::source_read_strategy: alloc::string::String
 pub query_planning::source::SourceDiagnostics::zero_column_count_disposition: query_planning::source::ZeroColumnCountDisposition
+impl query_planning::source::SourceDiagnostics
+pub fn query_planning::source::SourceDiagnostics::set_resolved_read_labels(&mut self, &[query_planning::source::LocalParquetFile])
 pub struct query_planning::source::SourceFooterFacts<'a>
 impl<'a> query_planning::source::SourceFooterFacts<'a>
 pub const fn query_planning::source::SourceFooterFacts<'a>::new(&'a [core::option::Option<&'a parquet::file::metadata::ParquetMetaData>]) -> Self

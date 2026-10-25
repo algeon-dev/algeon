@@ -29,6 +29,7 @@ server = [
   "dep:dashmap",
   "dep:prost",
   "dep:rand",
+  "dep:rustls",
   "dep:serde",
   "dep:tokio-util",
   "dep:toml",
@@ -77,8 +78,10 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true, optional = true }
 toml = { version = "1.1", optional = true }
-# `tls-ring` reuses the ring provider rustls already builds with. A second
-# provider in the graph makes rustls require a process-wide default.
+# tonic builds its TLS acceptor from rustls's process-wide provider. Builds
+# that also link the AWS SDK enable rustls's aws-lc-rs backend next to ring,
+# and rustls then picks no default, so the server installs ring itself.
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std"] }
 tonic = { workspace = true, optional = true, features = ["tls-ring"] }
 tracing = { workspace = true }
 url = "2.5"

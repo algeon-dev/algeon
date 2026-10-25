@@ -714,7 +714,7 @@ impl ExecutionContext {
         self.device.planning_policy
     }
 
-    /// Returns expert local-throughput source chunk planning policy.
+    /// Returns expert throughput source chunk planning policy.
     pub fn source_chunk_planning_options(&self) -> SourceChunkPlanningOptions {
         self.device.source_chunk_planning_options
     }

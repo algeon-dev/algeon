@@ -14,7 +14,7 @@ use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_planning::{
     backend::BackendCapabilities,
     chunk::{
-        LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
+        PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
         SourceTaskMemoryModel, decimal::validate_supplied_reader_decimal_types_match_footer,
     },
     error::QueryErrorCode,
@@ -174,7 +174,7 @@ fn source_chunks_bound_decoded_dictionary_strings_by_the_byte_target() {
     let plan = plan_local_parquet_source_chunks(
         NodeId::from_index_for_test(3),
         &source,
-        SourceChunkPlanningPolicy::new(Some(target), LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK),
+        SourceChunkPlanningPolicy::new(Some(target), PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK),
     )
     .unwrap();
 
@@ -357,37 +357,37 @@ fn local_throughput_source_chunk_planning_raises_row_group_cap_for_large_local_k
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
         &source,
         bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
-        SourceChunkPlanningMode::LocalParquetThroughput,
+        SourceChunkPlanningMode::ParquetThroughput,
     );
 
-    assert_eq!(policy.max_row_groups_per_chunk, LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(policy.max_row_groups_per_chunk, PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(policy.max_source_chunk_bytes, Some(64 * 1024 * 1024));
 }
 
 #[test]
 fn local_throughput_source_chunk_planning_uses_configured_expert_options() {
     let source = local_source();
-    let options = SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(16);
+    let options = SourceChunkPlanningOptions::default().with_parquet_throughput_max_row_groups_per_chunk(16);
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
         &source,
         bounded_policy(8 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
-        SourceChunkPlanningMode::LocalParquetThroughput,
+        SourceChunkPlanningMode::ParquetThroughput,
         options,
     );
 
     assert_eq!(policy.max_row_groups_per_chunk, 16);
-    assert_eq!(policy.source_chunk_planning_reason(), "local_parquet_throughput_admitted");
+    assert_eq!(policy.source_chunk_planning_reason(), "parquet_throughput_admitted");
 }
 
 #[test]
 fn source_chunk_planning_options_reject_zero_thresholds() {
     let error = SourceChunkPlanningOptions::default()
-        .with_local_parquet_throughput_max_row_groups_per_chunk(0)
+        .with_parquet_throughput_max_row_groups_per_chunk(0)
         .validate()
         .unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
-    assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
+    assert_eq!(error.fact_value("field"), Some("parquet_throughput_max_row_groups_per_chunk"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 
@@ -416,11 +416,11 @@ fn local_throughput_source_chunk_planning_accepts_local_cache_reader_path() {
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
         &source,
         bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
-        SourceChunkPlanningMode::LocalParquetThroughput,
+        SourceChunkPlanningMode::ParquetThroughput,
     );
 
-    assert_eq!(policy.max_row_groups_per_chunk, LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
-    assert_eq!(policy.source_chunk_planning_reason(), "local_parquet_throughput_admitted");
+    assert_eq!(policy.max_row_groups_per_chunk, PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(policy.source_chunk_planning_reason(), "parquet_throughput_admitted");
     fs::remove_file(path).unwrap();
 }
 
@@ -560,11 +560,11 @@ fn local_throughput_source_chunk_planning_widens_chunks_under_a_small_grant() {
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
         &source,
         bounded_policy(24 * 1024 * 1024 * 1024, MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES, 1),
-        SourceChunkPlanningMode::LocalParquetThroughput,
+        SourceChunkPlanningMode::ParquetThroughput,
     );
 
-    assert_eq!(policy.source_chunk_planning_reason(), "local_parquet_throughput_admitted");
-    assert_eq!(policy.max_row_groups_per_chunk, LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(policy.source_chunk_planning_reason(), "parquet_throughput_admitted");
+    assert_eq!(policy.max_row_groups_per_chunk, PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
 }
 
 #[test]
@@ -573,7 +573,7 @@ fn local_throughput_source_chunk_planning_requires_represented_source_read_bytes
     let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
         &source,
         bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
-        SourceChunkPlanningMode::LocalParquetThroughput,
+        SourceChunkPlanningMode::ParquetThroughput,
     );
 
     assert_eq!(policy.max_row_groups_per_chunk, 1);
@@ -593,7 +593,7 @@ fn local_throughput_source_chunk_planning_rejects_object_store_sources() {
         SourceChunkPlanningPolicy::from_memory_policy_with_mode(
             &object_store,
             policy,
-            SourceChunkPlanningMode::LocalParquetThroughput,
+            SourceChunkPlanningMode::ParquetThroughput,
         )
         .max_row_groups_per_chunk,
         1
@@ -710,7 +710,7 @@ fn local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sou
         SourceChunkPlanningPolicy::from_memory_policy_with_mode(
             &partitioned,
             policy,
-            SourceChunkPlanningMode::LocalParquetThroughput,
+            SourceChunkPlanningMode::ParquetThroughput,
         )
         .max_row_groups_per_chunk,
         1
@@ -719,7 +719,7 @@ fn local_throughput_source_chunk_planning_rejects_partitioned_and_scan_limit_sou
         SourceChunkPlanningPolicy::from_memory_policy_with_mode(
             &scan_limited,
             policy,
-            SourceChunkPlanningMode::LocalParquetThroughput,
+            SourceChunkPlanningMode::ParquetThroughput,
         )
         .max_row_groups_per_chunk,
         1

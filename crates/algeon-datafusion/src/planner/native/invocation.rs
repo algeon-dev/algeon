@@ -18,7 +18,7 @@ use datafusion::{
         DataFusionError, Result as DataFusionResult,
         config::{ConfigEntry, ConfigExtension, ConfigOptions, ExtensionOptions},
     },
-    execution::TaskContext,
+    execution::{TaskContext, cache::cache_manager::FileMetadataCache, runtime_env::RuntimeEnv},
     prelude::SessionConfig,
 };
 use query_planning::admission::AttemptCapabilityEvidence;
@@ -45,7 +45,6 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(crate) struct Invocation(Arc<InvocationState>);
 
-#[derive(Debug)]
 struct InvocationState {
     attempt: Option<InvocationAttempt>,
     admission: OnceLock<Arc<QueryAdmissionTicket>>,
@@ -56,6 +55,20 @@ struct InvocationState {
     // rewrite ends it, so the count-only probe and the final rewrite parse each
     // footer once without keeping footers alive while the plan executes.
     footers: Mutex<Option<Arc<FooterCache>>>,
+    // The file metadata cache of the runtime this invocation was last
+    // installed with. Planning reads remote footers from it.
+    remote_footers: Mutex<Option<Arc<FileMetadataCache>>>,
+}
+
+impl std::fmt::Debug for InvocationState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvocationState")
+            .field("attempt", &self.attempt)
+            .field("admission", &self.admission)
+            .field("planning", &self.planning)
+            .field("footers", &self.footers)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Execution inputs that the Flight server attaches to an attempt's
@@ -89,6 +102,7 @@ impl Invocation {
             execution: Mutex::new(None),
             planning: Mutex::new(Vec::new()),
             footers: Mutex::new(None),
+            remote_footers: Mutex::new(None),
         }))
     }
 
@@ -104,9 +118,19 @@ impl Invocation {
     }
 
     /// Makes this invocation the one that `config` plans and executes under,
-    /// replacing any invocation the config already carried.
-    pub(crate) fn install(&self, config: &mut SessionConfig) {
+    /// replacing any invocation the config already carried. Planning reads
+    /// remote footers from the file metadata cache of `runtime_env`, the
+    /// runtime the session plans with.
+    pub(crate) fn install(&self, config: &mut SessionConfig, runtime_env: &RuntimeEnv) {
+        *self.0.remote_footers.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(runtime_env.cache_manager.get_file_metadata_cache());
         config.options_mut().extensions.insert(self.clone());
+    }
+
+    /// Makes `self` read remote footers from the same cache as `other`.
+    pub(crate) fn share_remote_footers(&self, other: &Self) {
+        let remote = other.0.remote_footers.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        *self.0.remote_footers.lock().unwrap_or_else(PoisonError::into_inner) = remote;
     }
 
     /// The attempt this invocation belongs to, if any.
@@ -160,13 +184,11 @@ impl Invocation {
 
     /// Enters a footer scope over this invocation's current planning pass.
     pub(crate) fn footer_scope(&self) -> FooterScope {
-        let cache = Arc::clone(
-            self.0
-                .footers
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get_or_insert_with(|| Arc::new(FooterCache::for_scope())),
-        );
+        let cache =
+            Arc::clone(self.0.footers.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(|| {
+                let remote = self.0.remote_footers.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                Arc::new(FooterCache::for_scope(remote))
+            }));
         FooterScope::join(cache)
     }
 

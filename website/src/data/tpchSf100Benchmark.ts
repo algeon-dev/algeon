@@ -94,7 +94,7 @@ export const tpchSf100Benchmark = {
     "nativeMaxRowGroupsPerChunk": 1024,
     "nativeMaxRetryAttempts": 4,
     "nativeMinRetryChunkRowGroups": 1,
-    "nativeSourceChunkPlanningMode": "local_parquet_throughput",
+    "nativeSourceChunkPlanningMode": "parquet_throughput",
     "nativeMaxSourceReadsInFlight": 2,
     "nativeRuntimePolicy": "shared_per_benchmark_run",
     "kvikioCompatMode": "ON"

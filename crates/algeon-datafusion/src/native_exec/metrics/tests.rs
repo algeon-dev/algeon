@@ -348,8 +348,8 @@ fn source_read_runtime_rows_bridge_runtime_labels() {
         reader_predicate: true,
         reader_dynamic_filter_count: 1,
         source_batching_reason: "batched".to_string(),
-        source_chunk_planning_mode: "local_parquet_throughput".to_string(),
-        source_chunk_planning_reason: "local_parquet_throughput_admitted".to_string(),
+        source_chunk_planning_mode: "parquet_throughput".to_string(),
+        source_chunk_planning_reason: "parquet_throughput_admitted".to_string(),
         elapsed: std::time::Duration::from_nanos(1234),
     });
     native_metrics.record_query_metrics(&query_metrics);
@@ -383,8 +383,8 @@ fn source_read_runtime_rows_bridge_runtime_labels() {
     assert!(row.reader_predicate);
     assert_eq!(row.reader_dynamic_filter_count, 1);
     assert_eq!(row.source_batching_reason, "batched");
-    assert_eq!(row.source_chunk_planning_mode, "local_parquet_throughput");
-    assert_eq!(row.source_chunk_planning_reason, "local_parquet_throughput_admitted");
+    assert_eq!(row.source_chunk_planning_mode, "parquet_throughput");
+    assert_eq!(row.source_chunk_planning_reason, "parquet_throughput_admitted");
     assert_eq!(row.elapsed_ns, 1234);
 }
 

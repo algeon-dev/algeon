@@ -4,10 +4,11 @@ use super::{
     AlgeonNativeExecutionConfig, AlgeonNativeOptimizerConfig, ConfigSources, Result, SourceChunkPlanningMode,
     SourceChunking, SourceSchedulerPolicy, StatisticalAggregateExecutionMode, file::ServerNativeFileConfig,
 };
-use crate::server::planner::AlgeonGpuExecutionMode;
+use crate::server::{native_exec::S3SourceStorageProfile, planner::AlgeonGpuExecutionMode};
 
 pub(super) fn native_optimizer_config(
     file: &ServerNativeFileConfig,
+    s3_storage: Option<S3SourceStorageProfile>,
     sources: &ConfigSources,
 ) -> Result<AlgeonNativeOptimizerConfig> {
     let defaults = SourceChunking::default();
@@ -43,6 +44,9 @@ pub(super) fn native_optimizer_config(
         execution_config = execution_config
             .with_statistical_aggregate_execution_mode(parse_statistical_aggregate_execution_mode(sources, raw)?);
     }
+    if let Some(storage) = s3_storage {
+        execution_config = execution_config.with_s3_storage(storage);
+    }
 
     let mut optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(execution_config);
     if let Some(raw) = &file.execution_mode {
@@ -63,13 +67,13 @@ fn nonzero<T, N>(
 
 fn parse_source_chunk_planning_mode(sources: &ConfigSources, raw: &str) -> Result<SourceChunkPlanningMode> {
     let raw = raw.trim().to_ascii_lowercase();
-    [SourceChunkPlanningMode::Conservative, SourceChunkPlanningMode::LocalParquetThroughput]
+    [SourceChunkPlanningMode::Conservative, SourceChunkPlanningMode::ParquetThroughput]
         .into_iter()
         .find(|mode| mode.as_str() == raw)
         .ok_or_else(|| {
             sources.invalid(
                 "native.source_chunk_planning_mode",
-                format!("must be `conservative` or `local_parquet_throughput`, got `{raw}`"),
+                format!("must be `conservative` or `parquet_throughput`, got `{raw}`"),
             )
         })
 }

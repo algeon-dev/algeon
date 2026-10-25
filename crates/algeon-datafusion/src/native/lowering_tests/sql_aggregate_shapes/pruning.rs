@@ -271,3 +271,44 @@ async fn direct_friendly_sql_nested_prefix_pruning_uses_parquet_leaf_stats() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn row_group_pruning_reads_statistics_of_the_named_file_column_when_the_table_reorders_columns() {
+    use arrow::{array::Int64Array, record_batch::RecordBatch};
+    use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-reordered-pruning");
+    let path = dir.join("input.parquet");
+    // The file stores `a` before `b`; the table declares `b` first.
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false), Field::new("b", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![0, 1, 10, 11])), Arc::new(Int64Array::from(vec![100, 101, 0, 1]))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let mut writer = ArrowWriter::try_new(fs::File::create(&path).unwrap(), schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    let ctx = SessionContext::new_with_config(direct_friendly_sql_session_config());
+    ctx.sql(&format!(
+        "CREATE EXTERNAL TABLE t (b BIGINT NOT NULL, a BIGINT NOT NULL) STORED AS PARQUET LOCATION '{}'",
+        path.display()
+    ))
+    .await
+    .unwrap();
+    let plan = ctx.sql("SELECT SUM(a) FROM t WHERE b <= 1").await.unwrap().create_physical_plan().await.unwrap();
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(result.selected_plan());
+    assert_eq!(
+        source.files[0].row_groups.as_deref(),
+        Some(&[1][..]),
+        "only the second row group holds `b <= 1`; the first holds `a <= 1`"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}

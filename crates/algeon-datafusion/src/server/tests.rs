@@ -67,6 +67,7 @@ fn base_config() -> ServerConfig {
         data_root: None,
         tls: None,
         init_sql: None,
+        iceberg_catalogs: Vec::new(),
     }
 }
 

@@ -33,6 +33,12 @@ pub(crate) enum PlanBlocker {
         required_by: &'static str,
         ordering: Option<String>,
     },
+    /// A Parquet scan that the native source contract cannot read; the
+    /// candidate's `NativeSource*` reason names the feature.
+    Source {
+        object_store_url: String,
+        object_count: usize,
+    },
 }
 
 /// What planning the query for one partition (`SET
@@ -125,7 +131,7 @@ impl Blocking {
     /// Stable machine kind: `operator`, `parent_operator`, `aggregate_function`,
     /// `distributed_aggregate`, `window_function`, `scalar_function`, `cast`,
     /// `binary_operator`, `unary_operator`, `literal`, `expression`,
-    /// `column_type`, `ordering`, or `compiled_contract`.
+    /// `column_type`, `ordering`, `source`, or `compiled_contract`.
     pub const fn kind(&self) -> &'static str {
         self.kind
     }
@@ -331,6 +337,14 @@ fn plan_blocking(blocker: &PlanBlocker) -> Blocking {
                 None => (*required_by).to_string(),
             };
             Blocking::new("ordering", text, fields)
+        },
+        PlanBlocker::Source { object_store_url, object_count } => {
+            let objects = if *object_count == 1 { "object" } else { "objects" };
+            Blocking::new(
+                "source",
+                format!("Parquet scan of {object_count} {objects} in `{object_store_url}`"),
+                vec![("object_store_url", object_store_url.clone()), ("object_count", object_count.to_string())],
+            )
         },
     }
 }
