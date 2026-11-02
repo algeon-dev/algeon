@@ -17,35 +17,28 @@ impl DatafusionAlgeonFlightSqlService {
         )
     }
 
-    pub(super) fn query_stage_span(
-        parent: Option<&tracing::Span>,
-        query_id: &str,
-        correlation_id: Option<&str>,
-        stage: &'static str,
-    ) -> tracing::Span {
-        match parent {
-            Some(parent) => tracing::info_span!(
-                parent: parent,
-                "algeon_datafusion.flight_sql.stage",
-                query_id,
-                correlation_id = tracing_correlation_id(correlation_id),
-                stage
-            ),
-            None => tracing::info_span!(
-                "algeon_datafusion.flight_sql.stage",
-                query_id,
-                correlation_id = tracing_correlation_id(correlation_id),
-                stage
-            ),
-        }
+    /// Stage span under a query span. It carries only `stage`: the parent
+    /// already names the query, and log lines print the whole span scope.
+    pub(super) fn query_stage_span(parent: &tracing::Span, stage: &'static str) -> tracing::Span {
+        tracing::info_span!(parent: parent, "algeon_datafusion.flight_sql.stage", stage)
     }
 }
 
 pub(crate) fn request_correlation_id<T>(request: &Request<T>) -> Result<Option<String>, Status> {
     for key in CORRELATION_ID_METADATA_ALIASES {
-        let Some(value) = request.metadata().get(*key) else {
+        let mut values = request.metadata().get_all(*key).iter();
+        let Some(value) = values.next() else {
             continue;
         };
+        // A client that appends a call header per `set_options` sends one
+        // value per call; picking one would silently use a stale id.
+        let extra_values = values.count();
+        if extra_values > 0 {
+            return Err(Status::invalid_argument(format!(
+                "{key} metadata has {} values; send one correlation id",
+                extra_values + 1
+            )));
+        }
         let value = value
             .to_str()
             .map_err(|error| Status::invalid_argument(format!("{key} metadata is not valid ASCII: {error}")))?
@@ -150,6 +143,20 @@ mod correlation_tests {
         alias_request.metadata_mut().insert("x-correlation-id", MetadataValue::try_from("corr-alias").unwrap());
 
         assert_eq!(request_correlation_id(&alias_request).unwrap().as_deref(), Some("corr-alias"));
+    }
+
+    /// The ADBC driver appends a call header on each `set_options`, so a
+    /// second value means the client sent two ids; neither is picked.
+    #[test]
+    fn request_correlation_id_rejects_a_key_with_two_values() {
+        let mut request = Request::new(());
+        request.metadata_mut().append(CORRELATION_ID_METADATA_KEY, MetadataValue::try_from("first").unwrap());
+        request.metadata_mut().append(CORRELATION_ID_METADATA_KEY, MetadataValue::try_from("second").unwrap());
+
+        let status = request_correlation_id(&request).expect_err("two ids are ambiguous");
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("2 values"), "{status:?}");
     }
 
     #[tokio::test]
@@ -425,12 +432,7 @@ mod correlation_tests {
             .register_with_id(query_id, "SELECT private_sql_literal", None, service.runtime_observation_config)
             .expect("coordinator-owned fixture registers");
         let execution = planning.into_execution().unwrap();
-        let terminal = CoordinatorExecutionTerminal::new(
-            execution,
-            query_id.to_string(),
-            Arc::from("SELECT private_sql_literal"),
-            Instant::now(),
-        );
+        let terminal = CoordinatorExecutionTerminal::new(execution, query_id.to_string(), Instant::now());
 
         let _flight_error = datafusion_error_to_flight_error(
             DataFusionError::Execution("runtime batch failed".to_string()),
@@ -461,7 +463,6 @@ mod correlation_tests {
         let terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution,
             QUERY_ID.to_string(),
-            Arc::from("SELECT 1 AS one"),
             Instant::now(),
             true,
         );
@@ -516,7 +517,6 @@ mod correlation_tests {
         let terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution,
             QUERY_ID.to_string(),
-            Arc::from("SELECT 1 AS one"),
             Instant::now(),
             true,
         );

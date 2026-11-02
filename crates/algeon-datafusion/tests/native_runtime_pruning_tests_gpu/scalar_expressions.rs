@@ -709,7 +709,7 @@ async fn assert_native_fails_like_cpu(path: &std::path::Path, name: &str, sql: &
     let algeon_error = native_error.find_algeon_error().expect("native failure keeps its typed Algeon error");
     assert_eq!(
         algeon_error.code(),
-        ErrorCode::CudfInvalidInput,
+        ErrorCode::RapidsInvalidInput,
         "{name}: native error {native_error} (cpu: {cpu_error})"
     );
     if matches!(name, "float-cast-nan" | "float-cast-infinity" | "float-cast-huge") {

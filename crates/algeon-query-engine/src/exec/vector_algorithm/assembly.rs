@@ -388,7 +388,7 @@ mod tests {
         require_libcudf_row_count(i32::MAX as usize, "pca").expect("libcudf maximum row count is admitted");
         let error = require_libcudf_row_count(i32::MAX as usize + 1, "pca")
             .expect_err("row count above libcudf size_type must reject");
-        assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+        assert_eq!(error.code(), QueryErrorCode::RapidsInvalidInput);
         assert_eq!(error.fact_value("reason"), Some("row_count_exceeds_libcudf_size_type"));
     }
 

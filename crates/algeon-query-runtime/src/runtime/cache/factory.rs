@@ -55,7 +55,7 @@ impl DeviceCacheAllocationFactory {
         })?;
         if domain.device().ordinal() != ledger.device_ordinal() || domain.capacity_bytes() != capacity {
             return Err(QueryError::new(
-                QueryErrorCode::CudfInvariantViolation,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.runtime.cache.factory",
                 "cache allocation domain does not match its ledger",
             )

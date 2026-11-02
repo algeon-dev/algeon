@@ -111,7 +111,7 @@ mod tests {
             ResourceFailureRecovery::Terminal
         );
         assert_eq!(
-            resource_failure_recovery(&error(QueryErrorCode::CudfDependencyFailure)),
+            resource_failure_recovery(&error(QueryErrorCode::RapidsDependencyFailure)),
             ResourceFailureRecovery::NotResource
         );
         assert!(is_retryable_resource_error(&error(QueryErrorCode::QueryMemoryLimitExceeded)));

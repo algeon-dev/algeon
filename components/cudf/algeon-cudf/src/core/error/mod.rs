@@ -190,10 +190,15 @@ impl Error {
         self
     }
 
-    /// Attaches a source error.
+    /// Attaches the source error when no source is already present.
+    ///
+    /// A second source is discarded so error decoration cannot replace the
+    /// original causal chain.
     #[must_use]
     pub(crate) fn with_source(mut self, src: impl Into<BoxedSourceError>) -> Self {
-        self.inner.source = Some(src.into());
+        if self.inner.source.is_none() {
+            self.inner.source = Some(src.into());
+        }
         self
     }
 

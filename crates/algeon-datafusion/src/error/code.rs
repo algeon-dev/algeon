@@ -120,10 +120,16 @@ error_codes! {
     InvalidExecutionPlan => "invalid_execution_plan", Planning, Permanent;
     /// An execution plan had an impossible child count for the adapter node.
     InvalidChildCount => "invalid_child_count", Internal, Permanent;
-    /// cuDF rejected an input, including permanent `NotFound` conditions.
-    CudfInvalidInput => "cudf_invalid_input", InvalidInput, Permanent;
-    /// cuDF reported a permanent unsupported capability.
-    CudfUnsupported => "cudf_unsupported", Unsupported, Permanent;
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) rejected an
+    /// input, including permanent `NotFound` conditions.
+    ///
+    /// The `rapids_library` fact names the library. Graph inputs that violate
+    /// an engine-owned contract before any library call are
+    /// `GraphInputInvalid`.
+    RapidsInvalidInput => "rapids_invalid_input", InvalidInput, Permanent;
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported a
+    /// permanent unsupported capability.
+    RapidsUnsupported => "rapids_unsupported", Unsupported, Permanent;
     /// A host materialization size computation overflowed the platform range.
     SizeOverflow => "size_overflow", ResourceExhausted, Permanent;
     /// One unsplittable Arrow host row exceeds the configured deterministic
@@ -139,19 +145,23 @@ error_codes! {
     /// through [`Self::QueryMemoryLimitExceeded`], [`Self::DeviceOutOfMemory`],
     /// and [`Self::DeviceAllocationFailed`].
     HostMemoryExhausted => "host_memory_exhausted", ResourceExhausted, Temporary;
-    /// cuDF reported a temporary dependency/runtime failure.
-    CudfTemporaryFailure => "cudf_temporary_failure", DependencyFailure, Temporary;
-    /// cuDF reported a persistent dependency/runtime failure.
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported a
+    /// temporary dependency/runtime failure.
+    RapidsTemporaryFailure => "rapids_temporary_failure", DependencyFailure, Temporary;
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported a
+    /// persistent dependency/runtime failure.
     ///
     /// The failure has been observed to recur or is known to continue. Stop
     /// automatic retries and escalate or wait for intervention.
-    CudfPersistentFailure => "cudf_persistent_failure", DependencyFailure, Persistent;
-    /// cuDF reported a permanent dependency failure.
-    CudfDependencyFailure => "cudf_dependency_failure", DependencyFailure, Permanent;
+    RapidsPersistentFailure => "rapids_persistent_failure", DependencyFailure, Persistent;
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported a
+    /// permanent dependency failure.
+    RapidsDependencyFailure => "rapids_dependency_failure", DependencyFailure, Permanent;
     /// An iterative native algorithm reached its configured iteration bound.
     AlgorithmDidNotConverge => "algorithm_did_not_converge", DependencyFailure, Permanent;
-    /// cuDF reported an invariant or execution-context violation.
-    CudfInvariantViolation => "cudf_invariant_violation", InvariantViolation, Permanent;
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported an
+    /// invariant or execution-context violation.
+    RapidsInvariantViolation => "rapids_invariant_violation", InvariantViolation, Permanent;
     /// The native admission controller could not reserve requested memory.
     ///
     /// Represents a temporary resource condition propagated from native
@@ -307,19 +317,20 @@ pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
         QueryErrorCode::InvalidAttemptCorrelation => ErrorCode::InvalidRequest,
         QueryErrorCode::InvalidConfiguration => ErrorCode::InvalidConfiguration,
         QueryErrorCode::GraphInputInvalid => ErrorCode::GraphInputInvalid,
-        QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
-        QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
+        QueryErrorCode::RapidsInvalidInput => ErrorCode::RapidsInvalidInput,
+        QueryErrorCode::RapidsUnsupported => ErrorCode::RapidsUnsupported,
         QueryErrorCode::SizeOverflow => ErrorCode::SizeOverflow,
         QueryErrorCode::HostMaterializationLimitExceeded => ErrorCode::HostMaterializationLimitExceeded,
-        QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
-        QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
-        QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
+        QueryErrorCode::RapidsTemporaryFailure => ErrorCode::RapidsTemporaryFailure,
+        QueryErrorCode::RapidsPersistentFailure => ErrorCode::RapidsPersistentFailure,
+        QueryErrorCode::RapidsDependencyFailure => ErrorCode::RapidsDependencyFailure,
         QueryErrorCode::AlgorithmDidNotConverge => ErrorCode::AlgorithmDidNotConverge,
         QueryErrorCode::SourceAccessDenied => ErrorCode::SourceAccessDenied,
         QueryErrorCode::SourceUnauthenticated => ErrorCode::SourceUnauthenticated,
         QueryErrorCode::SourceObjectNotFound => ErrorCode::SourceObjectNotFound,
         QueryErrorCode::SourceTemporaryFailure => ErrorCode::SourceTemporaryFailure,
-        QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
+        QueryErrorCode::SourceDependencyFailure => ErrorCode::SourceDependencyFailure,
+        QueryErrorCode::RapidsInvariantViolation => ErrorCode::RapidsInvariantViolation,
         QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
         QueryErrorCode::ServiceOverloaded => ErrorCode::ServiceOverloaded,
         QueryErrorCode::QueryBudgetUnavailable => ErrorCode::QueryBudgetUnavailable,

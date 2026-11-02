@@ -307,7 +307,7 @@ fn acquire_lakehouse_cache_read_pin(
     context.check_cancellation("query_engine.lakehouse_cache.read_pin")?;
     if !cache_path.is_file() {
         return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::SourceDependencyFailure,
             "query_engine.lakehouse_cache.read_pin",
             "lakehouse cache entry is missing before read pin acquisition",
         )
@@ -343,7 +343,7 @@ fn acquire_lakehouse_cache_read_pin(
     if !cache_path.is_file() {
         let _ = fs::remove_file(&pin_path);
         return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::SourceDependencyFailure,
             "query_engine.lakehouse_cache.read_pin",
             "lakehouse cache entry disappeared during read pin acquisition",
         )
@@ -994,7 +994,7 @@ fn acquire_lakehouse_cache_lock(
                     continue;
                 }
                 let mut error = QueryError::new(
-                    QueryErrorCode::CudfDependencyFailure,
+                    QueryErrorCode::SourceTemporaryFailure,
                     "query_engine.lakehouse_cache.lock_timeout",
                     "timed out waiting for a lakehouse cache fill lock",
                 )
@@ -1304,7 +1304,7 @@ pub(super) fn lakehouse_cache_io_error(
     file_index: Option<usize>,
     chunk_index: Option<usize>,
 ) -> QueryError {
-    let mut error = QueryError::new(QueryErrorCode::CudfDependencyFailure, operation, message)
+    let mut error = QueryError::new(QueryErrorCode::SourceDependencyFailure, operation, message)
         .with_fact("path", lakehouse_cache_path_fact(cache_path))
         .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id))
         .with_source(error);
@@ -1430,7 +1430,7 @@ async fn stream_lakehouse_cache_fill(
     {
         let _ = fs::remove_file(&temp_path);
         return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::SourceDependencyFailure,
             "query_engine.lakehouse_cache.background_fill.size",
             "background lakehouse cache fetch byte count did not match source metadata",
         )

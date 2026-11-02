@@ -9,7 +9,7 @@ use cugraph::cudf_interop::graph_from_prepared_table_export;
 #[cfg(feature = "cugraph")]
 use cugraph::types::GraphProperties;
 #[cfg(feature = "cugraph")]
-use query_planning::{plan::GraphAlgorithmSpec, plan::GraphConstructionPolicy};
+use query_planning::{error::RAPIDS_LIBRARY_FACT, plan::GraphAlgorithmSpec, plan::GraphConstructionPolicy};
 
 use super::{
     DataFrame, EdgeColumnRole, ExecutionContext, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
@@ -45,10 +45,11 @@ where
         let construction_edges = edges;
         let export = construction_edges.try_prepare_device_table_export().map_err(|error| {
             QueryError::new(
-                QueryErrorCode::CudfDependencyFailure,
+                QueryErrorCode::RapidsDependencyFailure,
                 "query_engine.graph_algorithm.prepare_table_export",
                 "failed to prepare cuGraph edge-list table export",
             )
+            .with_fact(RAPIDS_LIBRARY_FACT, "cudf")
             .with_source(error)
         })?;
         let _graph_build_range = graph_build_range(operation);

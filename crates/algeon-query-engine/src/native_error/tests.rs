@@ -21,7 +21,7 @@ fn cuml_error_projection_uses_typed_code_kind_status_and_allocation_source() {
             ErrorKind::ResourceExhausted,
             ErrorStatus::Temporary,
             UnattributedAllocationFailure,
-            QueryErrorCode::CudfTemporaryFailure,
+            QueryErrorCode::RapidsTemporaryFailure,
         ),
         (
             ErrorCode::OutOfMemory,
@@ -56,7 +56,7 @@ fn cuml_error_projection_uses_typed_code_kind_status_and_allocation_source() {
             ErrorKind::DependencyFailure,
             ErrorStatus::Temporary,
             NonAllocationFailure,
-            QueryErrorCode::CudfTemporaryFailure,
+            QueryErrorCode::RapidsTemporaryFailure,
         ),
         (
             ErrorCode::FatalCuda,
@@ -70,7 +70,7 @@ fn cuml_error_projection_uses_typed_code_kind_status_and_allocation_source() {
             ErrorKind::DependencyFailure,
             ErrorStatus::Permanent,
             NonAllocationFailure,
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::RapidsDependencyFailure,
         ),
     ];
     for (code, kind, status, attribution, expected) in cases {
@@ -82,15 +82,15 @@ fn cuml_error_projection_uses_typed_code_kind_status_and_allocation_source() {
 #[test]
 fn cuvs_query_error_maps_only_typed_kind_and_status() {
     let cases = [
-        (cuvs::Error::new(cuvs::ErrorKind::InvalidInput, "cuvs.invalid"), QueryErrorCode::CudfInvalidInput),
-        (cuvs::Error::new(cuvs::ErrorKind::Unsupported, "cuvs.unsupported"), QueryErrorCode::CudfUnsupported),
+        (cuvs::Error::new(cuvs::ErrorKind::InvalidInput, "cuvs.invalid"), QueryErrorCode::RapidsInvalidInput),
+        (cuvs::Error::new(cuvs::ErrorKind::Unsupported, "cuvs.unsupported"), QueryErrorCode::RapidsUnsupported),
         (cuvs::Error::new(cuvs::ErrorKind::OutOfMemory, "cuvs.oom"), QueryErrorCode::DeviceAllocationFailed),
         (cuvs::Error::new(cuvs::ErrorKind::InvalidState, "cuvs.state"), QueryErrorCode::InternalInvariantViolation),
         (
             cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.temporary")
                 .with_context("native_status", "CUVS_ERROR")
                 .set_temporary(),
-            QueryErrorCode::CudfTemporaryFailure,
+            QueryErrorCode::RapidsTemporaryFailure,
         ),
         (
             cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.persistent").set_persistent(),
@@ -100,6 +100,7 @@ fn cuvs_query_error_maps_only_typed_kind_and_status() {
     for (source, expected) in cases {
         let error = cuvs_query_error("query_engine.test.from_cuvs", "wrapped cuVS failure", source);
         assert_eq!(error.code(), expected);
+        assert_eq!(error.fact_value("rapids_library"), Some("cuvs"));
         assert!(error.fact_value("cuvs_kind").is_some());
         assert!(error.fact_value("cuvs_status").is_some());
         assert!(error.fact_value("cuvs_operation").is_some());
@@ -120,7 +121,7 @@ fn cuvs_query_error_duplicate_context_projects_effective_value_without_panic() {
 
     let error = cuvs_query_error("query_engine.test.from_cuvs_duplicate", "wrapped cuVS failure", source);
 
-    assert_eq!(error.code(), QueryErrorCode::CudfTemporaryFailure);
+    assert_eq!(error.code(), QueryErrorCode::RapidsTemporaryFailure);
     assert_eq!(error.fact_value("native_status"), Some("CUVS_ERROR_RETRY"));
     assert!(error.source_error().is_some());
 }

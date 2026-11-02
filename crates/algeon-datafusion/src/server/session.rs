@@ -25,7 +25,7 @@ use crate::server::{
     cugraph_sql::CugraphSqlConfig,
     cuml_sql::CumlSqlConfig,
     error::{Result as ServerResult, ServerError},
-    flight::{reject_drop_object_type_mismatch, verify_update_ddl},
+    flight::{verify_ddl_targets, verify_update_ddl},
     observability::RedactedSql,
 };
 
@@ -296,7 +296,7 @@ pub(crate) async fn run_init_sql(ctx: &SessionContext, path: &Path) -> ServerRes
                 .with_fact("reason", "init_sql_statement_rejected")
         };
         verify_update_ddl(ddl, "algeon_datafusion.server.init_sql").map_err(rejected)?;
-        reject_drop_object_type_mismatch(ctx, &plan, "algeon_datafusion.server.init_sql").await.map_err(rejected)?;
+        verify_ddl_targets(ctx, &plan, "algeon_datafusion.server.init_sql").await.map_err(rejected)?;
         let kind = ddl.name().to_string();
         let object = ddl_object_name(ddl);
         let frame =

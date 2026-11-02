@@ -4,7 +4,8 @@ pub use crate::core::{
         trigger_if_absent_error_annotation_contract_for_test, trigger_invariant_violation_for_test,
         trigger_null_handle_contract_error_for_test, trigger_range_limit_error_for_test,
         trigger_reanchor_if_needed_same_operation_contract_for_test, trigger_same_operation_reanchor_contract_for_test,
-        trigger_truthful_error_contract_for_test, trigger_with_column_error_annotation_contract_for_test,
+        trigger_second_source_contract_for_test, trigger_truthful_error_contract_for_test,
+        trigger_with_column_error_annotation_contract_for_test,
     },
     table::testing_hooks::{
         trigger_table_column_count_limit_error_for_test, trigger_table_view_column_count_limit_error_for_test,

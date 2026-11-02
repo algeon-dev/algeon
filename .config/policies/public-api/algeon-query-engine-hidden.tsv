@@ -25,7 +25,3 @@ query_engine::exec::set_forest_after_import_hook_for_tests	test-hooks	query-engi
 query_engine::exec::set_forest_batch_element_limit_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	delete once no test or tool names it
 query_engine::exec::set_vector_after_index_build_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	delete once no test or tool names it
 query_engine::exec::set_vector_pool_coverage_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	remove when the standalone pool-accounting regression needs no execution-boundary observation
-query_engine::object_store_error	cross-crate	query-engine crate root	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
-query_engine::object_store_error::object_store_error_detail	cross-crate	query-engine object_store_error	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
-query_engine::object_store_error::object_store_error_kind	cross-crate	query-engine object_store_error	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
-query_engine::object_store_error::query_error_code_for_object_store_error	cross-crate	query-engine object_store_error	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it

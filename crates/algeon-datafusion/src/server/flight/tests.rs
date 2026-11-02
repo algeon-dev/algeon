@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     io::Write,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
@@ -96,8 +96,11 @@ fn get_tables_metadata_log_uses_the_same_collection_error_for_fields_and_cause()
     assert!(!output.contains("unrelated first failure"), "{output}");
 }
 
+/// The terminal line keeps the bounded identity fields and carries no
+/// statement text: SQL can hold caller literals and identifiers, and
+/// `GetQueryStats` retains it for the query id.
 #[test]
-fn statement_status_log_flattens_resolved_sql_and_keeps_all_fields() {
+fn statement_status_log_keeps_identity_fields_without_statement_text() {
     let buffer = SharedLogBuffer::default();
     let writer = buffer.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -110,53 +113,23 @@ fn statement_status_log_flattens_resolved_sql_and_keeps_all_fields() {
     status.metadata_mut().insert(ERROR_CODE_METADATA_KEY, MetadataValue::from_static("sql_planning"));
     status.metadata_mut().insert(REASON_METADATA_KEY, MetadataValue::from_static("unsupported_type"));
 
-    with_default(subscriber, || {
-        log_statement_status(
-            "terminal-query",
-            Some("SELECT 1\tFROM t\nWHERE x = 1"),
-            "planning",
-            Instant::now(),
-            &status,
-        );
-    });
+    with_default(subscriber, || log_statement_status("terminal-query", "planning", Instant::now(), &status));
 
     let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
-    assert_eq!(output.lines().count(), 1, "resolved SQL must remain one log line: {output}");
-    assert!(output.contains("query_id=\"terminal-query\""), "{output}");
-    assert!(output.contains("sql=SELECT 1 FROM t WHERE x = 1"), "{output}");
-    assert!(output.contains("outcome=\"failed\""), "{output}");
-    assert!(output.contains("stage=\"planning\""), "{output}");
-    assert!(output.contains("grpc_code=InvalidArgument"), "{output}");
-    assert!(output.contains("elapsed_ms="), "{output}");
-    assert!(output.contains("error_code=\"sql_planning\""), "{output}");
-    assert!(output.contains("reason=\"unsupported_type\""), "{output}");
+    assert_eq!(output.lines().count(), 1, "{output}");
+    for field in [
+        "query_id=\"terminal-query\"",
+        "outcome=\"failed\"",
+        "stage=\"planning\"",
+        "grpc_code=InvalidArgument",
+        "elapsed_ms=",
+        "error_code=\"sql_planning\"",
+        "reason=\"unsupported_type\"",
+    ] {
+        assert!(output.contains(field), "{field}: {output}");
+    }
+    assert!(!output.contains("sql="), "{output}");
     assert!(!output.contains("caller_column"), "the status message must stay out of the log: {output}");
-}
-
-#[test]
-fn statement_status_log_omits_sql_before_ticket_resolution() {
-    let buffer = SharedLogBuffer::default();
-    let writer = buffer.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_target(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    let status = Status::invalid_argument("unknown ticket");
-
-    with_default(subscriber, || {
-        log_statement_status("unknown-query", None, "ticket", Instant::now(), &status);
-    });
-
-    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
-    assert!(output.contains("query_id=\"unknown-query\""), "{output}");
-    assert!(output.contains("outcome=\"failed\""), "{output}");
-    assert!(output.contains("stage=\"ticket\""), "{output}");
-    assert!(output.contains("grpc_code=InvalidArgument"), "{output}");
-    assert!(output.contains("elapsed_ms="), "{output}");
-    assert!(!output.contains("unknown ticket"), "the status message must stay out of the log: {output}");
-    assert!(!output.contains("sql="), "unresolved tickets must not fabricate SQL context: {output}");
 }
 
 /// Failed statements log the bounded error code, never the status message:
@@ -216,10 +189,15 @@ async fn failed_statement_logs_omit_the_status_message_on_get_flight_info_and_do
         assert!(line.contains("error_code="), "{line}");
         assert!(!line.contains(status.message()), "the status message must stay out of the log: {line}");
     }
+    let conversion = output
+        .lines()
+        .find(|line| line.contains("converted adapter error") && line.contains("result_streaming"))
+        .unwrap_or_else(|| panic!("the DoGet failure is converted inside its streaming stage: {output}"));
+    assert_eq!(conversion.matches("stage=\"result_streaming\"").count(), 1, "one stage span: {conversion}");
 }
 
 #[test]
-fn execution_terminal_log_includes_resolved_sql() {
+fn execution_terminal_log_names_the_query_without_its_sql() {
     let service = DatafusionAlgeonFlightSqlService::new(
         Arc::new(SessionContext::new()),
         Arc::new(QueryAdmission::new_for_tests()),
@@ -231,12 +209,7 @@ fn execution_terminal_log_includes_resolved_sql() {
         .register_with_id("terminal-execution-query", sql, None, service.runtime_observation_config)
         .expect("coordinator-owned fixture registers");
     let execution = planning.into_execution().expect("planning promotes to execution");
-    let terminal = CoordinatorExecutionTerminal::new(
-        execution,
-        "terminal-execution-query".to_string(),
-        Arc::from(sql),
-        Instant::now(),
-    );
+    let terminal = CoordinatorExecutionTerminal::new(execution, "terminal-execution-query".to_string(), Instant::now());
     let buffer = SharedLogBuffer::default();
     let writer = buffer.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -253,9 +226,216 @@ fn execution_terminal_log_includes_resolved_sql() {
 
     let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
     assert!(output.contains("query_id=\"terminal-execution-query\""), "{output}");
-    assert!(output.contains("sql=SELECT 1 FROM user_rows"), "{output}");
+    assert!(!output.contains("user_rows"), "{output}");
     assert!(output.contains("stage=\"stream\""), "{output}");
     assert!(output.contains("grpc_code=Internal"), "{output}");
+}
+
+/// A prepared statement whose planning fails stays correlatable: its
+/// conversion line carries the query id, and the caller owns the retained
+/// query that `GetQueryStats` resolves by correlation id.
+#[tokio::test]
+async fn failed_prepared_statement_planning_logs_its_query_id_and_stays_owned() {
+    let buffer = SharedLogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let _logs = set_default(subscriber);
+    let service = DatafusionAlgeonFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+    );
+    let mut request = Request::new(arrow_flight::Action { r#type: String::new(), body: Default::default() });
+    request.metadata_mut().insert(CORRELATION_ID_METADATA_KEY, MetadataValue::from_static("prepare-failure"));
+
+    let status = service
+        .do_action_create_prepared_statement(
+            ActionCreatePreparedStatementRequest {
+                query: "SELECT * FROM no_such_table".to_string(),
+                transaction_id: None,
+            },
+            request,
+        )
+        .await
+        .expect_err("an unknown table fails planning");
+
+    let query_id = status.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()).unwrap();
+    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+    let conversion = output
+        .lines()
+        .find(|line| line.contains("converted adapter error"))
+        .unwrap_or_else(|| panic!("planning failure is logged: {output}"));
+    assert!(conversion.contains(&format!("query_id=\"{query_id}\"")), "{conversion}");
+    assert_eq!(service.coordinator.query_ids_with_correlation_id("prepare-failure"), vec![query_id.to_string()]);
+    assert!(service.ownership.is_owned_by(query_id, &Owner::Anonymous));
+}
+
+/// `CREATE EXTERNAL TABLE` is rejected as `source_object_not_found` exactly
+/// when DataFusion's file-then-prefix lookup would find nothing.
+#[tokio::test]
+async fn external_table_location_check_follows_the_datafusion_lookup() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("rows.parquet");
+    std::fs::write(&file, b"not inspected").unwrap();
+    let ctx = SessionContext::new();
+    let verdict = |location: String| {
+        let ctx = ctx.clone();
+        async move {
+            let sql = format!("CREATE EXTERNAL TABLE t STORED AS PARQUET LOCATION '{location}'");
+            let plan = ctx.state().create_logical_plan(&sql).await.unwrap();
+            verify_ddl_targets(&ctx, &plan, "algeon_datafusion.test.ddl_location").await.map_err(|error| error.code())
+        }
+    };
+
+    assert_eq!(verdict(file.display().to_string()).await, Ok(()));
+    assert_eq!(
+        verdict(directory.path().display().to_string()).await,
+        Ok(()),
+        "a directory without a slash is a prefix"
+    );
+    assert_eq!(verdict(format!("{}/", directory.path().display())).await, Ok(()));
+    assert_eq!(
+        verdict(directory.path().join("missing.parquet").display().to_string()).await,
+        Err(ErrorCode::SourceObjectNotFound)
+    );
+    assert_eq!(
+        verdict(format!("{}/", directory.path().join("empty").display())).await,
+        Err(ErrorCode::SourceObjectNotFound)
+    );
+}
+
+/// The statement terminal line uses the level of the error's conversion event:
+/// a caller-fixable failure is not logged as a server warning.
+#[test]
+fn statement_terminal_line_level_follows_the_error_kind() {
+    for (code, level) in [
+        (Some("rapids_invalid_input"), "INFO"),
+        (Some("cancelled"), "INFO"),
+        (Some("query_memory_limit_exceeded"), "WARN"),
+        (Some("internal"), "ERROR"),
+        (Some("device_fault"), "ERROR"),
+        (Some("algorithm_did_not_converge"), "WARN"),
+        (None, "WARN"),
+    ] {
+        let mut status = Status::invalid_argument("terminal failure");
+        if let Some(code) = code {
+            status.metadata_mut().insert(ERROR_CODE_METADATA_KEY, MetadataValue::from_static(code));
+        }
+        let buffer = SharedLogBuffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(move || writer.clone())
+            .finish();
+
+        with_default(subscriber, || log_statement_status("level-query", "stream", Instant::now(), &status));
+
+        let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+        assert!(output.trim_start().starts_with(level), "{code:?}: {output}");
+    }
+}
+
+/// A client that abandons a started response stream cancels the statement;
+/// the cancellation is logged inside the query span, so it names the query.
+#[test]
+fn guard_drop_cancellation_is_logged_in_the_query_span() {
+    let service = DatafusionAlgeonFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+    );
+    let planning = service
+        .coordinator
+        .register_with_id("dropped-stream-query", "SELECT 1", None, service.runtime_observation_config)
+        .expect("coordinator-owned fixture registers");
+    let execution = planning.into_execution().expect("planning promotes to execution");
+    let terminal = CoordinatorExecutionTerminal::new(execution, "dropped-stream-query".to_string(), Instant::now());
+    let buffer = SharedLogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(move || writer.clone())
+        .finish();
+
+    with_default(subscriber, || {
+        let guard = QueryExecutionGuard {
+            query_id: "dropped-stream-query".to_string(),
+            correlation_id: None,
+            cancellations: Arc::clone(&service.cancellations),
+            flight_token: CancellationToken::new(),
+            attempt_cancellation: None,
+            shutdown_token: CancellationToken::new(),
+            delivery_started: Arc::new(AtomicBool::new(true)),
+            terminal: Arc::clone(&terminal),
+            span: DatafusionAlgeonFlightSqlService::query_span("dropped-stream-query", None, "do_get_statement"),
+        };
+        drop(guard);
+    });
+
+    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+    let cancellation = output
+        .lines()
+        .find(|line| line.contains("statement was cancelled"))
+        .unwrap_or_else(|| panic!("the abandoned stream is cancelled: {output}"));
+    assert!(cancellation.contains("query_id=\"dropped-stream-query\""), "{cancellation}");
+}
+
+/// A stream failure that waits for its attempt report is the statement's only
+/// failure event: dropping the response guard does not log a cancellation.
+#[test]
+fn guard_drop_after_a_deferred_stream_failure_logs_no_cancellation() {
+    let service = DatafusionAlgeonFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+    );
+    let planning = service
+        .coordinator
+        .register_with_id("deferred-failure-query", "SELECT 1", None, service.runtime_observation_config)
+        .expect("coordinator-owned fixture registers");
+    let execution = planning.into_execution().expect("planning promotes to execution");
+    let terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
+        execution,
+        "deferred-failure-query".to_string(),
+        Instant::now(),
+        true,
+    );
+    let guard = QueryExecutionGuard {
+        query_id: "deferred-failure-query".to_string(),
+        correlation_id: None,
+        cancellations: Arc::clone(&service.cancellations),
+        flight_token: CancellationToken::new(),
+        attempt_cancellation: None,
+        shutdown_token: CancellationToken::new(),
+        delivery_started: Arc::new(AtomicBool::new(true)),
+        terminal: Arc::clone(&terminal),
+        span: tracing::Span::none(),
+    };
+    let status = Status::invalid_argument("stream failed");
+    terminal.finish_captured("stream", &status, CapturedError::from_status(&status));
+    let buffer = SharedLogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(move || writer.clone())
+        .finish();
+
+    with_default(subscriber, || drop(guard));
+
+    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+    assert!(!output.contains("statement was cancelled"), "{output}");
+    assert!(!terminal.is_finished(), "the failure still waits for the attempt report");
 }
 
 fn query_stats_payload(service: &DatafusionAlgeonFlightSqlService, query_id: &str) -> String {
@@ -728,7 +908,7 @@ async fn set_and_reset_are_rejected_on_every_endpoint() {
 /// SQL from the update and prepared paths reaches INFO logs only after
 /// `OPTIONS` values are masked, since those values carry storage credentials.
 #[tokio::test]
-async fn statement_logs_mask_options_values_on_the_update_and_prepared_paths() {
+async fn statement_logs_carry_no_options_values_on_the_update_and_prepared_paths() {
     const SECRET: &str = "super-secret-value";
     let buffer = SharedLogBuffer::default();
     let writer = buffer.clone();
@@ -768,12 +948,12 @@ async fn statement_logs_mask_options_values_on_the_update_and_prepared_paths() {
             Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
         )
         .await
-        .expect("prepared DDL plans without executing");
+        .expect_err("the prepared DDL names a location with no object");
 
     let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
     for message in ["executing Flight SQL update statement", "planning Flight SQL prepared statement"] {
         let line = output.lines().find(|line| line.contains(message)).unwrap_or_else(|| panic!("{message}: {output}"));
-        assert!(line.contains("'aws.secret_access_key' '***'"), "{line}");
+        assert!(!line.contains("sql="), "{line}");
     }
     assert!(!output.contains(SECRET), "{output}");
 }
@@ -786,7 +966,7 @@ async fn deduplicated_prepared_update_retains_sealed_attempt_report() {
     let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
 
     let count = service
-        .complete_deduplicated_update(planning_lease, sql, None)
+        .complete_deduplicated_update(planning_lease, None)
         .await
         .expect("deduplicated prepared update should complete through its attempt owner");
 

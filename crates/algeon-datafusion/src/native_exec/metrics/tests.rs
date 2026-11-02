@@ -434,7 +434,7 @@ fn lakehouse_cache_fill_event_snapshot_rows_bridge_runtime_labels() {
         stable_id_hash: "stableabcd".to_string(),
         file_index: Some(3),
         chunk_index: Some(5),
-        error_code: Some("cudf_dependency_failure".to_string()),
+        error_code: Some("rapids_dependency_failure".to_string()),
         error_kind: Some("dependency".to_string()),
         error_status: Some("retryable".to_string()),
         error_operation: Some("query_engine.lakehouse_cache.background_fill.fetch".to_string()),
@@ -451,7 +451,7 @@ fn lakehouse_cache_fill_event_snapshot_rows_bridge_runtime_labels() {
     assert_eq!(row.stable_id_hash, "stableabcd");
     assert_eq!(row.file_index, Some(3));
     assert_eq!(row.chunk_index, Some(5));
-    assert_eq!(row.error_code, "cudf_dependency_failure");
+    assert_eq!(row.error_code, "rapids_dependency_failure");
     assert_eq!(row.error_operation, "query_engine.lakehouse_cache.background_fill.fetch");
 }
 

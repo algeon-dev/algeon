@@ -34,7 +34,7 @@ fn non_convergence_error(
     remedy: String,
 ) -> Error {
     Error::new(ErrorKind::NonConvergence, algorithm)
-        .with_message(format!("{algorithm} did not converge within {iterations} iterations; {remedy}"))
+        .with_message(format!("{algorithm} did not converge within {iterations} iterations"))
         .with_context("algorithm", algorithm)
         .with_context("iterations", iterations.to_string())
         .with_context("max_iterations", usize::from(max_iterations).to_string())

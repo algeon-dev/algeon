@@ -1,4 +1,7 @@
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::{
+    error::Error as StdError,
+    panic::{AssertUnwindSafe, catch_unwind},
+};
 
 use cudf::{
     ErrorCode, ErrorKind, ErrorStatus, TypeId,
@@ -8,8 +11,8 @@ use cudf::{
             ffi_cuda_status_error_for_test, ffi_io_status_error_for_test,
             trigger_canonical_key_in_detail_path_for_test, trigger_if_absent_error_annotation_contract_for_test,
             trigger_reanchor_if_needed_same_operation_contract_for_test,
-            trigger_same_operation_reanchor_contract_for_test, trigger_truthful_error_contract_for_test,
-            trigger_with_column_error_annotation_contract_for_test,
+            trigger_same_operation_reanchor_contract_for_test, trigger_second_source_contract_for_test,
+            trigger_truthful_error_contract_for_test, trigger_with_column_error_annotation_contract_for_test,
         },
         error::{annotate_foreign_invariant_contract_if_absent_for_test, foreign_invariant_violation_for_test},
         run_named_cases,
@@ -131,6 +134,13 @@ fn diagnostic_string_preserves_machine_fields_and_human_context() {
         "{diagnostic}",
     );
     assert!(diagnostic.contains("source=\"root cause\""), "{diagnostic}");
+}
+
+fn second_source_keeps_the_first_causal_chain() {
+    let err = trigger_second_source_contract_for_test().unwrap_err();
+    let source = StdError::source(&err).expect("source");
+
+    assert_eq!(source.to_string(), "first source");
 }
 
 fn reanchor_preserves_payload_and_records_call_chain_in_order() {
@@ -263,6 +273,7 @@ fn error_truthful_contract_tests_cases() {
             "diagnostic_string_preserves_machine_fields_and_human_context",
             diagnostic_string_preserves_machine_fields_and_human_context,
         ),
+        ("second_source_keeps_the_first_causal_chain", second_source_keeps_the_first_causal_chain),
         (
             "reanchor_preserves_payload_and_records_call_chain_in_order",
             reanchor_preserves_payload_and_records_call_chain_in_order,

@@ -472,7 +472,7 @@ pub(super) fn pairwise_similarity_rejects_null_pairs_absent_endpoints_and_pair_g
         Err(error) => error,
         Ok(_) => panic!("vertex-pair endpoint absent from the graph must reject execution"),
     };
-    assert_eq!(absent_error.code(), QueryErrorCode::CudfInvalidInput);
+    assert_eq!(absent_error.code(), QueryErrorCode::RapidsInvalidInput);
     drop(absent_runtime);
     absent_admitted.finish();
     drop(absent_admitted);

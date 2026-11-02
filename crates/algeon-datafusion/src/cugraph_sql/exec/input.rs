@@ -695,7 +695,7 @@ pub(super) fn materialize_gpu_output_eagerly(
         let actual_bytes = get_record_batch_memory_size(&batch);
         let surplus = estimated_bytes.checked_sub(actual_bytes).ok_or_else(|| {
             Error::new(
-                ErrorCode::CudfInvariantViolation,
+                ErrorCode::InternalInvariantViolation,
                 "algeon_datafusion.cugraph_sql.host_output_cursor",
                 "materialized cuGraph Arrow output exceeded its pre-copy estimate",
             )

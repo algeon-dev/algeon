@@ -1,7 +1,7 @@
 use std::{error::Error as StdError, fmt, net::SocketAddr, sync::Arc};
 
 use datafusion::common::DataFusionError;
-use query_planning::error::QueryError;
+use query_planning::error::{QueryError, quote, redact_uri_tokens};
 use tonic::{
     Status,
     metadata::{MetadataMap, MetadataValue},
@@ -12,7 +12,7 @@ use crate::server::{
     adapter_error::{
         DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorLogDiagnostics, ErrorSourceDiagnostics, ErrorStatus,
         Facts, FailedStatement, classify,
-        client::{client_actionable_kind, client_datafusion_error_message, client_message},
+        client::{client_actionable_kind, client_datafusion_error_message, client_message, datafusion_error_variant},
     },
     observability::CapturedError,
 };
@@ -386,14 +386,6 @@ impl StdError for ServerError {
     }
 }
 
-fn quote(value: &str) -> String {
-    if value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '(' | ')')) {
-        value.to_string()
-    } else {
-        format!("{value:?}")
-    }
-}
-
 pub fn datafusion_error_to_status_for_operation(
     error: DataFusionError,
     operation: &'static str,
@@ -402,7 +394,7 @@ pub fn datafusion_error_to_status_for_operation(
     if let Some(adapter_error) = error.find_algeon_error() {
         return adapter_error_to_status(adapter_error);
     }
-    adapter_error_to_status(&adapter_error_from_datafusion_error(error, operation, statement))
+    adapter_error_to_status(&Error::from_datafusion_error(error, operation, statement))
 }
 
 pub(super) fn datafusion_error_to_captured_error(
@@ -428,7 +420,11 @@ pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
     let message = client.status_message();
     let log_message = client.logged;
     let diagnostics = ErrorLogDiagnostics::from_error(error);
-    let log_messages = adapter_status_log_messages(error.message(), log_message.as_str(), &diagnostics);
+    // Caller SQL can put an object-store URI into DataFusion's text; the log
+    // redacts it as the cause and source-path fields already do.
+    let error_message = redact_uri_tokens(error.message());
+    let log_message = redact_uri_tokens(&log_message);
+    let log_messages = adapter_status_log_messages(&error_message, &log_message, &diagnostics);
     // The logged `error_message` is owner-authored adapter text: foreign
     // DataFusion text enters it only through the bounded
     // `client_datafusion_error_message` constructor, and foreign source chains
@@ -444,7 +440,7 @@ pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
                 error_kind = error.kind().as_str(),
                 error_status = error.status().as_str(),
                 error_operation = error.operation(),
-                error_message = error.message(),
+                error_message = error_message.as_str(),
                 error_cause = log_messages.cause,
                 error_source_path = diagnostics.source_path(),
                 error_diagnostics_truncated = log_messages.diagnostics_truncated,
@@ -455,7 +451,7 @@ pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
             )
         };
     }
-    match adapter_status_log_level(error.kind()) {
+    match adapter_status_log_level(error.code()) {
         AdapterStatusLogLevel::Info => log_status_conversion!(tracing::Level::INFO),
         AdapterStatusLogLevel::Warn => log_status_conversion!(tracing::Level::WARN),
         AdapterStatusLogLevel::Error => log_status_conversion!(tracing::Level::ERROR),
@@ -486,8 +482,26 @@ enum AdapterStatusLogLevel {
     Error,
 }
 
-fn adapter_status_log_level(kind: ErrorKind) -> AdapterStatusLogLevel {
-    match kind {
+/// Level of the statement terminal line for a status, read from its
+/// `x-algeon-error-code` so the line matches the conversion event of the same
+/// error. A status without a known code logs at WARN.
+pub(super) fn statement_status_log_level(error_code: Option<&str>) -> tracing::Level {
+    let code = error_code.and_then(|code| ErrorCode::ALL.iter().copied().find(|candidate| candidate.as_str() == code));
+    match code.map(adapter_status_log_level) {
+        Some(AdapterStatusLogLevel::Info) => tracing::Level::INFO,
+        Some(AdapterStatusLogLevel::Error) => tracing::Level::ERROR,
+        Some(AdapterStatusLogLevel::Warn) | None => tracing::Level::WARN,
+    }
+}
+
+/// Level of a failure's log events. A persistent failure is an escalation
+/// signal (`ErrorStatus::Persistent`: stop retrying and escalate), so it logs
+/// at ERROR whatever its kind; otherwise the kind decides.
+fn adapter_status_log_level(code: ErrorCode) -> AdapterStatusLogLevel {
+    if code.status() == ErrorStatus::Persistent {
+        return AdapterStatusLogLevel::Error;
+    }
+    match code.kind() {
         ErrorKind::Cancelled
         | ErrorKind::NotFound
         | ErrorKind::PermissionDenied
@@ -665,40 +679,6 @@ fn truncate_metadata_value(value: &str, max_bytes: usize) -> (String, bool) {
     (format!("{}{MARKER}", &value[..end]), true)
 }
 
-fn adapter_error_from_datafusion_error(
-    error: DataFusionError,
-    operation: &'static str,
-    statement: FailedStatement,
-) -> Error {
-    let code = classify(&error, statement);
-    let message = client_datafusion_error_message(&error);
-    let datafusion_error = datafusion_error_variant(&error);
-    Error::new(code, operation, message).with_log_safe_fact("datafusion_error", datafusion_error).with_source(error)
-}
-
-fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
-    match error {
-        DataFusionError::ArrowError(_, _) => "arrow",
-        DataFusionError::IoError(_) => "io",
-        DataFusionError::SQL(_, _) => "sql",
-        DataFusionError::NotImplemented(_) => "not_implemented",
-        DataFusionError::Internal(_) => "internal",
-        DataFusionError::Plan(_) => "plan",
-        DataFusionError::Configuration(_) => "configuration",
-        DataFusionError::SchemaError(_, _) => "schema",
-        DataFusionError::Execution(_) => "execution",
-        DataFusionError::ExecutionJoin(_) => "execution_join",
-        DataFusionError::ResourcesExhausted(_) => "resources_exhausted",
-        DataFusionError::External(_) => "external",
-        DataFusionError::Context(_, _) => "context",
-        DataFusionError::Diagnostic(_, _) => "diagnostic",
-        DataFusionError::Collection(_) => "collection",
-        DataFusionError::Shared(_) => "shared",
-        DataFusionError::Ffi(_) => "ffi",
-        _ => "other",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -716,7 +696,7 @@ mod tests {
     };
     use cudf::testing::error::new_with_for_test;
     use datafusion::{
-        common::{Column, Diagnostic, SchemaError},
+        common::{Column, DFSchema, Diagnostic, SchemaError},
         datasource::{memory::MemorySourceConfig, source::DataSourceExec},
         object_store::Error as ObjectStoreError,
         physical_expr::{
@@ -728,6 +708,7 @@ mod tests {
         sql::sqlparser::parser::ParserError,
     };
     use query_planning::error::{MemoryFailure, MemoryUsage, QueryErrorCode};
+    use query_runtime::native_error::cudf_query_error;
     use tonic::{Code, metadata::KeyAndValueRef};
     use tracing::subscriber::with_default;
 
@@ -808,10 +789,12 @@ mod tests {
         let parser_display = parser.to_string();
         let datafusion_error = DataFusionError::SQL(Box::new(parser), None);
 
-        let adapter = adapter_error_from_datafusion_error(datafusion_error, TEST_OPERATION, FailedStatement::Other);
+        let adapter = Error::from_datafusion_error(datafusion_error, TEST_OPERATION, FailedStatement::Other);
 
-        assert_eq!(adapter.message(), format!("invalid SQL statement: {parser_display}"));
-        assert!(!adapter.message().contains("ParserError("), "{}", adapter.message());
+        assert_eq!(adapter.message(), "the statement is not valid SQL");
+        let client = client_message(&adapter).status_message();
+        assert_eq!(client, format!("invalid SQL statement: {parser_display}"));
+        assert!(!client.contains("ParserError("), "{client}");
         assert!(matches!(
             adapter.source_error().and_then(|source| source.downcast_ref::<DataFusionError>()),
             Some(DataFusionError::SQL(_, _))
@@ -826,7 +809,7 @@ mod tests {
 
         let log_diagnostics = ErrorLogDiagnostics::from_error(&adapter);
         let log_messages = adapter_status_log_messages(adapter.message(), adapter.message(), &log_diagnostics);
-        assert_eq!(log_messages.cause, Some(parser_display.as_str()));
+        assert_eq!(log_messages.cause, None, "parser text echoes SQL tokens and stays out of the log");
         assert_eq!(log_messages.diagnostics_truncated, None);
         assert_eq!(log_messages.client_message, None);
 
@@ -1068,7 +1051,7 @@ mod tests {
         assert_eq!(status.code(), Code::FailedPrecondition);
         assert_eq!(
             status.message(),
-            "eigenvector_centrality did not converge after 200 iterations (max_iterations=200, epsilon=0.00000001); change the convergence parameters and retry"
+            "eigenvector_centrality did not converge after 200 iterations (max_iterations=200, epsilon=0.00000001); change the convergence parameters"
         );
         assert_metadata_value(&status, ALGORITHM_METADATA_KEY, "eigenvector_centrality");
         assert_metadata_value(&status, ITERATIONS_METADATA_KEY, "200");
@@ -1103,7 +1086,7 @@ mod tests {
             assert_eq!(
                 status.message(),
                 format!(
-                    "{algorithm} did not converge after 100 iterations (max_iterations=100, epsilon=0.00001); {remedy} and retry"
+                    "{algorithm} did not converge after 100 iterations (max_iterations=100, epsilon=0.00001); {remedy}"
                 )
             );
             assert_metadata_value(&status, ALGORITHM_METADATA_KEY, algorithm);
@@ -1527,10 +1510,10 @@ mod tests {
             ErrorCode::Internal,
             ErrorCode::InvalidChildCount,
             ErrorCode::SourceDependencyFailure,
-            ErrorCode::CudfDependencyFailure,
-            ErrorCode::CudfPersistentFailure,
-            ErrorCode::CudfTemporaryFailure,
-            ErrorCode::CudfInvariantViolation,
+            ErrorCode::RapidsDependencyFailure,
+            ErrorCode::RapidsPersistentFailure,
+            ErrorCode::RapidsTemporaryFailure,
+            ErrorCode::RapidsInvariantViolation,
             ErrorCode::InternalInvariantViolation,
             ErrorCode::DeviceFault,
             ErrorCode::CleanupFailed,
@@ -1579,7 +1562,7 @@ mod tests {
     #[test]
     fn captured_adapter_error_keeps_structured_fields_separate_from_source_chain() {
         let error =
-            Error::new(ErrorCode::CudfDependencyFailure, "algeon_datafusion.server.test", "adapter wrapper failed")
+            Error::new(ErrorCode::RapidsDependencyFailure, "algeon_datafusion.server.test", "adapter wrapper failed")
                 .with_source(TestSourceError::with_source(
                     "dependency wrapper",
                     TestSourceError::leaf("root credential expired"),
@@ -1947,6 +1930,99 @@ mod tests {
                 "native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support projected column `{COLUMN}` with Arrow type `{COLUMN_TYPE}`"
             )
         );
+    }
+
+    /// A RAPIDS dependency failure logs at WARN with the library's root cause
+    /// and log-safe facts; an internal failure logs at ERROR with its cause.
+    /// Raw native text stays out of both lines.
+    #[test]
+    fn dependency_and_internal_failures_log_root_cause_without_raw_native_text() {
+        let cudf = new_with_for_test(
+            cudf::ErrorCode::IoFailure,
+            "cudf.test.dependency",
+            "CUDA error: an illegal memory access was encountered",
+        );
+        let native = cudf_query_error("query_engine.test.dependency", "native-raw-wrapper-text", cudf);
+        let dependency =
+            Error::from_native("algeon_datafusion.native_exec.execute", "Algeon native query execution failed", native);
+        assert_eq!(dependency.code(), ErrorCode::RapidsDependencyFailure);
+
+        let (_, logs) = with_captured_logs(|| adapter_error_to_status(&dependency));
+        assert!(logs.trim_start().starts_with("WARN"), "{logs}");
+        assert!(logs.contains("error_cause=\"CUDA error: an illegal memory access was encountered\""), "{logs}");
+        assert!(logs.contains("rapids_library=cudf"), "{logs}");
+        assert!(!logs.contains("native-raw-wrapper-text"), "{logs}");
+
+        let internal = Error::new(ErrorCode::Internal, TEST_OPERATION, "adapter invariant failed")
+            .with_source(TestSourceError::leaf("root cause of the internal failure"));
+        let (_, logs) = with_captured_logs(|| adapter_error_to_status(&internal));
+        assert!(logs.trim_start().starts_with("ERROR"), "{logs}");
+        assert!(logs.contains("error_cause=\"root cause of the internal failure\""), "{logs}");
+    }
+
+    #[test]
+    fn logged_messages_redact_object_store_uris_the_status_keeps() {
+        const URI: &str = "s3://customer-bucket/private/key.parquet";
+        let error = Error::new(
+            ErrorCode::InvalidRequest,
+            "algeon_datafusion.server.test.uri",
+            format!("the location {URI} is not a table"),
+        );
+
+        let (status, logs) = with_captured_logs(|| adapter_error_to_status(&error));
+
+        assert!(logs.contains("<redacted-uri>"), "{logs}");
+        assert!(!logs.contains("s3://"), "{logs}");
+        assert!(status.message().contains(URI), "{status:?}");
+    }
+
+    /// A bounded projection marks its cut on the failure event, so an operator
+    /// knows the full facts are in `GetQueryStats`.
+    #[test]
+    fn failure_event_marks_truncated_facts() {
+        const KEYS: [&str; 20] = [
+            "k00", "k01", "k02", "k03", "k04", "k05", "k06", "k07", "k08", "k09", "k10", "k11", "k12", "k13", "k14",
+            "k15", "k16", "k17", "k18", "k19",
+        ];
+        let error =
+            KEYS.iter().fold(Error::new(ErrorCode::InvalidRequest, TEST_OPERATION, "many facts"), |error, key| {
+                error.with_log_safe_fact(key, "value")
+            });
+
+        let (_, logs) = with_captured_logs(|| adapter_error_to_status(&error));
+
+        assert!(logs.contains("error_facts_truncated=true"), "{logs}");
+    }
+
+    /// DataFusion's text names caller fields and echoes SQL tokens, so the log
+    /// line carries the fixed sentence while the status keeps the text.
+    #[test]
+    fn datafusion_text_reaches_the_status_but_not_the_log() {
+        let schema =
+            DFSchema::try_from(Schema::new(vec![Field::new("present_column", DataType::Int64, false)])).unwrap();
+        let missing = DataFusionError::SchemaError(
+            Box::new(SchemaError::FieldNotFound {
+                field: Box::new(Column::from_name("missing_column")),
+                valid_fields: schema.columns(),
+            }),
+            Box::new(None),
+        );
+        let field = Error::from_datafusion_error(missing, TEST_OPERATION, FailedStatement::Other);
+        let (status, logs) = with_captured_logs(|| adapter_error_to_status(&field));
+        assert!(status.message().contains("missing_column"), "{status:?}");
+        for name in ["missing_column", "present_column", "Did you mean"] {
+            assert!(!logs.contains(name), "{name}: {logs}");
+        }
+
+        let parser = DataFusionError::SQL(
+            Box::new(ParserError::ParserError("Expected: an SQL statement, found: SELEC".into())),
+            None,
+        );
+        let parse = Error::from_datafusion_error(parser, TEST_OPERATION, FailedStatement::Other);
+        let (status, logs) = with_captured_logs(|| adapter_error_to_status(&parse));
+        assert!(status.message().contains("SELEC"), "{status:?}");
+        assert!(logs.contains("error_message=\"the statement is not valid SQL\""), "{logs}");
+        assert!(!logs.contains("SELEC"), "{logs}");
     }
 
     /// The final-plan requirement error of a query that casts a Float64 column

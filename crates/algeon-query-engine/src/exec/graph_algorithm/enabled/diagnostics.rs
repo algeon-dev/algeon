@@ -11,7 +11,7 @@ use cugraph::ErrorStatus;
 #[cfg(feature = "cugraph")]
 use query_planning::error::AllocationSource as QueryAllocationSource;
 #[cfg(feature = "cugraph")]
-use query_planning::error::redact_uri_tokens;
+use query_planning::error::{RAPIDS_LIBRARY_FACT, redact_uri_tokens};
 #[cfg(feature = "cugraph")]
 use query_planning::plan::GraphAlgorithmParams;
 #[cfg(feature = "cugraph")]
@@ -253,6 +253,7 @@ pub(super) fn map_cugraph_error(
             _ => message.to_string(),
         };
         let query_error = QueryError::new(code_for_cugraph_error(&error), operation, message)
+            .with_fact(RAPIDS_LIBRARY_FACT, "cugraph")
             .with_fact("cugraph_kind", error.kind())
             .with_fact("cugraph_status", error.status())
             .with_fact("cugraph_operation", error.operation());
@@ -298,16 +299,16 @@ fn code_for_cugraph_error(error: &cugraph::Error) -> QueryErrorCode {
             AllocationFailureSource::Physical => QueryErrorCode::DeviceOutOfMemory,
             AllocationFailureSource::Unknown => QueryErrorCode::DeviceAllocationFailed,
         },
-        ErrorKind::InvalidInput | ErrorKind::InvalidHandle => QueryErrorCode::CudfInvalidInput,
-        ErrorKind::UnsupportedType | ErrorKind::NotImplemented => QueryErrorCode::CudfUnsupported,
+        ErrorKind::InvalidInput | ErrorKind::InvalidHandle => QueryErrorCode::RapidsInvalidInput,
+        ErrorKind::UnsupportedType | ErrorKind::NotImplemented => QueryErrorCode::RapidsUnsupported,
         ErrorKind::InvalidState => QueryErrorCode::InternalInvariantViolation,
         ErrorKind::NonConvergence => QueryErrorCode::AlgorithmDidNotConverge,
         ErrorKind::IoError | ErrorKind::Unexpected => match error.status() {
-            ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
+            ErrorStatus::Temporary => QueryErrorCode::RapidsTemporaryFailure,
             ErrorStatus::Persistent => QueryErrorCode::DeviceFault,
-            ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
+            ErrorStatus::Permanent => QueryErrorCode::RapidsDependencyFailure,
         },
-        _ => QueryErrorCode::CudfDependencyFailure,
+        _ => QueryErrorCode::RapidsDependencyFailure,
     }
 }
 
@@ -397,13 +398,13 @@ mod tests {
             cugraph::Error::new(cugraph::ErrorKind::InvalidInput, "sssp")
                 .with_message("SSSP source vertex is not in the graph"),
         );
-        assert_eq!(invalid.code(), QueryErrorCode::CudfInvalidInput);
+        assert_eq!(invalid.code(), QueryErrorCode::RapidsInvalidInput);
         assert_eq!(invalid.message(), "cuGraph SSSP failed: SSSP source vertex is not in the graph");
 
         let unexpected = map_cugraph_error("query_engine.graph_algorithm.sssp", "cuGraph SSSP failed")(
             cugraph::Error::new(cugraph::ErrorKind::Unexpected, "sssp").with_message("internal scheduler detail"),
         );
-        assert_eq!(unexpected.code(), QueryErrorCode::CudfDependencyFailure);
+        assert_eq!(unexpected.code(), QueryErrorCode::RapidsDependencyFailure);
         assert_eq!(unexpected.message(), "cuGraph SSSP failed");
         assert_eq!(unexpected.fact_value("cugraph_message"), Some("internal scheduler detail"));
     }

@@ -143,7 +143,6 @@ pub fn cuml::DeviceMatrix<'a>::layout(&self) -> cuml::MatrixLayout
 pub fn cuml::DeviceMatrix<'a>::rows(&self) -> usize
 pub struct cuml::Error
 impl cuml::Error
-pub fn cuml::Error::call_chain(&self) -> &[&'static str]
 pub fn cuml::Error::code(&self) -> cuml::ErrorCode
 pub fn cuml::Error::detail_value(&self, &str) -> core::option::Option<&str>
 pub fn cuml::Error::details(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = (&'static str, &str)>

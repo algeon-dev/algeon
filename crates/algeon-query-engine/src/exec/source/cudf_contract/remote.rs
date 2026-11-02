@@ -2,7 +2,7 @@
 //!
 //! Remote reads have one mode, `RemoteReadMode::RequireKvikio`. There is no fallback to a path
 //! reader or to a host download: if the build has no KvikIO remote datasource, the attach fails
-//! with `CudfUnsupported`, and every failure carries `fallback_allowed = false`. Errors raised
+//! with `RapidsUnsupported`, and every failure carries `fallback_allowed = false`. Errors raised
 //! here use the `*_without_source` constructor so object URIs stay out of the error chain.
 //! Design owner: `website/docs/design/data-path.mdx`.
 
@@ -16,7 +16,10 @@ use cudf::io::{
     source::LocalParquetFile as CudfLocalParquetFile,
 };
 use object_store::aws::AwsCredential;
-use query_planning::source::{CredentialMode, ParquetReadStrategy, ResolvedParquetInput, ResolvedParquetSource};
+use query_planning::{
+    error::RAPIDS_LIBRARY_FACT,
+    source::{CredentialMode, ParquetReadStrategy, ResolvedParquetInput, ResolvedParquetSource},
+};
 use query_runtime::runtime::{S3ObjectStoreKey, S3SourceStorageCredential, SourceStorageProfile};
 
 use crate::exec::source::{
@@ -27,7 +30,7 @@ use crate::exec::source::{
 /// it. A file with no remote source (a local path) is returned unchanged.
 ///
 /// Fails with the storage profile or credential error when the profile cannot be resolved, with
-/// the cuDF attach error when cuDF rejects the contract, and with `CudfUnsupported` when
+/// the cuDF attach error when cuDF rejects the contract, and with `RapidsUnsupported` when
 /// `remote_parquet_capability` does not report a KvikIO remote datasource. On a miss in the
 /// recent-credential cache, default-chain credentials are resolved on the object-store control
 /// runtime while the calling thread blocks for the result.
@@ -71,10 +74,11 @@ pub(in crate::exec::source) fn validate_remote_kvikio_capability(
 ) -> Result<()> {
     if capability.disposition != RemoteParquetCapabilityDisposition::KvikioRemoteDatasource {
         return Err(QueryError::new(
-            QueryErrorCode::CudfUnsupported,
+            QueryErrorCode::RapidsUnsupported,
             operation,
             "explicit KvikIO remote Parquet datasource is unavailable",
         )
+        .with_fact(RAPIDS_LIBRARY_FACT, "cudf")
         .with_fact("resource", "remote_parquet_source")
         .with_fact("reason", "remote_kvikio_backend_unavailable")
         .with_fact("uri_scheme", resolved_remote_uri_scheme(resolved_source))

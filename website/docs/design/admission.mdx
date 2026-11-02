@@ -125,7 +125,9 @@ its source. Chunking can reduce live intermediates. When the cap rejects an
 allocation while a source chunk is read, staged through the filters and
 projections that run on it, or partitioned for an aggregate, the chunk splits
 in half by row group and runs again, up to the configured retry attempts. An
-input, hash table or result that cannot fit can still fail. Native execution
+input, hash table or result that cannot fit can still fail. A projection of a
+source larger than the cap fails at the last chunk read, because the device
+result is complete before egress copies it to the client. Native execution
 does not provide general disk spilling.
 
 ## Completion and resident data {/* #resident-handoff-and-release */}

@@ -20,8 +20,7 @@ use query_planning::{
     source::redacted_object_store_path_diagnostic,
     util::fnv1a64,
 };
-
-use crate::object_store_error::{
+use query_runtime::object_store_error::{
     object_store_error_detail, object_store_error_kind, query_error_code_for_object_store_error,
 };
 
@@ -56,7 +55,7 @@ pub(crate) async fn fetch_object_store_parquet_metadata(
     let file_size = head.size;
     if file_size < FOOTER_SIZE as u64 {
         return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::SourceDependencyFailure,
             operation,
             "object-store Parquet file is smaller than the footer",
         )
@@ -72,7 +71,7 @@ pub(crate) async fn fetch_object_store_parquet_metadata(
         .map_err(|error| object_store_metadata_error("failed to GET Parquet footer range", error, &location))?;
     if tail.len() < FOOTER_SIZE {
         return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::SourceDependencyFailure,
             operation,
             "object-store Parquet tail fetch returned fewer bytes than the footer size",
         )
@@ -88,7 +87,7 @@ pub(crate) async fn fetch_object_store_parquet_metadata(
     let total_footer_len = metadata_len + FOOTER_SIZE;
     if (total_footer_len as u64) > file_size {
         return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::SourceDependencyFailure,
             operation,
             "Parquet footer metadata length exceeds file size",
         )
@@ -191,7 +190,7 @@ pub(crate) fn write_parquet_footer_sidecar_from_file(data_path: &Path, content_i
     let file_size = data_metadata.len();
     if file_size < FOOTER_SIZE as u64 {
         return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::SourceDependencyFailure,
             "query_engine.source_metadata.footer_sidecar",
             "complete Parquet cache file is smaller than the footer",
         )
@@ -213,7 +212,7 @@ pub(crate) fn write_parquet_footer_sidecar_from_file(data_path: &Path, content_i
     let total_footer_len = footer_tail.metadata_length() + FOOTER_SIZE;
     if total_footer_len as u64 > file_size {
         return Err(QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::SourceDependencyFailure,
             "query_engine.source_metadata.footer_sidecar",
             "Parquet footer metadata length exceeds complete cache file size",
         )
@@ -294,7 +293,7 @@ fn parse_footer_tail(
     path: &impl std::fmt::Display,
 ) -> Result<FooterTail> {
     let footer_tail = FooterTail::try_from(footer_tail_bytes).map_err(|error| {
-        QueryError::new(QueryErrorCode::CudfDependencyFailure, operation, "failed to decode Parquet footer tail")
+        QueryError::new(QueryErrorCode::SourceDependencyFailure, operation, "failed to decode Parquet footer tail")
             .with_fact("path", path.to_string())
             .with_source(error)
     })?;
@@ -321,12 +320,12 @@ fn parse_metadata_from_footer_bytes(
     footer_with_tail.extend_from_slice(&metadata_bytes);
     footer_with_tail.extend_from_slice(&footer_tail_bytes);
     reader.try_parse_sized(&footer_with_tail.freeze(), file_size).map_err(|error| {
-        QueryError::new(QueryErrorCode::CudfDependencyFailure, operation, "failed to decode Parquet footer metadata")
+        QueryError::new(QueryErrorCode::SourceDependencyFailure, operation, "failed to decode Parquet footer metadata")
             .with_fact("path", path.to_string())
             .with_source(error)
     })?;
     reader.finish().map(Arc::new).map_err(|error| {
-        QueryError::new(QueryErrorCode::CudfDependencyFailure, operation, "failed to finalize Parquet metadata")
+        QueryError::new(QueryErrorCode::SourceDependencyFailure, operation, "failed to finalize Parquet metadata")
             .with_fact("path", path.to_string())
             .with_source(error)
     })
@@ -385,7 +384,7 @@ fn object_store_path_fact(location: &ObjectStorePath) -> String {
 }
 
 fn local_metadata_io_error(message: &'static str, error: std::io::Error, path: &Path) -> QueryError {
-    QueryError::new(QueryErrorCode::CudfDependencyFailure, "query_engine.source_metadata.footer_sidecar", message)
+    QueryError::new(QueryErrorCode::SourceDependencyFailure, "query_engine.source_metadata.footer_sidecar", message)
         .with_fact("path", cache_metadata_path_fact(path))
         .with_source(error)
 }

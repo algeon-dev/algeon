@@ -20,10 +20,7 @@ use super::{
 };
 use crate::{
     error::Result,
-    server::{
-        error::{ERROR_CODE_METADATA_KEY, REASON_METADATA_KEY},
-        observability::RedactedSql,
-    },
+    server::error::{ERROR_CODE_METADATA_KEY, REASON_METADATA_KEY, statement_status_log_level},
 };
 
 pub(super) fn datafusion_error_to_flight_error(
@@ -328,42 +325,35 @@ pub(super) fn status_outcome(code: Code) -> &'static str {
     if code == Code::Cancelled { "cancelled" } else { "failed" }
 }
 
-pub(super) fn log_statement_status(
-    query_id: &str,
-    sql: Option<&str>,
-    stage: &'static str,
-    started_at: Instant,
-    status: &Status,
-) {
+/// Logs the terminal line of a failed or cancelled statement. The line names
+/// the query but carries no statement text, which can hold caller literals
+/// and identifiers; `GetQueryStats` retains the text for the query id.
+pub(super) fn log_statement_status(query_id: &str, stage: &'static str, started_at: Instant, status: &Status) {
     let outcome = status_outcome(status.code());
     // The status message can name the caller's columns, types, and values;
     // the operational log keeps only the bounded code and reason metadata.
     let metadata = |key| status.metadata().get(key).and_then(|value| value.to_str().ok());
     let error_code = metadata(ERROR_CODE_METADATA_KEY);
     let reason = metadata(REASON_METADATA_KEY);
-    if let Some(sql) = sql {
-        tracing::warn!(
-            query_id,
-            sql = %RedactedSql(sql),
-            outcome,
-            stage,
-            grpc_code = ?status.code(),
-            error_code,
-            reason,
-            elapsed_ms = started_at.elapsed().as_millis(),
-            "failed Flight SQL statement"
-        );
-    } else {
-        tracing::warn!(
-            query_id,
-            outcome,
-            stage,
-            grpc_code = ?status.code(),
-            error_code,
-            reason,
-            elapsed_ms = started_at.elapsed().as_millis(),
-            "failed Flight SQL statement"
-        );
+    macro_rules! log_statement {
+        ($level:expr) => {
+            tracing::event!(
+                $level,
+                query_id,
+                outcome,
+                stage,
+                grpc_code = ?status.code(),
+                error_code,
+                reason,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "failed Flight SQL statement"
+            )
+        };
+    }
+    match statement_status_log_level(error_code) {
+        tracing::Level::INFO => log_statement!(tracing::Level::INFO),
+        tracing::Level::ERROR => log_statement!(tracing::Level::ERROR),
+        _ => log_statement!(tracing::Level::WARN),
     }
 }
 

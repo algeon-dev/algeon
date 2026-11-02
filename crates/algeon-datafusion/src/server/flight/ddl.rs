@@ -1,5 +1,11 @@
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
+use datafusion::{
+    datasource::listing::ListingTableUrl,
+    object_store::{Error as ObjectStoreError, ObjectStoreExt},
+};
+use futures::StreamExt;
+
 use super::{
     CapturedError, CoordinatorExecutionTerminal, CoordinatorReportHandoffTerminal, DatafusionAlgeonFlightSqlService,
     DdlStatement, Error, ErrorCode, FailedStatement, Instrument, LogicalPlan, MlForestModelDigest,
@@ -9,10 +15,7 @@ use super::{
     reject_parameterized_plan, server_shutdown_error, status_with_query_id_and_correlation_id,
     table_type_to_flight_sql, tracing_correlation_id, verify_forest_model_identity, verify_update_plan,
 };
-use crate::{
-    attempt::AttemptOptions,
-    server::{adapter_error::Result as AdapterResult, observability::RedactedSql},
-};
+use crate::{attempt::AttemptOptions, server::adapter_error::Result as AdapterResult};
 
 impl DatafusionAlgeonFlightSqlService {
     pub(super) async fn execute_update_sql(
@@ -63,7 +66,6 @@ impl DatafusionAlgeonFlightSqlService {
         let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution_lease,
             query_id.clone(),
-            Arc::clone(&sql),
             Instant::now(),
             attempt.is_some(),
         );
@@ -78,7 +80,6 @@ impl DatafusionAlgeonFlightSqlService {
         tracing::info!(
             query_id,
             correlation_id = tracing_correlation_id(correlation_id.as_deref()),
-            sql = %RedactedSql(&sql),
             statement_kind = ?statement_kind,
             "executing Flight SQL update statement"
         );
@@ -86,33 +87,50 @@ impl DatafusionAlgeonFlightSqlService {
         // Exit before the first await; a held enter guard puts other tasks inside this span.
         drop(_query_enter);
 
-        let execution = self.attempt_invocation_execution(correlation_id.as_deref());
-        let query_ctx = match self.data_query_context(attempt.as_ref(), execution) {
-            Ok(context) => context,
-            Err(error) => {
-                let (status, captured) = datafusion_error_to_status_and_capture(
-                    error,
-                    statement_kind.sql_operation(),
-                    FailedStatement::Other,
-                );
-                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                coordinator_terminal.finish_captured("planning", &status, captured);
-                coordinator_terminal.wait_finished().await;
-                return Err(status);
-            },
-        };
-        let state = query_ctx.state();
-        let plan = tokio::select! {
-            result = state.create_logical_plan(&sql)
-                .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "planning")) => match result {
-                Ok(plan) => plan,
+        // Conversions between awaits log inside the query span too.
+        async {
+            let execution = self.attempt_invocation_execution(correlation_id.as_deref());
+            let query_ctx = match self.data_query_context(attempt.as_ref(), execution) {
+                Ok(context) => context,
                 Err(error) => {
+                    let (status, captured) = datafusion_error_to_status_and_capture(
+                        error,
+                        statement_kind.sql_operation(),
+                        FailedStatement::Other,
+                    );
+                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    coordinator_terminal.finish_captured("planning", &status, captured);
+                    coordinator_terminal.wait_finished().await;
+                    return Err(status);
+                },
+            };
+            let state = query_ctx.state();
+            let plan = tokio::select! {
+                result = state.create_logical_plan(&sql)
+                    .instrument(Self::query_stage_span(&query_span, "planning")) => match result {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        if let Some(attempt) = attempt.as_ref() {
+                            attempt.planning_failed(&error);
+                        }
+                        let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation(), FailedStatement::Other);
+                        let status = status_with_query_id_and_correlation_id(
+                            datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), FailedStatement::Other),
+                            &query_id,
+                            correlation_id.as_deref(),
+                        );
+                        coordinator_terminal.finish_captured("planning", &status, captured);
+                        coordinator_terminal.wait_finished().await;
+                        return Err(status);
+                    },
+                },
+                _ = self.shutdown_token.cancelled() => {
                     if let Some(attempt) = attempt.as_ref() {
-                        attempt.planning_failed(&error);
+                        attempt.cancel_before_stream();
                     }
-                    let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation(), FailedStatement::Other);
+                    let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
                     let status = status_with_query_id_and_correlation_id(
-                        datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), FailedStatement::Other),
+                        status,
                         &query_id,
                         correlation_id.as_deref(),
                     );
@@ -120,94 +138,94 @@ impl DatafusionAlgeonFlightSqlService {
                     coordinator_terminal.wait_finished().await;
                     return Err(status);
                 },
-            },
-            _ = self.shutdown_token.cancelled() => {
+            };
+            if let Err(error) = reject_parameterized_plan(&plan, statement_kind.sql_operation()) {
                 if let Some(attempt) = attempt.as_ref() {
-                    attempt.cancel_before_stream();
+                    attempt.planning_failed(&error);
                 }
-                let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
+                let captured =
+                    datafusion_error_to_captured_error(&error, statement_kind.sql_operation(), FailedStatement::Other);
                 let status = status_with_query_id_and_correlation_id(
-                    status,
+                    datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), FailedStatement::Other),
                     &query_id,
                     correlation_id.as_deref(),
                 );
                 coordinator_terminal.finish_captured("planning", &status, captured);
                 coordinator_terminal.wait_finished().await;
                 return Err(status);
-            },
-        };
-        if let Err(error) = reject_parameterized_plan(&plan, statement_kind.sql_operation()) {
-            if let Some(attempt) = attempt.as_ref() {
-                attempt.planning_failed(&error);
             }
-            let captured =
-                datafusion_error_to_captured_error(&error, statement_kind.sql_operation(), FailedStatement::Other);
-            let status = status_with_query_id_and_correlation_id(
-                datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), FailedStatement::Other),
-                &query_id,
-                correlation_id.as_deref(),
-            );
-            coordinator_terminal.finish_captured("planning", &status, captured);
-            coordinator_terminal.wait_finished().await;
-            return Err(status);
-        }
-        if let Some(expected) = &expected_forest_model_digests
-            && let Err(error) =
-                verify_forest_model_identity(expected, &forest_model_digests(&plan), statement_kind.sql_operation())
-        {
-            if let Some(attempt) = attempt.as_ref() {
-                attempt.planning_failed_adapter(&error);
+            if let Some(expected) = &expected_forest_model_digests
+                && let Err(error) =
+                    verify_forest_model_identity(expected, &forest_model_digests(&plan), statement_kind.sql_operation())
+            {
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.planning_failed_adapter(&error);
+                }
+                let captured = CapturedError::from_adapter_error(&error);
+                let status = status_with_query_id_and_correlation_id(
+                    adapter_error_status(error),
+                    &query_id,
+                    correlation_id.as_deref(),
+                );
+                coordinator_terminal.finish_captured("planning", &status, captured);
+                coordinator_terminal.wait_finished().await;
+                return Err(status);
             }
-            let captured = CapturedError::from_adapter_error(&error);
-            let status = status_with_query_id_and_correlation_id(
-                adapter_error_status(error),
-                &query_id,
-                correlation_id.as_deref(),
-            );
-            coordinator_terminal.finish_captured("planning", &status, captured);
-            coordinator_terminal.wait_finished().await;
-            return Err(status);
-        }
-        if let Err(error) = verify_update_plan(&plan) {
-            if let Some(attempt) = attempt.as_ref() {
-                attempt.planning_failed_adapter(&error);
+            if let Err(error) = verify_update_plan(&plan) {
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.planning_failed_adapter(&error);
+                }
+                let captured = CapturedError::from_adapter_error(&error);
+                let status = status_with_query_id_and_correlation_id(
+                    adapter_error_status(error),
+                    &query_id,
+                    correlation_id.as_deref(),
+                );
+                coordinator_terminal.finish_captured("planning", &status, captured);
+                coordinator_terminal.wait_finished().await;
+                return Err(status);
             }
-            let captured = CapturedError::from_adapter_error(&error);
-            let status = status_with_query_id_and_correlation_id(
-                adapter_error_status(error),
-                &query_id,
-                correlation_id.as_deref(),
-            );
-            coordinator_terminal.finish_captured("planning", &status, captured);
-            coordinator_terminal.wait_finished().await;
-            return Err(status);
-        }
-        if let Err(error) = reject_drop_object_type_mismatch(&query_ctx, &plan, statement_kind.sql_operation()).await {
-            if let Some(attempt) = attempt.as_ref() {
-                attempt.planning_failed_adapter(&error);
+            if let Err(error) = verify_ddl_targets(&query_ctx, &plan, statement_kind.sql_operation()).await {
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.planning_failed_adapter(&error);
+                }
+                let captured = CapturedError::from_adapter_error(&error);
+                let status = status_with_query_id_and_correlation_id(
+                    adapter_error_status(error),
+                    &query_id,
+                    correlation_id.as_deref(),
+                );
+                coordinator_terminal.finish_captured("planning", &status, captured);
+                coordinator_terminal.wait_finished().await;
+                return Err(status);
             }
-            let captured = CapturedError::from_adapter_error(&error);
-            let status = status_with_query_id_and_correlation_id(
-                adapter_error_status(error),
-                &query_id,
-                correlation_id.as_deref(),
-            );
-            coordinator_terminal.finish_captured("planning", &status, captured);
-            coordinator_terminal.wait_finished().await;
-            return Err(status);
-        }
-        let failed_statement = FailedStatement::of(&plan);
-        let _result = tokio::select! {
-            result = query_ctx.execute_logical_plan(plan)
-                .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "planning")) => match result {
-                Ok(df) => df,
-                Err(error) => {
+            let failed_statement = FailedStatement::of(&plan);
+            let _result = tokio::select! {
+                result = query_ctx.execute_logical_plan(plan)
+                    .instrument(Self::query_stage_span(&query_span, "planning")) => match result {
+                    Ok(df) => df,
+                    Err(error) => {
+                        if let Some(attempt) = attempt.as_ref() {
+                            attempt.planning_failed(&error);
+                        }
+                        let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation(), failed_statement);
+                        let status = status_with_query_id_and_correlation_id(
+                            datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), failed_statement),
+                            &query_id,
+                            correlation_id.as_deref(),
+                        );
+                        coordinator_terminal.finish_captured("planning", &status, captured);
+                        coordinator_terminal.wait_finished().await;
+                        return Err(status);
+                    },
+                },
+                _ = self.shutdown_token.cancelled() => {
                     if let Some(attempt) = attempt.as_ref() {
-                        attempt.planning_failed(&error);
+                        attempt.cancel_before_stream();
                     }
-                    let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation(), failed_statement);
+                    let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
                     let status = status_with_query_id_and_correlation_id(
-                        datafusion_error_to_status_for_operation(error, statement_kind.sql_operation(), failed_statement),
+                        status,
                         &query_id,
                         correlation_id.as_deref(),
                     );
@@ -215,36 +233,24 @@ impl DatafusionAlgeonFlightSqlService {
                     coordinator_terminal.wait_finished().await;
                     return Err(status);
                 },
-            },
-            _ = self.shutdown_token.cancelled() => {
-                if let Some(attempt) = attempt.as_ref() {
-                    attempt.cancel_before_stream();
-                }
-                let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
-                let status = status_with_query_id_and_correlation_id(
-                    status,
-                    &query_id,
-                    correlation_id.as_deref(),
-                );
-                coordinator_terminal.finish_captured("planning", &status, captured);
-                coordinator_terminal.wait_finished().await;
-                return Err(status);
-            },
-        };
+            };
 
-        // `execute_logical_plan` has already completed every supported update
-        // action (DataFusion materializes CTAS input there), so the statement
-        // finishes without a result stream.
-        if let Some(attempt) = attempt.as_ref() {
-            attempt.complete_without_result_stream();
+            // `execute_logical_plan` has already completed every supported update
+            // action (DataFusion materializes CTAS input there), so the statement
+            // finishes without a result stream.
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.complete_without_result_stream();
+            }
+
+            coordinator_terminal.finish_success("collect");
+            coordinator_terminal.wait_finished().await;
+            // Flight SQL update success responses carry only a record count, so
+            // there is no portable client-visible query_id. Failure captures are
+            // still retained because their Status metadata exposes the query_id.
+            Ok(NO_UPDATED_RECORDS_COUNT)
         }
-
-        coordinator_terminal.finish_success("collect");
-        coordinator_terminal.wait_finished().await;
-        // Flight SQL update success responses carry only a record count, so
-        // there is no portable client-visible query_id. Failure captures are
-        // still retained because their Status metadata exposes the query_id.
-        Ok(NO_UPDATED_RECORDS_COUNT)
+        .instrument(query_span.clone())
+        .await
     }
 
     /// Finalize a prepared-update duplicate without replanning or executing
@@ -254,7 +260,6 @@ impl DatafusionAlgeonFlightSqlService {
     pub(super) async fn complete_deduplicated_update(
         &self,
         planning_lease: QueryPlanningLease,
-        sql: String,
         correlation_id: Option<String>,
     ) -> Result<i64, Status> {
         let query_id = planning_lease.key().query_id().to_string();
@@ -291,7 +296,6 @@ impl DatafusionAlgeonFlightSqlService {
         let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution_lease,
             query_id.clone(),
-            sql.into(),
             Instant::now(),
             attempt.is_some(),
         );
@@ -323,7 +327,10 @@ pub(super) fn collect_referenced_table_names(plan: &LogicalPlan, tables: &mut BT
     }
 }
 
-pub(in crate::server) async fn reject_drop_object_type_mismatch(
+/// Rejects a DDL statement whose target cannot be what it names: a `DROP`
+/// of the wrong object type, or a `CREATE EXTERNAL TABLE` location with no
+/// object at it.
+pub(in crate::server) async fn verify_ddl_targets(
     ctx: &SessionContext,
     plan: &LogicalPlan,
     operation: &'static str,
@@ -331,9 +338,62 @@ pub(in crate::server) async fn reject_drop_object_type_mismatch(
     let (object_name, expected_table_type) = match plan {
         LogicalPlan::Ddl(DdlStatement::DropTable(drop_table)) => (&drop_table.name, TableType::Base),
         LogicalPlan::Ddl(DdlStatement::DropView(drop_view)) => (&drop_view.name, TableType::View),
+        LogicalPlan::Ddl(DdlStatement::CreateExternalTable(create)) => {
+            for location in &create.locations {
+                reject_missing_external_table_location(ctx, location, operation).await?;
+            }
+            return Ok(());
+        },
         _ => return Ok(()),
     };
     reject_drop_table_type_mismatch(ctx, object_name, expected_table_type, operation).await
+}
+
+/// DataFusion reads a location that is neither a collection nor a glob as one
+/// object, then as a prefix, and reports an empty result as a planning error
+/// about schema inference. The same two lookups here give the missing object
+/// its source code. Locations DataFusion cannot parse or route to a store are
+/// left to its own error.
+async fn reject_missing_external_table_location(
+    ctx: &SessionContext,
+    location: &str,
+    operation: &'static str,
+) -> AdapterResult<()> {
+    let Ok(url) = ListingTableUrl::parse(location) else {
+        return Ok(());
+    };
+    if url.get_glob().is_some() {
+        return Ok(());
+    }
+    let Ok(store) = ctx.runtime_env().object_store(url.object_store()) else {
+        return Ok(());
+    };
+    let failure = if url.is_collection() {
+        None
+    } else {
+        match store.head(url.prefix()).await {
+            Ok(_) => return Ok(()),
+            Err(ObjectStoreError::NotFound { .. }) => None,
+            Err(error) => Some(error),
+        }
+    };
+    let failure = match failure {
+        Some(error) => error,
+        None => match store.list(Some(url.prefix())).next().await {
+            Some(Ok(_)) => return Ok(()),
+            Some(Err(error)) => error,
+            None => {
+                return Err(Error::new(
+                    ErrorCode::SourceObjectNotFound,
+                    operation,
+                    "the external table location names no object",
+                )
+                .with_fact("path", location));
+            },
+        },
+    };
+    Err(Error::from_object_store_error(operation, "the external table location cannot be read", failure)
+        .with_fact("path", location))
 }
 
 async fn reject_drop_table_type_mismatch(

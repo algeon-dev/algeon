@@ -16,7 +16,7 @@ use cuml::{
     TsvdParams, UmapInit, UmapModel, UmapParams,
 };
 use query_planning::{
-    error::{QueryError, QueryErrorCode, Result},
+    error::{QueryError, QueryErrorCode, RAPIDS_LIBRARY_FACT, Result},
     plan::{
         MlAlgorithm, MlAlgorithmNode, MlAlgorithmParams, MlClusterSelectionMethod, MlDecompositionSolver,
         MlForestModelFacts, MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision, MlForestPredictParams,
@@ -54,7 +54,8 @@ const NATIVE: &str = "query_engine.ml_algorithm.native";
 const FEATURE_ELEMENT: TypeId = TypeId::Float32;
 
 fn invalid(node_id: NodeId, reason: &'static str, message: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::CudfInvalidInput, EXECUTE, message)
+    QueryError::new(QueryErrorCode::RapidsInvalidInput, EXECUTE, message)
+        .with_fact(RAPIDS_LIBRARY_FACT, "cuml")
         .with_fact("node_id", node_id)
         .with_fact("reason", reason)
 }
@@ -167,7 +168,8 @@ pub(in crate::exec) fn execute_ml_algorithm(
         cuml_query_error(EXECUTE, "failed to create query-local cuML resources", error).with_fact("node_id", node_id)
     })?;
     let version = cuml_sys::validate_runtime_version().map_err(|error| {
-        QueryError::new(QueryErrorCode::CudfDependencyFailure, EXECUTE, "failed to validate native cuML version")
+        QueryError::new(QueryErrorCode::RapidsDependencyFailure, EXECUTE, "failed to validate native cuML version")
+            .with_fact(RAPIDS_LIBRARY_FACT, "cuml")
             .with_fact("node_id", node_id)
             .with_source(error)
     })?;
@@ -746,10 +748,11 @@ fn execute_random_forest(
                     .map_err(|error| cuml_query_error(NATIVE, "failed to predict cuML RF", error))?;
                 let [result]: [Series; 1] = series.try_into().map_err(|_| {
                     QueryError::new(
-                        QueryErrorCode::CudfInvariantViolation,
+                        QueryErrorCode::RapidsInvariantViolation,
                         NATIVE,
                         "nvForest prediction series count differs from one",
                     )
+                    .with_fact(RAPIDS_LIBRARY_FACT, "cuml")
                     .with_fact("reason", "invalid_native_output_contract")
                 })?;
                 vec![("prediction".to_owned(), result)]
@@ -1322,10 +1325,11 @@ fn execute_forest_predict(
         })?;
         if series.len() != width {
             return Err(QueryError::new(
-                QueryErrorCode::CudfInvariantViolation,
+                QueryErrorCode::RapidsInvariantViolation,
                 NATIVE,
                 "forest prediction series count differs from the planned output",
             )
+            .with_fact(RAPIDS_LIBRARY_FACT, "cuml")
             .with_fact("reason", "invalid_native_output_contract")
             .with_fact("expected", width)
             .with_fact("actual", series.len()));

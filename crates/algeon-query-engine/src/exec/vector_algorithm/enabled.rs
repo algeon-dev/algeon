@@ -15,6 +15,7 @@ use cuvs::{
 };
 use query_planning::{
     capability::VectorInputRole,
+    error::RAPIDS_LIBRARY_FACT,
     plan::{
         DenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams,
         VectorCagraBuildAlgo, VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfPqCodebookKind, VectorKMeansInit,
@@ -162,10 +163,11 @@ pub(in crate::exec) fn execute_vector_algorithm(
     })?;
     let native_version = cuvs_sys::validate_runtime_version().map_err(|error| {
         QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::RapidsDependencyFailure,
             EXECUTE_OPERATION,
             "failed to validate the native cuVS runtime version",
         )
+        .with_fact(RAPIDS_LIBRARY_FACT, "cuvs")
         .with_fact("node_id", node_id)
         .with_fact("algorithm", node.spec.algorithm.as_str())
         .with_source(error)
@@ -636,10 +638,11 @@ where
             })?;
             if packed_dataset_rows != dataset_rows {
                 return Err(QueryError::new(
-                    QueryErrorCode::CudfInvariantViolation,
+                    QueryErrorCode::RapidsInvariantViolation,
                     EXECUTE_OPERATION,
                     "packed kNN dataset row count does not match the evaluated relation",
                 )
+                .with_fact(RAPIDS_LIBRARY_FACT, "cuvs")
                 .with_fact("node_id", node_id)
                 .with_fact("relation_rows", dataset_rows)
                 .with_fact("packed_rows", packed_dataset_rows)
@@ -705,10 +708,11 @@ where
                     })?;
                     if query_rows != queries.num_rows() {
                         return Err(QueryError::new(
-                            QueryErrorCode::CudfInvariantViolation,
+                            QueryErrorCode::RapidsInvariantViolation,
                             EXECUTE_OPERATION,
                             "packed kNN query row count does not match the evaluated relation",
                         )
+                        .with_fact(RAPIDS_LIBRARY_FACT, "cuvs")
                         .with_fact("node_id", node_id)
                         .with_fact("relation_rows", queries.num_rows())
                         .with_fact("packed_rows", query_rows)
@@ -976,7 +980,8 @@ fn vector_input_error(
     reason: &'static str,
     message: &'static str,
 ) -> QueryError {
-    QueryError::new(QueryErrorCode::CudfInvalidInput, EXECUTE_OPERATION, message)
+    QueryError::new(QueryErrorCode::RapidsInvalidInput, EXECUTE_OPERATION, message)
+        .with_fact(RAPIDS_LIBRARY_FACT, "cuvs")
         .with_fact("node_id", node_id)
         .with_fact("algorithm", algorithm.as_str())
         .with_fact("reason", reason)
@@ -1675,10 +1680,11 @@ fn uniform_list_vector_column<'a>(
     match &binding.vector {
         DenseVectorBinding::VectorColumn(column) => Ok(column),
         DenseVectorBinding::Columns(_) => Err(QueryError::new(
-            QueryErrorCode::CudfInvariantViolation,
+            QueryErrorCode::RapidsInvariantViolation,
             PACK_OPERATION,
             "uniform List vector packing received a scalar-column binding",
         )
+        .with_fact(RAPIDS_LIBRARY_FACT, "cuvs")
         .with_fact("node_id", node_id)
         .with_fact("relation_role", role)
         .with_fact("reason", "uniform_list_binding_kind_mismatch")),

@@ -142,7 +142,7 @@ impl AttemptAllocationDomain {
             || usage.ceiling_bytes != grant.budget_bytes()
         {
             return Err(QueryError::new(
-                QueryErrorCode::CudfInvariantViolation,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.runtime.attempt_allocation_domain.create",
                 "attempt allocation domain does not match immutable admission grant",
             )

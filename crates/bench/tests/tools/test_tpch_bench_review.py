@@ -165,7 +165,7 @@ class TpchBenchReviewTest(unittest.TestCase):
                      post_native_execution_path="none", parity_status="not_run",
                      runtime_operator_class="not_run"),
             make_row(query_id="q04", runtime_outcome="failed", parity_status="native_failed",
-                     runtime_failure_code="cudf_dependency_failure",
+                     runtime_failure_code="rapids_dependency_failure",
                      runtime_failure_facts=(
                          "cudf_code=IoFailure;cudf_message=Unable to open file. Linux "
                          "system/library function call error at: /some/very/long/path/"
@@ -192,7 +192,7 @@ class TpchBenchReviewTest(unittest.TestCase):
         by_q = {rec["q"]: rec for rec in records}
 
         self.assertEqual(by_q["q15"]["cls"], "planning_rejected")
-        self.assertEqual(by_q["q04"]["cls"], "runtime_failed:cudf_dependency_failure")
+        self.assertEqual(by_q["q04"]["cls"], "runtime_failed:rapids_dependency_failure")
         self.assertEqual(by_q["q05"]["cls"], "runtime_failed:query_memory_limit_exceeded")
         self.assertEqual(by_q["q06"]["cls"], "runtime_failed:device_out_of_memory")
         self.assertEqual(by_q["q07"]["cls"], "cpu_failed")
@@ -209,7 +209,7 @@ class TpchBenchReviewTest(unittest.TestCase):
 
         coverage_text = "\n".join(summary["coverage"])
         self.assertIn("planning_rejected: 1", coverage_text)
-        self.assertIn("runtime_failed:cudf_dependency_failure: 1", coverage_text)
+        self.assertIn("runtime_failed:rapids_dependency_failure: 1", coverage_text)
         self.assertIn("runtime_failed:query_memory_limit_exceeded: 1", coverage_text)
         self.assertIn("runtime_failed:device_out_of_memory: 1", coverage_text)
         self.assertIn("cpu_failed: 1", coverage_text)

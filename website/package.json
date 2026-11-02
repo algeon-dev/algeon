@@ -29,7 +29,7 @@
     "react-dom": "^19.3.1",
     "recharts": "^3.9.2",
     "roughjs": "^4.6.6",
-    "sigma": "^4.0.3"
+    "sigma": "^4.0.4"
   },
   "devDependencies": {
     "@docusaurus/module-type-aliases": "^3.10.2",
@@ -38,7 +38,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "typescript": "~7.0.2",
-    "wrangler": "^4.151.0"
+    "wrangler": "^4.155.0"
   },
   "browserslist": {
     "production": [

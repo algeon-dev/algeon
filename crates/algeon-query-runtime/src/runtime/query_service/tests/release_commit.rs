@@ -614,7 +614,7 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release_case() 
     let first_release = std::thread::spawn(move || {
         first_owner
             .commit_terminal(RuntimeTerminalOutcome::Failed {
-                error_code: AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure),
+                error_code: AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure),
                 error_status: AttemptFailureStatus::Temporary,
             })
             .expect("failed first attempt commits its terminal outcome");
@@ -1221,7 +1221,7 @@ async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
     // The attempt's capacity is never reusable. A new admission cannot place
     // on the closed device.
     let error = service.admit_query().expect_err("closed device rejects new admission");
-    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
+    assert_eq!(error.code(), QueryErrorCode::DeviceFault);
     assert_eq!(
         error.fact_value("reason"),
         Some("no_healthy_compatible_device"),
@@ -1280,7 +1280,7 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
     drop(handle.acquire_context().expect("root context"));
     device_zero.stream_pool().fail_next_synchronization_for_test();
     let execution_error = QueryError::new(
-        QueryErrorCode::CudfTemporaryFailure,
+        QueryErrorCode::RapidsTemporaryFailure,
         "query_engine.query_service.alternate_retry_test",
         "injected execution failure before device-local cleanup fault",
     );
@@ -1346,7 +1346,7 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     drop(context);
 
     let primary_error = QueryError::new(
-        QueryErrorCode::CudfTemporaryFailure,
+        QueryErrorCode::RapidsTemporaryFailure,
         "query_engine.query_service.unknown_isolation_primary",
         "injected primary error before abandoned cleanup",
     );
@@ -1357,12 +1357,12 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     assert!(matches!(
         report.outcome,
         RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure),
+            error_code: AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure),
             error_status: AttemptFailureStatus::Temporary,
         }
     ));
     let primary_failure = report.primary_failure.as_ref().expect("primary failure remains authoritative");
-    assert_eq!(primary_failure.code(), AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure));
+    assert_eq!(primary_failure.code(), AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure));
     assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::CompletedWithFailures);
     assert_eq!(report.cleanup_failure_count, 1, "the abandoned callback is one cleanup failure");
     assert!(report.cleanup_failure_count_complete);
@@ -1408,7 +1408,7 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     );
     let error =
         service.admit_query().expect_err("backend rejects new admission after unknown-isolation cleanup collision");
-    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
+    assert_eq!(error.code(), QueryErrorCode::DeviceFault);
     assert_eq!(error.fact_value("reason"), Some("backend_unhealthy"));
 }
 
@@ -1552,7 +1552,7 @@ fn backend_unhealthy_rejects_new_submissions_while_inflight_finishes() {
     ));
 
     let error = service.admit_query().expect_err("new submission rejects while unhealthy");
-    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
+    assert_eq!(error.code(), QueryErrorCode::DeviceFault);
     assert_eq!(error.fact_value("reason"), Some("backend_unhealthy"));
     assert_eq!(
         error.fact_value("detail"),

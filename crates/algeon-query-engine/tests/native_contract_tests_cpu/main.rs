@@ -189,6 +189,7 @@ fn source_storage_error_codes_have_stable_policy() {
         (QueryErrorCode::SourceUnauthenticated, "source_unauthenticated", QueryErrorStatus::Permanent),
         (QueryErrorCode::SourceObjectNotFound, "source_object_not_found", QueryErrorStatus::Permanent),
         (QueryErrorCode::SourceTemporaryFailure, "source_temporary_failure", QueryErrorStatus::Temporary),
+        (QueryErrorCode::SourceDependencyFailure, "source_dependency_failure", QueryErrorStatus::Permanent),
     ];
 
     for (code, label, status) in cases {

@@ -27,7 +27,7 @@ use super::{
     reject_parameterized_plan, reject_parameterized_statement, request_correlation_id, schema_to_ipc_bytes,
     server_shutdown_error, sql_info_data, status_with_query_id_and_correlation_id, tracing_correlation_id,
 };
-use crate::server::{attempt::AttemptOptions, error::adapter_error_to_status, observability::RedactedSql};
+use crate::server::{attempt::AttemptOptions, error::adapter_error_to_status};
 
 #[tonic::async_trait]
 impl FlightSqlService for DatafusionAlgeonFlightSqlService {
@@ -68,13 +68,12 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         tracing::info!(
             query_id,
             correlation_id = tracing_correlation_id(correlation_id.as_deref()),
-            sql = %RedactedSql(&sql),
             "planning Flight SQL statement"
         );
         if query.transaction_id.is_some() {
             let (status, captured) = adapter_error_to_status_and_capture(flight_sql_transactions_unsupported_error());
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
+            log_statement_status(&query_id, "planning", planning_started_at, &status);
             planning_lease.fail("planning", captured);
             return Err(status);
         }
@@ -93,7 +92,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                         let (status, captured) = adapter_error_to_status_and_capture(begin_error);
                         let status =
                             status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                        log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
+                        log_statement_status(&query_id, "planning", planning_started_at, &status);
                         planning_lease.finish_captured("planning", &status, captured);
                         return Err(status);
                     },
@@ -107,7 +106,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 }
                 let (status, captured) = adapter_error_to_status_and_capture(error);
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
+                log_statement_status(&query_id, "planning", planning_started_at, &status);
                 planning_lease.fail("planning", captured);
                 return Err(status);
             },
@@ -146,7 +145,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             Ok(info) => info,
             Err(status) => {
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
+                log_statement_status(&query_id, "planning", planning_started_at, &status);
                 return Err(status);
             },
         };
@@ -215,7 +214,6 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         tracing::info!(
             query_id,
             correlation_id = tracing_correlation_id(correlation_id.as_deref()),
-            sql = %RedactedSql(&sql),
             prepared_statement_handle = handle.as_str(),
             "planning Flight SQL prepared statement"
         );
@@ -253,7 +251,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             Ok(info) => info,
             Err(status) => {
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
+                log_statement_status(&query_id, "planning", planning_started_at, &status);
                 return Err(status);
             },
         };
@@ -692,7 +690,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 prepared_statement_handle = handle.as_str(),
                 "deduplicated repeated prepared DDL execution on the update channel; returning a no-op"
             );
-            return self.complete_deduplicated_update(planning_lease, sql, correlation_id).await;
+            return self.complete_deduplicated_update(planning_lease, correlation_id).await;
         }
 
         let record_count = self
@@ -722,6 +720,9 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             self.register_new_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
                 status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
             })?;
+        // Owned from registration, so a create that fails is still found by
+        // its correlation id; the returned handle is this query id.
+        self.ownership.insert(query_id.clone(), caller.clone());
         let query_span = DatafusionAlgeonFlightSqlService::query_span(
             &query_id,
             correlation_id.as_deref(),
@@ -769,15 +770,11 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 let statement = parsed_statement?;
                 state.statement_to_plan(statement).await
             }
-                .instrument(DatafusionAlgeonFlightSqlService::query_stage_span(
-                    Some(&query_span),
-                    &query_id,
-                    correlation_id.as_deref(),
-                    "planning",
-                )) => {
+                .instrument(DatafusionAlgeonFlightSqlService::query_stage_span(&query_span, "planning")) => {
                 match result {
                     Ok(plan) => plan,
                     Err(error) => {
+                        let _query_enter = query_span.enter();
                         let (status, captured) = datafusion_error_to_status_and_capture(
                             error,
                             "algeon_datafusion.server.flight.do_action_create_prepared_statement.create_logical_plan",
@@ -794,6 +791,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 }
             },
             _ = self.shutdown_token.cancelled() => {
+                let _query_enter = query_span.enter();
                 let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
                 let status = status_with_query_id_and_correlation_id(
                     status,
@@ -804,6 +802,8 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 return Err(status);
             }
         };
+        // The rest of the create runs without awaiting.
+        let _query_enter = query_span.enter();
         if execution_domain == StatementExecutionDomain::Metadata
             && let Err(error) = self.verify_metadata_logical_plan(
                 &logical_plan,
@@ -1092,7 +1092,7 @@ impl DatafusionAlgeonFlightSqlService {
         let handle = query_id;
         // The cap check and the insert that consumes it are one operation in
         // the store, so concurrent creates cannot both pass the check.
-        if let Err(limit) = self.prepared_statements.insert(handle.clone(), caller.clone(), entry) {
+        if let Err(limit) = self.prepared_statements.insert(handle.clone(), caller, entry) {
             let error = Error::new(
                 ErrorCode::ServiceOverloaded,
                 "algeon_datafusion.server.flight.do_action_create_prepared_statement.admission",
@@ -1104,7 +1104,6 @@ impl DatafusionAlgeonFlightSqlService {
             planning_lease.finish_captured("admission", &status, captured);
             return Err(status);
         }
-        self.ownership.insert(handle.clone(), caller);
         tracing::info!(prepared_statement_handle = handle.as_str(), "created Flight SQL prepared statement");
         planning_lease.succeed();
 

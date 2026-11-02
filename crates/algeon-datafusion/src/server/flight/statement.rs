@@ -22,9 +22,8 @@ use super::{
     ProstMessageExt, QueryCoordinatorError, QueryCoordinatorErrorKind, QueryPlanningLease, SessionContext,
     SessionStateBuilder, StatementExecutionDomain, StatementTicketKind, Status, Ticket, TicketStatementQuery,
     adapter_error_status, adapter_error_to_status_and_capture, arrow_error_to_status_and_capture, coverage_schema,
-    datafusion_error_to_status_and_capture, flight_result_schema, forest_model_digests,
-    reject_drop_object_type_mismatch, server_shutdown_error, status_with_query_id_and_correlation_id,
-    verify_flight_info_plan,
+    datafusion_error_to_status_and_capture, flight_result_schema, forest_model_digests, server_shutdown_error,
+    status_with_query_id_and_correlation_id, verify_ddl_targets, verify_flight_info_plan,
 };
 use crate::{
     build_info::{ALGEON_VERSION_FUNCTION, is_algeon_version_table_source},
@@ -303,7 +302,7 @@ impl DatafusionAlgeonFlightSqlService {
                 let statement = parsed_statement?;
                 query_state.statement_to_plan(statement).await
             }
-                .instrument(Self::query_stage_span(None, &query_id, correlation_id.as_deref(), "planning")) => {
+                .instrument(Self::query_stage_span(&tracing::Span::current(), "planning")) => {
                 match result {
                     Ok(plan) => plan,
                     Err(error) => {
@@ -353,8 +352,7 @@ impl DatafusionAlgeonFlightSqlService {
             return Err(status);
         }
         if let Err(error) =
-            reject_drop_object_type_mismatch(&query_ctx, &logical_plan, ticket_kind.create_logical_plan_operation())
-                .await
+            verify_ddl_targets(&query_ctx, &logical_plan, ticket_kind.create_logical_plan_operation()).await
         {
             if let Some(attempt) = attempt.as_ref() {
                 attempt.planning_failed_adapter(&error);

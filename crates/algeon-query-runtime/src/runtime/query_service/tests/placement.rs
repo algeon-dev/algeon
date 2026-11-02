@@ -110,7 +110,7 @@ fn a_native_fault_ends_a_waiter_without_other_admission_activity() {
 
     let error =
         waiter.join().expect("waiter thread does not panic").expect_err("the faulted device rejects the waiter");
-    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
+    assert_eq!(error.code(), QueryErrorCode::DeviceFault);
     assert_eq!(error.fact_value("reason"), Some("no_healthy_compatible_device"));
     assert_eq!(scope.health_snapshot(device).fault_count(), 1);
     active.end_test_attempt();

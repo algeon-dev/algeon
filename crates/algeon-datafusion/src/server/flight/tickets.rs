@@ -171,6 +171,9 @@ pub(super) struct QueryExecutionGuard {
     /// started response delivery beyond its schema frame.
     pub(super) delivery_started: Arc<std::sync::atomic::AtomicBool>,
     pub(super) terminal: Arc<CoordinatorExecutionTerminal>,
+    /// Query span the drop-time terminal events are logged in; the guard is
+    /// dropped outside any span when the client cancels or disconnects.
+    pub(super) span: tracing::Span,
 }
 
 pub(super) struct CoordinatorExecutionTerminal {
@@ -178,7 +181,6 @@ pub(super) struct CoordinatorExecutionTerminal {
     finished: Notify,
     key: QueryKey,
     query_id: String,
-    sql: Arc<str>,
     started_at: Instant,
 }
 
@@ -243,8 +245,8 @@ enum CoordinatorExecutionTerminalOutcome {
 
 impl CoordinatorExecutionTerminal {
     #[cfg(test)]
-    pub(super) fn new(lease: QueryExecutionLease, query_id: String, sql: Arc<str>, started_at: Instant) -> Arc<Self> {
-        Self::new_with_attempt_report(lease, query_id, sql, started_at, false)
+    pub(super) fn new(lease: QueryExecutionLease, query_id: String, started_at: Instant) -> Arc<Self> {
+        Self::new_with_attempt_report(lease, query_id, started_at, false)
     }
 
     /// Creates a terminal lease that cannot be released until the attempt
@@ -254,7 +256,6 @@ impl CoordinatorExecutionTerminal {
     pub(super) fn new_with_attempt_report(
         lease: QueryExecutionLease,
         query_id: String,
-        sql: Arc<str>,
         started_at: Instant,
         requires_attempt_report: bool,
     ) -> Arc<Self> {
@@ -269,13 +270,19 @@ impl CoordinatorExecutionTerminal {
             finished: Notify::new(),
             key,
             query_id,
-            sql,
             started_at,
         })
     }
 
     pub(super) fn is_finished(&self) -> bool {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lease.is_none()
+    }
+
+    /// Whether an outcome was released or is deferred until the attempt
+    /// report attaches. A later outcome is discarded in both cases.
+    pub(super) fn has_outcome(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.lease.is_none() || state.pending.is_some()
     }
 
     pub(super) fn key(&self) -> &QueryKey {
@@ -406,7 +413,7 @@ impl CoordinatorExecutionTerminal {
             },
             CoordinatorExecutionTerminalOutcome::Captured { stage, status, captured } => {
                 lease.finish_captured(stage, &status, *captured);
-                log_statement_status(&self.query_id, Some(&self.sql), stage, self.started_at, &status);
+                log_statement_status(&self.query_id, stage, self.started_at, &status);
             },
             CoordinatorExecutionTerminalOutcome::Dropped { stage } => {
                 // The lease drop commits `Dropped`; like the other arms, commit before logging.
@@ -441,7 +448,7 @@ impl CoordinatorExecutionTerminal {
         match outcome {
             CoordinatorExecutionTerminalOutcome::Captured { stage, status, captured } => {
                 lease.finish_attempt_report_delivery_failed(stage, &status, *captured, attempt_outcome);
-                log_statement_status(&self.query_id, Some(&self.sql), stage, self.started_at, &status);
+                log_statement_status(&self.query_id, stage, self.started_at, &status);
             },
             // This private path is constructed only by
             // `finish_attempt_report_delivery_failed` above.
@@ -456,8 +463,14 @@ impl CoordinatorExecutionTerminal {
 
 impl Drop for QueryExecutionGuard {
     fn drop(&mut self) {
+        let _span_enter = self.span.enter();
         if !self.terminal.is_finished() {
-            if std::thread::panicking() {
+            // A stream failure can still wait here for the attempt report. A
+            // cancellation built now would be logged as a second failure
+            // event and then discarded by the terminal.
+            if self.terminal.has_outcome() {
+                // The recorded outcome stays authoritative.
+            } else if std::thread::panicking() {
                 self.terminal.finish_panicked("stream");
             } else if self.delivery_started.load(std::sync::atomic::Ordering::Acquire) {
                 let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));

@@ -697,7 +697,7 @@ impl AdmissionEnvelope {
         )?;
         if stream_lease.device().ordinal() != device_ordinal {
             return Err(QueryError::new(
-                QueryErrorCode::CudfInvariantViolation,
+                QueryErrorCode::InternalInvariantViolation,
                 operation,
                 "admission envelope root stream device does not match the ledger grant device",
             )
@@ -716,7 +716,7 @@ impl AdmissionEnvelope {
         let domain = AttemptAllocationDomain::create(runtime.as_ref(), grant_ref)?;
         if domain.device_ordinal() != device_ordinal {
             return Err(QueryError::new(
-                QueryErrorCode::CudfInvariantViolation,
+                QueryErrorCode::InternalInvariantViolation,
                 operation,
                 "admission envelope domain device does not match the ledger grant device",
             )

@@ -645,7 +645,7 @@ algeon_server hash-password
 | Argument | Effect |
 |---|---|
 | `--config <path>` | TOML file. Overrides `ALGEON_SERVER_CONFIG_FILE` |
-| `--log <filter>` | Tracing filter such as `info` or `algeon_datafusion=debug`. Overrides `ALGEON_SERVER_LOG` |
+| `--log <filter>` | Tracing filter such as `info` or `algeon_datafusion=debug`. Overrides `ALGEON_SERVER_LOG`. [Server log](./handling-errors.mdx#server-log) lists the fields of a failure event |
 | `--check-config` | Loads and validates the configuration, including the TLS files, without touching a GPU, prints it, exits 0, or prints the error and exits 1 |
 | `--version` | Prints the version, commit, enabled features and DataFusion version |
 | `hash-password` | Reads one line from stdin and prints its Argon2 PHC string ([Authentication](#authentication)) |

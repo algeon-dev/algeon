@@ -339,14 +339,14 @@ mod enabled {
             .err()
             .expect("empty matrix is invalid");
         let error = cuml_query_error("query_engine.test.from_cuml", "invalid matrix", source);
-        assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+        assert_eq!(error.code(), QueryErrorCode::RapidsInvalidInput);
         assert_eq!(error.fact_value("cuml_code"), Some("ForeignInvalidArgument"));
         assert_eq!(error.fact_value("cuml_kind"), Some("InvalidInput"));
         assert_eq!(error.fact_value("cuml_status"), Some("permanent"));
         assert_eq!(error.fact_value("cuml_phase"), Some("preflight"));
+        assert_eq!(error.fact_value("rapids_library"), Some("cuml"));
         assert_eq!(error.fact_value("cuml_operation"), Some("OwnedFloat32Matrix::new"));
         assert!(error.fact_value("cuml_message").is_some());
-        assert!(error.fact_value("cuml_call_chain").is_some());
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod enabled {
             .expect("unsupported dtype");
         assert_eq!(source.detail_value("reason"), Some("unsupported_label_type"));
         let error = cuml_query_error("query_engine.test.unsupported_labels", "invalid label dtype", source);
-        assert_eq!(error.code(), QueryErrorCode::CudfUnsupported);
+        assert_eq!(error.code(), QueryErrorCode::RapidsUnsupported);
         assert_eq!(error.fact_value("reason"), Some("unsupported_label_type"));
     }
 
@@ -529,7 +529,7 @@ mod enabled {
         ] {
             let (result, _) = execute_supervised(MlAlgorithm::LogisticRegression, 2, Some(labels), 2);
             let error = result.err().expect("invalid labels");
-            assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+            assert_eq!(error.code(), QueryErrorCode::RapidsInvalidInput);
             assert_eq!(error.fact_value("reason"), Some(reason));
             assert_eq!(error.fact_value("cuml_code"), Some("LabelOutOfRange"));
         }

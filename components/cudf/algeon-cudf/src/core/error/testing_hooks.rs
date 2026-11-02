@@ -150,6 +150,18 @@ pub fn trigger_truthful_error_contract_for_test() -> Result<()> {
     .reanchor("testing::truthful_error_contract::outer"))
 }
 
+/// Trigger a synthetic error that attaches two sources so integration tests
+/// can lock the keep-first source contract.
+pub fn trigger_second_source_contract_for_test() -> Result<()> {
+    Err(Error::new_with(
+        ErrorCode::InvariantViolation,
+        "testing::truthful_error_contract::second_source",
+        "second source contract",
+    )
+    .with_source(io::Error::other("first source"))
+    .with_source(io::Error::other("second source")))
+}
+
 /// Trigger a synthetic error that reanchors twice at the same operation so
 /// integration tests can lock the no-deduplication contract.
 pub fn trigger_same_operation_reanchor_contract_for_test() -> Result<()> {

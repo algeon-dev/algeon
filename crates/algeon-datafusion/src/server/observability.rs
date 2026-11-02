@@ -521,10 +521,10 @@ fn is_utf8_char_boundary(byte: u8) -> bool {
 }
 
 /// `Display` wrapper that masks `OPTIONS` clause values before newline/CR/tab
-/// stabilization, so SQL text is redacted before it is ever formatted for a
-/// log line or retained artifact. Distinct from [`StableValue`], which is
-/// also used for non-SQL fields (query ids, error facts) that must never be
-/// masked.
+/// stabilization. It renders the startup `init_sql` excerpt, the operator's
+/// own file; statement log lines carry no SQL text. Distinct from
+/// [`StableValue`], which is also used for non-SQL fields (query ids, error
+/// facts) that must never be masked.
 pub(super) struct RedactedSql<'a>(pub(super) &'a str);
 
 impl fmt::Display for RedactedSql<'_> {

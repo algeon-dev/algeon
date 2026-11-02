@@ -80,7 +80,7 @@ mod tickets;
 use correlation::tracing_correlation_id;
 pub(super) use correlation::{attach_query_response_metadata, request_correlation_id};
 use ddl::referenced_table_names;
-pub(in crate::server) use ddl::reject_drop_object_type_mismatch;
+pub(in crate::server) use ddl::verify_ddl_targets;
 use frame_limiter::encode_flight_data_stream;
 use metadata::{
     GetTablesPrefilters, build_table_types_batch, empty_foreign_keys_batch, empty_primary_keys_batch,

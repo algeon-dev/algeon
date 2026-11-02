@@ -30,8 +30,8 @@ use super::{
     arrow_flight_error_to_status_for_operation, cancellation_error, coverage_batch, coverage_schema,
     datafusion_error_to_flight_error, datafusion_error_to_status_and_capture, encode_flight_data_stream,
     execute_stream, flight_result_schema, forest_model_digests, log_native_planning_report_for_tables,
-    log_statement_status, referenced_table_names, reject_drop_object_type_mismatch,
-    status_with_query_id_and_correlation_id, tracing_correlation_id, validate_query, verify_forest_model_identity,
+    log_statement_status, referenced_table_names, status_with_query_id_and_correlation_id, tracing_correlation_id,
+    validate_query, verify_ddl_targets, verify_forest_model_identity,
 };
 use crate::server::attempt::AlgeonAttempt;
 
@@ -255,7 +255,7 @@ impl DatafusionAlgeonFlightSqlService {
                     &query_id,
                     request_correlation_id.as_deref(),
                 );
-                log_statement_status(&query_id, None, "ticket", Instant::now(), &status);
+                log_statement_status(&query_id, "ticket", Instant::now(), &status);
                 status
             })?;
 
@@ -295,85 +295,198 @@ impl DatafusionAlgeonFlightSqlService {
                 "executing Flight SQL statement ticket"
             );
         }
-        let output_counters = execution_lease.hot_counters();
-        let attempt_cancellation = attempt.as_ref().map(AlgeonAttempt::cancellation);
-        self.cancellations.insert(query_id.clone(), token.clone(), attempt_cancellation.clone());
-        let attempt_cancellation_for_stream = attempt_cancellation.clone();
-        let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
-            execution_lease,
-            query_id.clone(),
-            Arc::clone(&sql),
-            started_at,
-            attempt.is_some(),
-        );
-        if let Some(attempt) = attempt.as_ref() {
-            self.register_attempt_report_handoff(
-                attempt,
-                CoordinatorReportHandoffTerminal::execution(Arc::clone(&coordinator_terminal)),
+        // Planning and setup failures convert between awaits, so the span
+        // instruments the whole body rather than each awaited stage.
+        async {
+            let output_counters = execution_lease.hot_counters();
+            let attempt_cancellation = attempt.as_ref().map(AlgeonAttempt::cancellation);
+            self.cancellations.insert(query_id.clone(), token.clone(), attempt_cancellation.clone());
+            let attempt_cancellation_for_stream = attempt_cancellation.clone();
+            let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
+                execution_lease,
+                query_id.clone(),
+                started_at,
+                attempt.is_some(),
             );
-        }
-        // Construct the guard before any post-ticket branch so cancellation
-        // registration and observability cleanup stay tied together after the
-        // ticket leaves the coordinator's ticketed state.
-        let guard = QueryExecutionGuard {
-            query_id: query_id.clone(),
-            correlation_id: correlation_id.clone(),
-            cancellations: Arc::clone(&self.cancellations),
-            flight_token: token.clone(),
-            attempt_cancellation,
-            shutdown_token: self.shutdown_token.clone(),
-            delivery_started: Arc::new(AtomicBool::new(false)),
-            terminal: Arc::clone(&coordinator_terminal),
-        };
-        if token.is_cancelled() {
             if let Some(attempt) = attempt.as_ref() {
-                attempt.cancel_before_stream();
+                self.register_attempt_report_handoff(
+                    attempt,
+                    CoordinatorReportHandoffTerminal::execution(Arc::clone(&coordinator_terminal)),
+                );
             }
-            let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            coordinator_terminal.finish_captured("planning", &status, captured);
-            return Err(status);
-        }
-
-        if let Some(output_mode) = ticket_kind.explain_gpu_output_mode() {
-            // `EXPLAIN GPU` is a plan-time diagnostic. It uses the same
-            // per-query context, coordinator lease, and cancellation wiring as
-            // ordinary statements, but deliberately never executes a physical
-            // plan or acquires GPU admission.
-            let query_ctx = match self
-                .data_query_context(attempt.as_ref(), self.attempt_invocation_execution(correlation_id.as_deref()))
-            {
-                Ok(context) => context,
-                Err(error) => {
-                    let (status, captured) = datafusion_error_to_status_and_capture(
-                        error,
-                        ticket_kind.sql_operation(),
-                        FailedStatement::Other,
-                    );
-                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    coordinator_terminal.finish_captured("planning", &status, captured);
-                    return Err(status);
-                },
+            // Construct the guard before any post-ticket branch so cancellation
+            // registration and observability cleanup stay tied together after the
+            // ticket leaves the coordinator's ticketed state.
+            let guard = QueryExecutionGuard {
+                query_id: query_id.clone(),
+                correlation_id: correlation_id.clone(),
+                cancellations: Arc::clone(&self.cancellations),
+                flight_token: token.clone(),
+                attempt_cancellation,
+                shutdown_token: self.shutdown_token.clone(),
+                delivery_started: Arc::new(AtomicBool::new(false)),
+                terminal: Arc::clone(&coordinator_terminal),
+                span: query_span.clone(),
             };
-            let coverage = tokio::select! {
-                result = validate_query(&query_ctx, &sql)
-                    .instrument(Self::query_stage_span(
-                        Some(&query_span),
-                        &query_id,
-                        correlation_id.as_deref(),
-                        "planning",
-                    )) => match result {
-                    Ok(coverage) => coverage,
+            if token.is_cancelled() {
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.cancel_before_stream();
+                }
+                let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                coordinator_terminal.finish_captured("planning", &status, captured);
+                return Err(status);
+            }
+
+            if let Some(output_mode) = ticket_kind.explain_gpu_output_mode() {
+                // `EXPLAIN GPU` is a plan-time diagnostic. It uses the same
+                // per-query context, coordinator lease, and cancellation wiring as
+                // ordinary statements, but deliberately never executes a physical
+                // plan or acquires GPU admission.
+                let query_ctx = match self
+                    .data_query_context(attempt.as_ref(), self.attempt_invocation_execution(correlation_id.as_deref()))
+                {
+                    Ok(context) => context,
                     Err(error) => {
+                        let (status, captured) = datafusion_error_to_status_and_capture(
+                            error,
+                            ticket_kind.sql_operation(),
+                            FailedStatement::Other,
+                        );
+                        let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                        coordinator_terminal.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                };
+                let coverage = tokio::select! {
+                    result = validate_query(&query_ctx, &sql)
+                        .instrument(Self::query_stage_span(&query_span, "planning")) => match result {
+                        Ok(coverage) => coverage,
+                        Err(error) => {
+                            if let Some(attempt) = attempt.as_ref() {
+                                attempt.planning_failed_adapter(&error);
+                            }
+                            let (status, captured) = adapter_error_to_status_and_capture(error);
+                            let status = status_with_query_id_and_correlation_id(
+                                status,
+                                &query_id,
+                                correlation_id.as_deref(),
+                            );
+                            coordinator_terminal.finish_captured("planning", &status, captured);
+                            return Err(status);
+                        },
+                    },
+                    _ = token.cancelled() => {
                         if let Some(attempt) = attempt.as_ref() {
-                            attempt.planning_failed_adapter(&error);
+                            attempt.cancel_before_stream();
                         }
-                        let (status, captured) = adapter_error_to_status_and_capture(error);
+                        let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
                         let status = status_with_query_id_and_correlation_id(
                             status,
                             &query_id,
                             correlation_id.as_deref(),
                         );
+                        coordinator_terminal.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                };
+                let batch = match coverage_batch(&coverage, output_mode, Some(&query_id)) {
+                    Ok(batch) => batch,
+                    Err(error) => {
+                        if let Some(attempt) = attempt.as_ref() {
+                            attempt.planning_failed(&error);
+                        }
+                        let (status, captured) = datafusion_error_to_status_and_capture(
+                            error,
+                            "algeon_datafusion.server.flight.do_get_statement.explain_gpu.project",
+                            FailedStatement::Other,
+                        );
+                        let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                        coordinator_terminal.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                };
+                let output_counters_for_body = Arc::clone(&output_counters);
+                let stream = ExplainGpuExecutionBody::new(batch, attempt.take(), guard).map(move |result| {
+                    result.inspect(|batch| {
+                        output_counters_for_body.record_output(batch.num_rows(), batch.get_array_memory_size());
+                    })
+                });
+                let terminal_for_encode = Arc::clone(&coordinator_terminal);
+                let query_id_for_encode = query_id.clone();
+                let correlation_id_for_encode = correlation_id.clone();
+                let stream = encode_flight_data_stream(coverage_schema(), stream).map_err(move |error| {
+                    let (status, captured) = arrow_flight_error_to_status_and_capture(
+                        error,
+                        "algeon_datafusion.server.flight.do_get_statement.explain_gpu.encode",
+                        "failed to encode EXPLAIN GPU result stream",
+                    );
+                    let status = status_with_query_id_and_correlation_id(
+                        status,
+                        &query_id_for_encode,
+                        correlation_id_for_encode.as_deref(),
+                    );
+                    terminal_for_encode.finish_captured("flight_encode", &status, captured);
+                    status
+                });
+                return Ok(Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream));
+            }
+
+            // DataGrip-class clients re-run held prepared-statement handles. A
+            // no-result-set DDL handle that already executed once is a no-op on
+            // re-execution. Returning an empty result lets the client's `execute()`
+            // succeed. Without that result, the duplicate run would surface
+            // DataFusion's "already exists" / "not found" catalog error.
+            if let Some(handle) = &prepared_handle
+                && self.prepared_statements.get(handle).is_some_and(|entry| entry.ddl_already_executed())
+            {
+                tracing::info!(
+                    query_id,
+                    prepared_statement_handle = handle.as_str(),
+                    "deduplicated repeated prepared DDL execution on the query channel; returning an empty result"
+                );
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.complete_without_result_stream();
+                }
+                coordinator_terminal.finish_success("stream");
+                return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
+            }
+
+            let query_ctx = match (execution_domain, attempt.as_ref()) {
+                (StatementExecutionDomain::Metadata, _) => self.metadata_query_context(),
+                (StatementExecutionDomain::Data, attempt) => match self
+                    .data_query_context(attempt, self.attempt_invocation_execution(correlation_id.as_deref()))
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        let (status, captured) = datafusion_error_to_status_and_capture(
+                            error,
+                            ticket_kind.sql_operation(),
+                            FailedStatement::Other,
+                        );
+                        let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                        coordinator_terminal.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                },
+            };
+            let query_state = query_ctx.state();
+            let parsed_statement = self.parse_flight_statement(&sql);
+            let logical_plan = tokio::select! {
+                result = async {
+                    let statement = parsed_statement?;
+                    query_state.statement_to_plan(statement).await
+                }
+                    .instrument(Self::query_stage_span(&query_span, "planning")) => match result {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        if let Some(attempt) = attempt.as_ref() {
+                            attempt.planning_failed(&error);
+                        }
+                        let (status, captured) =
+                            datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation(), FailedStatement::Other);
+                        let status =
+                            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                         coordinator_terminal.finish_captured("planning", &status, captured);
                         return Err(status);
                     },
@@ -392,36 +505,262 @@ impl DatafusionAlgeonFlightSqlService {
                     return Err(status);
                 },
             };
-            let batch = match coverage_batch(&coverage, output_mode, Some(&query_id)) {
-                Ok(batch) => batch,
-                Err(error) => {
+            if execution_domain == StatementExecutionDomain::Metadata
+                && let Err(error) =
+                    self.verify_metadata_logical_plan(&logical_plan, ticket_kind.execute_metadata_logical_proof_operation())
+            {
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                coordinator_terminal.finish_captured("planning", &status, captured);
+                return Err(status);
+            }
+            if let Err(error) =
+                verify_ddl_targets(&query_ctx, &logical_plan, ticket_kind.sql_operation()).await
+            {
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.planning_failed_adapter(&error);
+                }
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                coordinator_terminal.finish_captured("planning", &status, captured);
+                return Err(status);
+            }
+            if let Err(error) = verify_forest_model_identity(
+                &planned_forest_model_digests,
+                &forest_model_digests(&logical_plan),
+                ticket_kind.sql_operation(),
+            ) {
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.planning_failed_adapter(&error);
+                }
+                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                coordinator_terminal.finish_captured("planning", &status, captured);
+                return Err(status);
+            }
+            let completes_eagerly_without_result_stream = matches!(&logical_plan, LogicalPlan::Ddl(_));
+            let failed_statement = FailedStatement::of(&logical_plan);
+            let df = tokio::select! {
+                result = query_ctx.execute_logical_plan(logical_plan)
+                    .instrument(Self::query_stage_span(&query_span, "planning")) => match result {
+                    Ok(df) => df,
+                    Err(error) => {
+                        if let Some(attempt) = attempt.as_ref() {
+                            attempt.planning_failed(&error);
+                        }
+                        let (status, captured) =
+                            datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation(), failed_statement);
+                        let status =
+                            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                        coordinator_terminal.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                },
+                _ = token.cancelled() => {
                     if let Some(attempt) = attempt.as_ref() {
-                        attempt.planning_failed(&error);
+                        attempt.cancel_before_stream();
                     }
-                    let (status, captured) = datafusion_error_to_status_and_capture(
-                        error,
-                        "algeon_datafusion.server.flight.do_get_statement.explain_gpu.project",
-                        FailedStatement::Other,
+                    let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
+                    let status = status_with_query_id_and_correlation_id(
+                        status,
+                        &query_id,
+                        correlation_id.as_deref(),
                     );
-                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("planning", &status, captured);
                     return Err(status);
                 },
             };
-            let output_counters_for_body = Arc::clone(&output_counters);
-            let stream = ExplainGpuExecutionBody::new(batch, attempt.take(), guard).map(move |result| {
-                result.inspect(|batch| {
-                    output_counters_for_body.record_output(batch.num_rows(), batch.get_array_memory_size());
+            // `execute_logical_plan` has run any DDL side effect by now, so record
+            // the success. A re-run of this prepared handle short-circuits to an
+            // empty result (`mark_executed` self-guards on `no_result_ddl`, so
+            // query/DML handles are unaffected).
+            if let Some(handle) = &prepared_handle
+                && let Some(entry) = self.prepared_statements.get(handle)
+            {
+                entry.mark_executed();
+            }
+            if completes_eagerly_without_result_stream {
+                // DataFusion executes DDL from `execute_logical_plan`; a CTAS
+                // input has already run under this statement's attempt. The
+                // returned DataFrame is the statement's empty result, so the
+                // attempt commits here without planning or executing that DataFrame.
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.complete_without_result_stream();
+                }
+                coordinator_terminal.finish_success("stream");
+                coordinator_terminal.wait_finished().await;
+                // Deregister cancellation at completion, as a streamed result does when its stream ends.
+                drop(guard);
+                return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
+            }
+            let logical_plan_tables = referenced_table_names(df.logical_plan());
+            // Physical planning records the native diagnostics on the attempt's
+            // invocation. Capture the post-optimizer plan and those diagnostics
+            // before execution so query_stats can report both native rewrites and
+            // retained DataFusion baselines.
+            let (schema, plan) = tokio::select! {
+                result = async {
+                    let schema = flight_result_schema(&query_state, df.logical_plan())?;
+                    Ok::<_, DataFusionError>((schema, df.create_physical_plan().await?))
+                }
+                    .instrument(Self::query_stage_span(&query_span, "planning")) => match result {
+                    Ok(planned) => planned,
+                    Err(error) => {
+                        if let Some(attempt) = attempt.as_ref() {
+                            attempt.planning_failed(&error);
+                        }
+                        let diagnostics = attempt.as_ref().and_then(AlgeonAttempt::planning_diagnostics);
+                        if execution_domain == StatementExecutionDomain::Data {
+                            log_native_planning_report_for_tables(
+                                &query_id,
+                                diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
+                                &logical_plan_tables,
+                            );
+                        }
+                        self.coordinator.capture_planning_failure(
+                            &query_id,
+                            "physical_planning",
+                            "physical_planning_failed",
+                            error.to_string(),
+                        );
+                        let (status, captured) =
+                            datafusion_error_to_status_and_capture(error, ticket_kind.execute_stream_operation(), FailedStatement::Other);
+                        let status =
+                            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                        coordinator_terminal.finish_captured("execute_stream", &status, captured);
+                        return Err(status);
+                    },
+                },
+                _ = token.cancelled() => {
+                    if let Some(attempt) = attempt.as_ref() {
+                        attempt.cancel_before_stream();
+                    }
+                    let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
+                    let status = status_with_query_id_and_correlation_id(
+                        status,
+                        &query_id,
+                        correlation_id.as_deref(),
+                    );
+                    coordinator_terminal.finish_captured("execute_stream", &status, captured);
+                    return Err(status);
+                },
+            };
+            let diagnostics = attempt.as_ref().and_then(AlgeonAttempt::planning_diagnostics);
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.physical_planning_finished(plan.as_ref());
+            }
+            if execution_domain == StatementExecutionDomain::Data {
+                log_native_planning_report_for_tables(
+                    &query_id,
+                    diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
+                    &logical_plan_tables,
+                );
+            }
+            self.coordinator.capture_planning(&query_id, diagnostics, Arc::clone(&plan));
+            let execution_stage = match execution_domain {
+                StatementExecutionDomain::Metadata => "metadata_execution",
+                StatementExecutionDomain::Data => "native_execution",
+            };
+            let execution_span = Self::query_stage_span(&query_span, execution_stage);
+            let stream_result: DataFusionResult<SendableRecordBatchStream> = match attempt.as_ref() {
+                Some(attempt) => attempt
+                    .execute_physical_plan(Arc::clone(&plan), &query_ctx)
+                    .map(|stream| Box::pin(stream) as SendableRecordBatchStream),
+                None => execute_stream(Arc::clone(&plan), Arc::new(df.task_ctx())),
+            };
+            let stream = match stream_result {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let (status, captured) = datafusion_error_to_status_and_capture(
+                        error,
+                        ticket_kind.execute_stream_operation(),
+                        FailedStatement::Other,
+                    );
+                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    coordinator_terminal.finish_captured("execute_stream", &status, captured);
+                    return Err(status);
+                },
+            };
+            let stream = FlightExecutionBody::new(
+                stream,
+                token.clone(),
+                attempt_cancellation_for_stream.clone(),
+                Arc::clone(&guard.delivery_started),
+                Arc::clone(&coordinator_terminal),
+                execution_span,
+            );
+            let cancel_token_for_tail = token.clone();
+            let shutdown_token_for_tail = self.shutdown_token.clone();
+            let query_id_for_tail = query_id.clone();
+            let correlation_id_for_tail = correlation_id.clone();
+            let terminal_for_body = Arc::clone(&coordinator_terminal);
+            let query_id_for_body = query_id.clone();
+            let correlation_id_for_body = correlation_id.clone();
+            let output_counters_for_output = Arc::clone(&output_counters);
+            let streaming_span =
+                Self::query_stage_span(&query_span, "result_streaming");
+            let streaming_span_for_output = streaming_span.clone();
+            let streaming_span_for_error = streaming_span.clone();
+            let stream_operation = ticket_kind.stream_operation();
+            // `take_until` ends cleanly on cancellation, so append a one-shot tail
+            // that emits CANCELLED as the gRPC trailer when the token fired.
+            let body: BoxStream<'static, Result<RecordBatch, FlightError>> = Box::pin(
+                stream
+                    .map_ok(move |batch| {
+                        let _stream_enter = streaming_span_for_output.enter();
+                        output_counters_for_output.record_output(batch.num_rows(), batch.get_array_memory_size());
+                        batch
+                    })
+                    .map_err(move |error| {
+                        let _stream_enter = streaming_span_for_error.enter();
+                        datafusion_error_to_flight_error(
+                            error,
+                            &query_id_for_body,
+                            correlation_id_for_body.as_deref(),
+                            &terminal_for_body,
+                            stream_operation,
+                        )
+                    }),
+            );
+            let terminal_for_tail = Arc::clone(&coordinator_terminal);
+            let tail = once(async move {
+                cancel_token_for_tail.is_cancelled().then(|| {
+                    let (status, captured) =
+                        adapter_error_to_status_and_capture(cancellation_error(&shutdown_token_for_tail));
+                    let status = status_with_query_id_and_correlation_id(
+                        status,
+                        &query_id_for_tail,
+                        correlation_id_for_tail.as_deref(),
+                    );
+                    terminal_for_tail.finish_captured("stream", &status, captured);
+                    Err(FlightError::from(status))
                 })
+            })
+            .filter_map(|opt| async move { opt });
+            let terminal_for_end = Arc::clone(&coordinator_terminal);
+            let end = once(async move {
+                terminal_for_end.wait_finished().await;
+                None::<Result<RecordBatch, FlightError>>
+            })
+            .filter_map(|opt| async move { opt });
+            let stream = body.chain(tail).chain(end).map(move |batch| {
+                let _guard = &guard;
+                batch
+            });
+            let mut stream: BoxStream<'static, Result<RecordBatch, FlightError>> = Box::pin(stream);
+            let result_streaming_span_for_poll = streaming_span;
+            let stream = poll_fn(move |context| {
+                let _stream_enter = result_streaming_span_for_poll.enter();
+                stream.as_mut().poll_next(context)
             });
             let terminal_for_encode = Arc::clone(&coordinator_terminal);
             let query_id_for_encode = query_id.clone();
             let correlation_id_for_encode = correlation_id.clone();
-            let stream = encode_flight_data_stream(coverage_schema(), stream).map_err(move |error| {
+            let stream = encode_flight_data_stream(Arc::new(schema), stream).map_err(move |error| {
                 let (status, captured) = arrow_flight_error_to_status_and_capture(
                     error,
-                    "algeon_datafusion.server.flight.do_get_statement.explain_gpu.encode",
-                    "failed to encode EXPLAIN GPU result stream",
+                    "algeon_datafusion.server.flight.execute_ticket.result_encode",
+                    "failed to encode Flight SQL result stream",
                 );
                 let status = status_with_query_id_and_correlation_id(
                     status,
@@ -431,370 +770,11 @@ impl DatafusionAlgeonFlightSqlService {
                 terminal_for_encode.finish_captured("flight_encode", &status, captured);
                 status
             });
-            return Ok(Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream));
-        }
 
-        // DataGrip-class clients re-run held prepared-statement handles. A
-        // no-result-set DDL handle that already executed once is a no-op on
-        // re-execution. Returning an empty result lets the client's `execute()`
-        // succeed. Without that result, the duplicate run would surface
-        // DataFusion's "already exists" / "not found" catalog error.
-        if let Some(handle) = &prepared_handle
-            && self.prepared_statements.get(handle).is_some_and(|entry| entry.ddl_already_executed())
-        {
-            tracing::info!(
-                query_id,
-                prepared_statement_handle = handle.as_str(),
-                "deduplicated repeated prepared DDL execution on the query channel; returning an empty result"
-            );
-            if let Some(attempt) = attempt.as_ref() {
-                attempt.complete_without_result_stream();
-            }
-            coordinator_terminal.finish_success("stream");
-            return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
+            Ok(Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream))
         }
-
-        let query_ctx = match (execution_domain, attempt.as_ref()) {
-            (StatementExecutionDomain::Metadata, _) => self.metadata_query_context(),
-            (StatementExecutionDomain::Data, attempt) => match self
-                .data_query_context(attempt, self.attempt_invocation_execution(correlation_id.as_deref()))
-            {
-                Ok(context) => context,
-                Err(error) => {
-                    let (status, captured) = datafusion_error_to_status_and_capture(
-                        error,
-                        ticket_kind.sql_operation(),
-                        FailedStatement::Other,
-                    );
-                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    coordinator_terminal.finish_captured("planning", &status, captured);
-                    return Err(status);
-                },
-            },
-        };
-        let query_state = query_ctx.state();
-        let parsed_statement = self.parse_flight_statement(&sql);
-        let logical_plan = tokio::select! {
-            result = async {
-                let statement = parsed_statement?;
-                query_state.statement_to_plan(statement).await
-            }
-                .instrument(Self::query_stage_span(
-                    Some(&query_span),
-                    &query_id,
-                    correlation_id.as_deref(),
-                    "planning",
-                )) => match result {
-                Ok(plan) => plan,
-                Err(error) => {
-                    if let Some(attempt) = attempt.as_ref() {
-                        attempt.planning_failed(&error);
-                    }
-                    let (status, captured) =
-                        datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation(), FailedStatement::Other);
-                    let status =
-                        status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    coordinator_terminal.finish_captured("planning", &status, captured);
-                    return Err(status);
-                },
-            },
-            _ = token.cancelled() => {
-                if let Some(attempt) = attempt.as_ref() {
-                    attempt.cancel_before_stream();
-                }
-                let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
-                let status = status_with_query_id_and_correlation_id(
-                    status,
-                    &query_id,
-                    correlation_id.as_deref(),
-                );
-                coordinator_terminal.finish_captured("planning", &status, captured);
-                return Err(status);
-            },
-        };
-        if execution_domain == StatementExecutionDomain::Metadata
-            && let Err(error) =
-                self.verify_metadata_logical_plan(&logical_plan, ticket_kind.execute_metadata_logical_proof_operation())
-        {
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            coordinator_terminal.finish_captured("planning", &status, captured);
-            return Err(status);
-        }
-        if let Err(error) =
-            reject_drop_object_type_mismatch(&query_ctx, &logical_plan, ticket_kind.sql_operation()).await
-        {
-            if let Some(attempt) = attempt.as_ref() {
-                attempt.planning_failed_adapter(&error);
-            }
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            coordinator_terminal.finish_captured("planning", &status, captured);
-            return Err(status);
-        }
-        if let Err(error) = verify_forest_model_identity(
-            &planned_forest_model_digests,
-            &forest_model_digests(&logical_plan),
-            ticket_kind.sql_operation(),
-        ) {
-            if let Some(attempt) = attempt.as_ref() {
-                attempt.planning_failed_adapter(&error);
-            }
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            coordinator_terminal.finish_captured("planning", &status, captured);
-            return Err(status);
-        }
-        let completes_eagerly_without_result_stream = matches!(&logical_plan, LogicalPlan::Ddl(_));
-        let failed_statement = FailedStatement::of(&logical_plan);
-        let df = tokio::select! {
-            result = query_ctx.execute_logical_plan(logical_plan)
-                .instrument(Self::query_stage_span(
-                    Some(&query_span),
-                    &query_id,
-                    correlation_id.as_deref(),
-                    "planning",
-                )) => match result {
-                Ok(df) => df,
-                Err(error) => {
-                    if let Some(attempt) = attempt.as_ref() {
-                        attempt.planning_failed(&error);
-                    }
-                    let (status, captured) =
-                        datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation(), failed_statement);
-                    let status =
-                        status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    coordinator_terminal.finish_captured("planning", &status, captured);
-                    return Err(status);
-                },
-            },
-            _ = token.cancelled() => {
-                if let Some(attempt) = attempt.as_ref() {
-                    attempt.cancel_before_stream();
-                }
-                let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
-                let status = status_with_query_id_and_correlation_id(
-                    status,
-                    &query_id,
-                    correlation_id.as_deref(),
-                );
-                coordinator_terminal.finish_captured("planning", &status, captured);
-                return Err(status);
-            },
-        };
-        // `execute_logical_plan` has run any DDL side effect by now, so record
-        // the success. A re-run of this prepared handle short-circuits to an
-        // empty result (`mark_executed` self-guards on `no_result_ddl`, so
-        // query/DML handles are unaffected).
-        if let Some(handle) = &prepared_handle
-            && let Some(entry) = self.prepared_statements.get(handle)
-        {
-            entry.mark_executed();
-        }
-        if completes_eagerly_without_result_stream {
-            // DataFusion executes DDL from `execute_logical_plan`; a CTAS
-            // input has already run under this statement's attempt. The
-            // returned DataFrame is the statement's empty result, so the
-            // attempt commits here without planning or executing that DataFrame.
-            if let Some(attempt) = attempt.as_ref() {
-                attempt.complete_without_result_stream();
-            }
-            coordinator_terminal.finish_success("stream");
-            coordinator_terminal.wait_finished().await;
-            // Deregister cancellation at completion, as a streamed result does when its stream ends.
-            drop(guard);
-            return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
-        }
-        let logical_plan_tables = referenced_table_names(df.logical_plan());
-        // Physical planning records the native diagnostics on the attempt's
-        // invocation. Capture the post-optimizer plan and those diagnostics
-        // before execution so query_stats can report both native rewrites and
-        // retained DataFusion baselines.
-        let (schema, plan) = tokio::select! {
-            result = async {
-                let schema = flight_result_schema(&query_state, df.logical_plan())?;
-                Ok::<_, DataFusionError>((schema, df.create_physical_plan().await?))
-            }
-                .instrument(Self::query_stage_span(
-                    Some(&query_span),
-                    &query_id,
-                    correlation_id.as_deref(),
-                    "planning",
-                )) => match result {
-                Ok(planned) => planned,
-                Err(error) => {
-                    if let Some(attempt) = attempt.as_ref() {
-                        attempt.planning_failed(&error);
-                    }
-                    let diagnostics = attempt.as_ref().and_then(AlgeonAttempt::planning_diagnostics);
-                    if execution_domain == StatementExecutionDomain::Data {
-                        log_native_planning_report_for_tables(
-                            &query_id,
-                            diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
-                            &logical_plan_tables,
-                        );
-                    }
-                    self.coordinator.capture_planning_failure(
-                        &query_id,
-                        "physical_planning",
-                        "physical_planning_failed",
-                        error.to_string(),
-                    );
-                    let (status, captured) =
-                        datafusion_error_to_status_and_capture(error, ticket_kind.execute_stream_operation(), FailedStatement::Other);
-                    let status =
-                        status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    coordinator_terminal.finish_captured("execute_stream", &status, captured);
-                    return Err(status);
-                },
-            },
-            _ = token.cancelled() => {
-                if let Some(attempt) = attempt.as_ref() {
-                    attempt.cancel_before_stream();
-                }
-                let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
-                let status = status_with_query_id_and_correlation_id(
-                    status,
-                    &query_id,
-                    correlation_id.as_deref(),
-                );
-                coordinator_terminal.finish_captured("execute_stream", &status, captured);
-                return Err(status);
-            },
-        };
-        let diagnostics = attempt.as_ref().and_then(AlgeonAttempt::planning_diagnostics);
-        if let Some(attempt) = attempt.as_ref() {
-            attempt.physical_planning_finished(plan.as_ref());
-        }
-        if execution_domain == StatementExecutionDomain::Data {
-            log_native_planning_report_for_tables(
-                &query_id,
-                diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
-                &logical_plan_tables,
-            );
-        }
-        self.coordinator.capture_planning(&query_id, diagnostics, Arc::clone(&plan));
-        let execution_stage = match execution_domain {
-            StatementExecutionDomain::Metadata => "metadata_execution",
-            StatementExecutionDomain::Data => "native_execution",
-        };
-        let execution_span =
-            Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), execution_stage);
-        let stream_result: DataFusionResult<SendableRecordBatchStream> = match attempt.as_ref() {
-            Some(attempt) => attempt
-                .execute_physical_plan(Arc::clone(&plan), &query_ctx)
-                .map(|stream| Box::pin(stream) as SendableRecordBatchStream),
-            None => execute_stream(Arc::clone(&plan), Arc::new(df.task_ctx())),
-        };
-        let stream = match stream_result {
-            Ok(stream) => stream,
-            Err(error) => {
-                let (status, captured) = datafusion_error_to_status_and_capture(
-                    error,
-                    ticket_kind.execute_stream_operation(),
-                    FailedStatement::Other,
-                );
-                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                coordinator_terminal.finish_captured("execute_stream", &status, captured);
-                return Err(status);
-            },
-        };
-        let stream = FlightExecutionBody::new(
-            stream,
-            token.clone(),
-            attempt_cancellation_for_stream.clone(),
-            Arc::clone(&guard.delivery_started),
-            Arc::clone(&coordinator_terminal),
-            execution_span,
-        );
-        let cancel_token_for_tail = token.clone();
-        let shutdown_token_for_tail = self.shutdown_token.clone();
-        let query_id_for_tail = query_id.clone();
-        let correlation_id_for_tail = correlation_id.clone();
-        let terminal_for_body = Arc::clone(&coordinator_terminal);
-        let query_id_for_body = query_id.clone();
-        let correlation_id_for_body = correlation_id.clone();
-        let output_counters_for_output = Arc::clone(&output_counters);
-        let streaming_span =
-            Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "result_streaming");
-        let streaming_span_for_output = streaming_span.clone();
-        let stream_operation = ticket_kind.stream_operation();
-        // `take_until` ends cleanly on cancellation, so append a one-shot tail
-        // that emits CANCELLED as the gRPC trailer when the token fired.
-        let body: BoxStream<'static, Result<RecordBatch, FlightError>> = Box::pin(
-            stream
-                .map_ok(move |batch| {
-                    let _stream_enter = streaming_span_for_output.enter();
-                    output_counters_for_output.record_output(batch.num_rows(), batch.get_array_memory_size());
-                    batch
-                })
-                .map_err(move |error| {
-                    let _stream_enter = DatafusionAlgeonFlightSqlService::query_stage_span(
-                        None,
-                        &query_id_for_body,
-                        correlation_id_for_body.as_deref(),
-                        "result_streaming",
-                    )
-                    .entered();
-                    datafusion_error_to_flight_error(
-                        error,
-                        &query_id_for_body,
-                        correlation_id_for_body.as_deref(),
-                        &terminal_for_body,
-                        stream_operation,
-                    )
-                }),
-        );
-        let terminal_for_tail = Arc::clone(&coordinator_terminal);
-        let tail = once(async move {
-            cancel_token_for_tail.is_cancelled().then(|| {
-                let (status, captured) =
-                    adapter_error_to_status_and_capture(cancellation_error(&shutdown_token_for_tail));
-                let status = status_with_query_id_and_correlation_id(
-                    status,
-                    &query_id_for_tail,
-                    correlation_id_for_tail.as_deref(),
-                );
-                terminal_for_tail.finish_captured("stream", &status, captured);
-                Err(FlightError::from(status))
-            })
-        })
-        .filter_map(|opt| async move { opt });
-        let terminal_for_end = Arc::clone(&coordinator_terminal);
-        let end = once(async move {
-            terminal_for_end.wait_finished().await;
-            None::<Result<RecordBatch, FlightError>>
-        })
-        .filter_map(|opt| async move { opt });
-        let stream = body.chain(tail).chain(end).map(move |batch| {
-            let _guard = &guard;
-            batch
-        });
-        let mut stream: BoxStream<'static, Result<RecordBatch, FlightError>> = Box::pin(stream);
-        let result_streaming_span_for_poll = streaming_span;
-        let stream = poll_fn(move |context| {
-            let _stream_enter = result_streaming_span_for_poll.enter();
-            stream.as_mut().poll_next(context)
-        });
-        let terminal_for_encode = Arc::clone(&coordinator_terminal);
-        let query_id_for_encode = query_id.clone();
-        let correlation_id_for_encode = correlation_id.clone();
-        let stream = encode_flight_data_stream(Arc::new(schema), stream).map_err(move |error| {
-            let (status, captured) = arrow_flight_error_to_status_and_capture(
-                error,
-                "algeon_datafusion.server.flight.execute_ticket.result_encode",
-                "failed to encode Flight SQL result stream",
-            );
-            let status = status_with_query_id_and_correlation_id(
-                status,
-                &query_id_for_encode,
-                correlation_id_for_encode.as_deref(),
-            );
-            terminal_for_encode.finish_captured("flight_encode", &status, captured);
-            status
-        });
-
-        Ok(Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream))
+        .instrument(query_span.clone())
+        .await
     }
 
     pub(super) fn cancel_from_flight_info(&self, raw_info: &[u8], caller: &Owner) -> Result<bool, Status> {

@@ -234,7 +234,7 @@ fn foreign_wrappers_only_expose_audited_classification_facts() {
     let projection = cudf_adapter.facts().log_safe_projection();
     assert_eq!(
         projection.entries.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
-        vec!["cudf_code", "cudf_kind", "cudf_operation", "cudf_status"]
+        vec!["cudf_code", "cudf_kind", "cudf_operation", "cudf_status", "rapids_library"]
     );
     assert!(!projection.rendered().unwrap().contains("password"));
 }
@@ -298,7 +298,7 @@ fn blocking_native_diagnostics_reach_display_without_unrelated_facts() {
     }
 
     let native = QueryError::new(
-        QueryErrorCode::CudfInvalidInput,
+        QueryErrorCode::RapidsInvalidInput,
         "query_engine.vector_algorithm.pack",
         "failed to pack the prepared vector feature table",
     )
@@ -315,15 +315,12 @@ fn blocking_native_diagnostics_reach_display_without_unrelated_facts() {
     );
     assert_eq!(adapter.kind(), ErrorKind::InvalidInput);
     let display = adapter.to_string();
-    for fact in [
-        "relation_role=dataset",
-        "training_rows=0",
-        "validation_reason=non_finite_vector_value",
-        "non_finite_count=5",
-        "remedy=replace or reject null, NaN, and infinite values before GPU consumer execution",
-    ] {
+    for fact in
+        ["relation_role=dataset", "training_rows=0", "validation_reason=non_finite_vector_value", "non_finite_count=5"]
+    {
         assert!(display.contains(fact), "{display}");
     }
+    assert!(!display.contains("remedy"), "the client text owns the remedy: {display}");
     assert!(!display.contains("/private/customer.parquet"), "{display}");
 }
 
@@ -358,6 +355,54 @@ fn error_debug_omits_native_and_cudf_source_payloads_but_keeps_typed_access() {
     assert!(cudf_debug.contains("<source omitted>"), "{cudf_debug}");
     assert!(!cudf_debug.contains("cudf-source-detail-secret"), "{cudf_debug}");
     assert!(!cudf_debug.contains("cudf-secret-value"), "{cudf_debug}");
+}
+
+#[test]
+fn from_native_projects_the_rapids_library_fact_into_logs() {
+    let cudf = new_with_for_test(CudfErrorCode::ForeignInvalidArgument, "cudf.test.library", "synthetic failure");
+    let native = cudf_query_error("query_engine.test.library", "wrapped cudf failure", cudf);
+    let adapter = Error::from_native("algeon_datafusion.test.library", "adapter wrapper", native);
+
+    assert_eq!(adapter.fact_value("rapids_library"), Some("cudf"));
+    let debug = format!("{adapter:?}");
+    assert!(debug.contains("(\"rapids_library\", \"cudf\")"), "{debug}");
+}
+
+#[test]
+fn trusted_diagnostic_renders_raw_facts_client_detail_and_source_that_debug_omits() {
+    let native = QueryError::new(QueryErrorCode::InvalidPlan, "query_engine.test.trusted", "native-root-cause-text")
+        .with_fact("path", "/srv/customer/private.parquet");
+    let adapter = Error::from_native("algeon_datafusion.test.trusted", "adapter wrapper", native)
+        .with_client_detail(ClientDetail::Column { name: "customer_email".to_string() });
+
+    let trusted = adapter.trusted_diagnostic();
+    assert!(trusted.starts_with(&format!("code={} ", adapter.code().as_str())), "{trusted}");
+    assert!(trusted.contains("client_detail={column=customer_email}"), "{trusted}");
+    assert!(trusted.contains("path=/srv/customer/private.parquet"), "{trusted}");
+    assert!(trusted.contains("native-root-cause-text"), "{trusted}");
+
+    let debug = format!("{adapter:?}");
+    assert!(debug.contains("<source omitted>"), "{debug}");
+    for raw in ["/srv/customer/private.parquet", "customer_email", "native-root-cause-text"] {
+        assert!(!debug.contains(raw), "{debug}");
+    }
+}
+
+#[test]
+fn native_reexport_downcasts_the_source_of_an_error_found_in_datafusion() {
+    let native = QueryError::new(QueryErrorCode::InvalidPlan, "query_engine.test.reexport", "native failure");
+    let error = DataFusionError::External(Box::new(Error::from_native(
+        "algeon_datafusion.test.reexport",
+        "adapter wrapper",
+        native,
+    )));
+
+    let source = error
+        .find_algeon_error()
+        .and_then(Error::source_error)
+        .and_then(|source| source.downcast_ref::<native::QueryError>())
+        .expect("the native source must downcast through the adapter re-export");
+    assert_eq!(source.code(), native::QueryErrorCode::InvalidPlan);
 }
 
 #[test]
@@ -420,16 +465,30 @@ fn source_diagnostics_bound_extreme_chain_bytes_without_rewriting_the_error() {
 
 #[test]
 fn log_diagnostics_mark_truncation_from_any_layer_not_just_the_cause() {
+    let middle = TestSourceError {
+        message: Box::leak(("middle ".to_string() + &"m".repeat(4_000)).into_boxed_str()),
+        source: Some(Box::new(TestSourceError::leaf("leaf cause"))),
+    };
     let error = Error::new(ErrorCode::Internal, "algeon_datafusion.test.log_layer_truncation", "outer wrapper")
-        .with_source(DataFusionError::Context(
-            "middle ".to_string() + &"m".repeat(4_000),
-            Box::new(DataFusionError::Execution("leaf cause".to_string())),
-        ));
+        .with_source(middle);
 
     let diagnostics = ErrorLogDiagnostics::from_error(&error);
 
     assert_eq!(diagnostics.cause(), Some("leaf cause"));
     assert!(diagnostics.truncated(), "an intermediate cut must stay observable");
+}
+
+#[test]
+fn log_diagnostics_take_no_cause_from_datafusion_text() {
+    let error = Error::new(ErrorCode::Internal, "algeon_datafusion.test.datafusion_cause", "outer wrapper")
+        .with_source(DataFusionError::Context(
+            "planning".to_string(),
+            Box::new(DataFusionError::Plan("No field named secret_column".to_string())),
+        ));
+
+    let diagnostics = ErrorLogDiagnostics::from_error(&error);
+
+    assert_eq!(diagnostics.cause(), Some("outer wrapper"));
 }
 
 #[test]
@@ -460,7 +519,7 @@ fn retained_capture_keeps_caller_schema_detail_outside_log_projection() {
 
 #[test]
 fn source_diagnostics_render_project_errors_by_message_not_structured_display() {
-    let native = QueryError::new(QueryErrorCode::CudfDependencyFailure, "query_engine.test", "native root cause")
+    let native = QueryError::new(QueryErrorCode::RapidsDependencyFailure, "query_engine.test", "native root cause")
         .with_fact("native_fact", "value");
     let adapter = Error::from_native("algeon_datafusion.test", "adapter wrapper", native);
     let error = DataFusionError::External(Box::new(adapter));
@@ -501,6 +560,20 @@ fn log_diagnostics_keep_one_bounded_redacted_cudf_cause() {
     );
     assert_eq!(diagnostics.source_path(), Some("/srv/algeon/dataset/part-00000.parquet"));
     assert!(!diagnostics.truncated());
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn log_diagnostics_keep_only_the_rapids_library_message_as_cause() {
+    let cugraph = cugraph::Error::new(cugraph::ErrorKind::InvalidInput, "sssp")
+        .with_message("SSSP source vertex is not in the graph")
+        .with_context("weight_mode", "unit_weight");
+    let native =
+        QueryError::new(QueryErrorCode::RapidsInvalidInput, "query_engine.test.cugraph", "cuGraph SSSP failed")
+            .with_source(cugraph);
+    let adapter = Error::from_native("algeon_datafusion.test.cugraph", "native cuGraph execution failed", native);
+
+    assert_eq!(ErrorLogDiagnostics::from_error(&adapter).cause(), Some("SSSP source vertex is not in the graph"));
 }
 
 #[test]
@@ -586,7 +659,13 @@ fn adapter_and_native_boundaries_agree_on_cudf_allocation_attribution() {
             ErrorCode::DeviceAllocationFailed,
             QueryErrorCode::DeviceAllocationFailed,
         ),
-        (CudfErrorCode::IoFailure, None, true, ErrorCode::CudfDependencyFailure, QueryErrorCode::CudfDependencyFailure),
+        (
+            CudfErrorCode::IoFailure,
+            None,
+            true,
+            ErrorCode::RapidsDependencyFailure,
+            QueryErrorCode::RapidsDependencyFailure,
+        ),
     ];
 
     for (index, (code, failure_source, with_budget_scope, expected_adapter, expected_native)) in
@@ -630,17 +709,17 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::UnsupportedTableFeature, ErrorStatus::Permanent),
     (ErrorCode::InvalidExecutionPlan, ErrorStatus::Permanent),
     (ErrorCode::InvalidChildCount, ErrorStatus::Permanent),
-    (ErrorCode::CudfInvalidInput, ErrorStatus::Permanent),
-    (ErrorCode::CudfUnsupported, ErrorStatus::Permanent),
+    (ErrorCode::RapidsInvalidInput, ErrorStatus::Permanent),
+    (ErrorCode::RapidsUnsupported, ErrorStatus::Permanent),
     (ErrorCode::SizeOverflow, ErrorStatus::Permanent),
     (ErrorCode::HostMaterializationLimitExceeded, ErrorStatus::Permanent),
     (ErrorCode::HostStagingLimitExceeded, ErrorStatus::Permanent),
     (ErrorCode::HostMemoryExhausted, ErrorStatus::Temporary),
-    (ErrorCode::CudfTemporaryFailure, ErrorStatus::Temporary),
-    (ErrorCode::CudfPersistentFailure, ErrorStatus::Persistent),
-    (ErrorCode::CudfDependencyFailure, ErrorStatus::Permanent),
+    (ErrorCode::RapidsTemporaryFailure, ErrorStatus::Temporary),
+    (ErrorCode::RapidsPersistentFailure, ErrorStatus::Persistent),
+    (ErrorCode::RapidsDependencyFailure, ErrorStatus::Permanent),
     (ErrorCode::AlgorithmDidNotConverge, ErrorStatus::Permanent),
-    (ErrorCode::CudfInvariantViolation, ErrorStatus::Permanent),
+    (ErrorCode::RapidsInvariantViolation, ErrorStatus::Permanent),
     (ErrorCode::MemoryReservationFailed, ErrorStatus::Temporary),
     (ErrorCode::ServiceOverloaded, ErrorStatus::Temporary),
     (ErrorCode::QueryBudgetUnavailable, ErrorStatus::Temporary),
@@ -665,23 +744,24 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
     (QueryErrorCode::InvalidAttemptCorrelation, ErrorCode::InvalidRequest, QueryErrorStatus::Permanent),
     (QueryErrorCode::InvalidConfiguration, ErrorCode::InvalidConfiguration, QueryErrorStatus::Permanent),
     (QueryErrorCode::GraphInputInvalid, ErrorCode::GraphInputInvalid, QueryErrorStatus::Permanent),
-    (QueryErrorCode::CudfInvalidInput, ErrorCode::CudfInvalidInput, QueryErrorStatus::Permanent),
-    (QueryErrorCode::CudfUnsupported, ErrorCode::CudfUnsupported, QueryErrorStatus::Permanent),
+    (QueryErrorCode::RapidsInvalidInput, ErrorCode::RapidsInvalidInput, QueryErrorStatus::Permanent),
+    (QueryErrorCode::RapidsUnsupported, ErrorCode::RapidsUnsupported, QueryErrorStatus::Permanent),
     (QueryErrorCode::SizeOverflow, ErrorCode::SizeOverflow, QueryErrorStatus::Permanent),
     (
         QueryErrorCode::HostMaterializationLimitExceeded,
         ErrorCode::HostMaterializationLimitExceeded,
         QueryErrorStatus::Permanent,
     ),
-    (QueryErrorCode::CudfTemporaryFailure, ErrorCode::CudfTemporaryFailure, QueryErrorStatus::Temporary),
-    (QueryErrorCode::CudfPersistentFailure, ErrorCode::CudfPersistentFailure, QueryErrorStatus::Persistent),
-    (QueryErrorCode::CudfDependencyFailure, ErrorCode::CudfDependencyFailure, QueryErrorStatus::Permanent),
+    (QueryErrorCode::RapidsTemporaryFailure, ErrorCode::RapidsTemporaryFailure, QueryErrorStatus::Temporary),
+    (QueryErrorCode::RapidsPersistentFailure, ErrorCode::RapidsPersistentFailure, QueryErrorStatus::Persistent),
+    (QueryErrorCode::RapidsDependencyFailure, ErrorCode::RapidsDependencyFailure, QueryErrorStatus::Permanent),
     (QueryErrorCode::AlgorithmDidNotConverge, ErrorCode::AlgorithmDidNotConverge, QueryErrorStatus::Permanent),
     (QueryErrorCode::SourceAccessDenied, ErrorCode::SourceAccessDenied, QueryErrorStatus::Permanent),
     (QueryErrorCode::SourceUnauthenticated, ErrorCode::SourceUnauthenticated, QueryErrorStatus::Permanent),
     (QueryErrorCode::SourceObjectNotFound, ErrorCode::SourceObjectNotFound, QueryErrorStatus::Permanent),
     (QueryErrorCode::SourceTemporaryFailure, ErrorCode::SourceTemporaryFailure, QueryErrorStatus::Temporary),
-    (QueryErrorCode::CudfInvariantViolation, ErrorCode::CudfInvariantViolation, QueryErrorStatus::Permanent),
+    (QueryErrorCode::SourceDependencyFailure, ErrorCode::SourceDependencyFailure, QueryErrorStatus::Permanent),
+    (QueryErrorCode::RapidsInvariantViolation, ErrorCode::RapidsInvariantViolation, QueryErrorStatus::Permanent),
     (QueryErrorCode::MemoryReservationFailed, ErrorCode::MemoryReservationFailed, QueryErrorStatus::Temporary),
     (QueryErrorCode::ServiceOverloaded, ErrorCode::ServiceOverloaded, QueryErrorStatus::Temporary),
     (QueryErrorCode::QueryBudgetUnavailable, ErrorCode::QueryBudgetUnavailable, QueryErrorStatus::Temporary),
@@ -871,7 +951,7 @@ fn error_display_is_human_only_while_typed_fields_remain_available() {
 }
 
 fn algeon_error(operation: &'static str, message: &'static str) -> Error {
-    Error::new(ErrorCode::CudfDependencyFailure, operation, message)
+    Error::new(ErrorCode::RapidsDependencyFailure, operation, message)
         .with_fact("device_ordinal", 2)
         .with_source(std::io::Error::other("CUDA dependency detail"))
 }
@@ -882,12 +962,12 @@ fn algeon_error_uses_exact_datafusion_external_prose_and_preserves_structured_fi
 
     assert!(matches!(error, DataFusionError::External(_)));
     assert_eq!(error.to_string(), "External error: native GPU execution failed");
-    for hidden in ["cudf_dependency_failure", "device_ordinal", "CUDA dependency detail"] {
+    for hidden in ["rapids_dependency_failure", "device_ordinal", "CUDA dependency detail"] {
         assert!(!error.to_string().contains(hidden), "DataFusion Display leaked structured or source data: {hidden}");
     }
 
     let algeon = error.find_algeon_error().expect("typed Algeon error must remain discoverable");
-    assert_eq!(algeon.code(), ErrorCode::CudfDependencyFailure);
+    assert_eq!(algeon.code(), ErrorCode::RapidsDependencyFailure);
     assert_eq!(algeon.kind(), ErrorKind::DependencyFailure);
     assert_eq!(algeon.status(), ErrorStatus::Permanent);
     assert_eq!(algeon.operation(), "algeon_datafusion.native.execute");

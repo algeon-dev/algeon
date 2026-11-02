@@ -144,7 +144,7 @@ impl AdmissionController {
 
         if let Some((device_ordinal, detail, generation)) = first_closed_ledger {
             let mut error = QueryError::new(
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::DeviceFault,
                 "query_engine.query_service.admission",
                 "every compatible device has closed admission",
             )

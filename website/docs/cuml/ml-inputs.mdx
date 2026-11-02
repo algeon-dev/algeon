@@ -56,7 +56,7 @@ ID, for every feature column, for a list column and its elements, and for the
 `training` label. Results of aggregates, Parquet columns, and lists built in
 SQL therefore need no rewrite. The contract applies to values. A null ID,
 feature value, list row, list element, or label fails the query with an
-invalid-input error (`cudf_invalid_input`) that names the function, the
+invalid-input error (`rapids_invalid_input`) that names the function, the
 relation role, and the column.
 
 Add `COALESCE(column, CAST(0 AS REAL))` only when the data contains nulls and a

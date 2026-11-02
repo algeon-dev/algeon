@@ -25,6 +25,9 @@ use super::{
     },
     ExecutionContext, QueryServiceStreamPool,
 };
+use crate::object_store_error::{
+    object_store_error_detail, object_store_error_kind, query_error_code_for_object_store_error,
+};
 
 impl ExecutionContext {
     /// Returns the service-level CUDA stream pool used by source-read workers.
@@ -131,7 +134,7 @@ impl ExecutionContext {
         let credential = credential.map_err(|error| {
             credential_unavailable(
                 QueryError::new(
-                    QueryErrorCode::CudfDependencyFailure,
+                    QueryErrorCode::SourceUnauthenticated,
                     operation,
                     "failed to resolve AWS default-chain credentials for native remote-direct read",
                 )
@@ -233,13 +236,21 @@ impl ExecutionContext {
                 result.bytes().await
             }
             .await
-            .map_err(|_error| {
-                QueryError::new(
-                    QueryErrorCode::CudfDependencyFailure,
+            .map_err(|source| {
+                // The object-store error text names the unredacted object key,
+                // so it is reduced to its classification facts, not attached
+                // as a source.
+                let error = QueryError::new(
+                    query_error_code_for_object_store_error(&source),
                     "query_engine.lakehouse_cache.maintenance.object_store",
                     "failed to fetch lakehouse cache object through object_store",
                 )
                 .with_fact("path", path_fact)
+                .with_fact("object_store_error_kind", object_store_error_kind(&source));
+                match object_store_error_detail(&source) {
+                    Some(detail) => error.with_fact("object_store_error_detail", detail),
+                    None => error,
+                }
             });
             on_result(ObjectStoreFetchResult { bytes });
         });

@@ -748,7 +748,7 @@ fn cache_fill_events_reach_the_next_plan_to_freeze_once() {
     handle.record_lakehouse_cache_fill(&cache_fill_event(
         "failed-path",
         Some(LakehouseCacheFillErrorEvent {
-            code: "cudf_dependency_failure".to_string(),
+            code: "rapids_dependency_failure".to_string(),
             kind: "external".to_string(),
             status: "temporary".to_string(),
             operation: "query_engine.lakehouse_cache.background_fill.fetch".to_string(),
