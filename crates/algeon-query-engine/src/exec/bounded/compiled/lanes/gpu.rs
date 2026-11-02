@@ -348,7 +348,7 @@ fn lane_small_cap_typed_failure_isolates_the_next_query() {
             error.code(),
             QueryErrorCode::QueryMemoryLimitExceeded
                 | QueryErrorCode::MemoryReservationFailed
-                | QueryErrorCode::CudfTemporaryFailure
+                | QueryErrorCode::RapidsTemporaryFailure
         ),
         "small-cap failure is typed, got {:?}",
         error.code()

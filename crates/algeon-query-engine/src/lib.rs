@@ -34,8 +34,6 @@ pub mod exec;
 pub(crate) mod materialization_sizing;
 /// Native error projection for cuDF and cuVS.
 pub mod native_error;
-#[doc(hidden)]
-pub mod object_store_error;
 pub(crate) mod parquet_metadata;
 /// Native cuDF expression, aggregate, and sort lowering.
 pub(crate) mod prepared;

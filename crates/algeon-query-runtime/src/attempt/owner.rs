@@ -1737,7 +1737,7 @@ mod tests {
         );
         let publisher = admission.report_publisher();
         let primary_error =
-            QueryError::new(QueryErrorCode::CudfTemporaryFailure, "test.primary", "primary native failure");
+            QueryError::new(QueryErrorCode::RapidsTemporaryFailure, "test.primary", "primary native failure");
         begin.owner.commit_query_error(&primary_error).unwrap();
         let cleanup_error = QueryError::new(QueryErrorCode::Internal, "test.cleanup", "injected cleanup failure");
         handle.record_cleanup_failure(CleanupFailurePhase::QueryServiceCleanup, &cleanup_error);
@@ -1753,7 +1753,7 @@ mod tests {
             &begin,
             &publisher,
             RuntimeTerminalOutcome::Failed {
-                error_code: AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure),
+                error_code: AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure),
                 error_status: AttemptFailureStatus::Temporary,
             },
         );
@@ -1764,10 +1764,10 @@ mod tests {
         assert!(matches!(
             report.outcome,
             RuntimeTerminalOutcome::Failed { ref error_code, .. }
-                if *error_code == AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure)
+                if *error_code == AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure)
         ));
         let primary = report.primary_failure.as_ref().expect("primary failure summary");
-        assert_eq!(primary.code(), AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure));
+        assert_eq!(primary.code(), AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure));
         assert!(primary.text().is_none(), "native error text must not enter the stable report");
         let first_cleanup = report.first_cleanup_failure.as_ref().expect("first cleanup failure summary");
         assert_eq!(first_cleanup.phase(), CleanupFailurePhase::QueryServiceCleanup);
@@ -1787,7 +1787,7 @@ mod tests {
     fn borrowed_primary_capture_preserves_the_returned_error_source_chain() {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
         native_disposition(&begin);
-        let error = QueryError::new(QueryErrorCode::CudfTemporaryFailure, "test.primary", "native failure")
+        let error = QueryError::new(QueryErrorCode::RapidsTemporaryFailure, "test.primary", "native failure")
             .with_source(std::io::Error::other("original source cause"));
         assert_eq!(error.source_error().map(ToString::to_string).as_deref(), Some("original source cause"));
 
@@ -1796,7 +1796,7 @@ mod tests {
         assert_eq!(error.source_error().map(ToString::to_string).as_deref(), Some("original source cause"));
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         let summary = report.primary_failure.as_ref().expect("borrowed native summary");
-        assert_eq!(summary.code(), AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure));
+        assert_eq!(summary.code(), AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure));
         assert_eq!(summary.status(), AttemptFailureStatus::Temporary);
         assert!(summary.text().is_none(), "the returned error, not the report, retains native message text");
     }
@@ -1817,7 +1817,7 @@ mod tests {
         // cleanup and finalization before the outer DataFusion boundary can
         // commit its own generic fallback.
         let error = QueryError::new(
-            QueryErrorCode::CudfTemporaryFailure,
+            QueryErrorCode::RapidsTemporaryFailure,
             "test.native_admission_execute",
             "application-specific native failure text must remain on the returned error",
         )
@@ -1840,12 +1840,12 @@ mod tests {
         assert!(matches!(
             report.outcome,
             RuntimeTerminalOutcome::Failed {
-                error_code: AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure),
+                error_code: AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure),
                 error_status: AttemptFailureStatus::Temporary,
             }
         ));
         let summary = report.primary_failure.as_ref().expect("captured native primary summary");
-        assert_eq!(summary.code(), AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure));
+        assert_eq!(summary.code(), AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure));
         assert_eq!(summary.status(), AttemptFailureStatus::Temporary);
         assert_eq!(summary.operation(), AttemptFailureOperation::Execution);
         assert_eq!(summary.facts().len(), 1);
@@ -1866,7 +1866,7 @@ mod tests {
         let publisher = admission.report_publisher();
 
         let error = QueryError::new(
-            QueryErrorCode::CudfTemporaryFailure,
+            QueryErrorCode::RapidsTemporaryFailure,
             "query_engine.exec.execute_query_plan",
             "execution failure",
         );

@@ -1916,7 +1916,7 @@ async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absen
         .await
         .unwrap_err();
     let algeon = typed_algeon_error(&error);
-    assert_eq!(algeon.code(), ErrorCode::CudfInvalidInput);
+    assert_eq!(algeon.code(), ErrorCode::RapidsInvalidInput);
     assert_eq!(algeon.fact_value("algorithm"), Some("jaccard"));
     assert_eq!(algeon.fact_value("input_role"), Some("vertex_pairs"));
 }
@@ -2635,7 +2635,8 @@ async fn cugraph_sql_gpu_absent_traversal_sources_reach_the_client_as_invalid_in
     ] {
         let error = ctx.sql(sql).await.unwrap().collect().await.unwrap_err();
         let algeon = typed_algeon_error(&error);
-        assert_eq!(algeon.code(), ErrorCode::CudfInvalidInput, "{sql}");
+        assert_eq!(algeon.code(), ErrorCode::RapidsInvalidInput, "{sql}");
+        assert_eq!(algeon.fact_value("rapids_library"), Some("cugraph"), "{sql}");
         let native_message = algeon.fact_value("native_message").expect("native message fact");
         assert!(native_message.ends_with(native_reason), "{sql}: {native_message}");
         // The client status of an invalid-input error carries the adapter message verbatim.

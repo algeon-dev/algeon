@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use arrow::datatypes::{DataType, SchemaRef};
 use cudf::{DenseMatrixLayout, PackedMatrix, Runtime, Series, TypeId, frame::dataframe::GpuRecordBatch};
 use query_planning::{
-    error::{QueryError, QueryErrorCode, Result},
+    error::{QueryError, QueryErrorCode, RAPIDS_LIBRARY_FACT, Result},
     plan::{DenseVectorBinding, NodeId, QueryPlan, VectorRowIdBinding},
 };
 use query_runtime::{
@@ -38,6 +38,9 @@ impl<'a> DenseRelationInputs<'a> {
 }
 
 pub(super) struct DenseRelationOperations {
+    /// RAPIDS library whose input contract the packed relation feeds,
+    /// recorded as the `rapids_library` fact of its input and output errors.
+    pub(super) library: &'static str,
     pub(super) pack: &'static str,
     pub(super) before_pack: &'static str,
     pub(super) before_uniform_list_pack: &'static str,
@@ -46,6 +49,7 @@ pub(super) struct DenseRelationOperations {
 }
 
 pub(super) const VECTOR_OPERATIONS: DenseRelationOperations = DenseRelationOperations {
+    library: "cuvs",
     pack: "query_engine.vector_algorithm.pack",
     before_pack: "query_engine.vector_algorithm.before_pack",
     before_uniform_list_pack: "query_engine.vector_algorithm.before_uniform_list_pack",
@@ -54,6 +58,7 @@ pub(super) const VECTOR_OPERATIONS: DenseRelationOperations = DenseRelationOpera
 };
 #[cfg(feature = "cuml")]
 pub(super) const ML_OPERATIONS: DenseRelationOperations = DenseRelationOperations {
+    library: "cuml",
     pack: "query_engine.ml_algorithm.pack",
     before_pack: "query_engine.ml_algorithm.before_pack",
     before_uniform_list_pack: "query_engine.ml_algorithm.before_uniform_list_pack",
@@ -146,7 +151,7 @@ fn null_values_error(
     values: NullValues,
     null_count: Option<usize>,
 ) -> QueryError {
-    let error = QueryError::new(QueryErrorCode::CudfInvalidInput, ops.pack, values.message())
+    let error = QueryError::new(QueryErrorCode::RapidsInvalidInput, ops.pack, values.message()).with_fact(RAPIDS_LIBRARY_FACT, ops.library)
         .with_fact("node_id", node_id)
         .with_fact("algorithm", algorithm)
         .with_fact("relation_role", role)
@@ -238,10 +243,11 @@ pub(super) fn require_series_contract_for(
     })?;
     if actual_type.id() != expected_type || series.len() != expected_rows || series.null_count() != 0 {
         return Err(QueryError::new(
-            QueryErrorCode::CudfInvariantViolation,
+            QueryErrorCode::RapidsInvariantViolation,
             ops.assemble,
             "vector native output does not match its device assembly contract",
         )
+        .with_fact(RAPIDS_LIBRARY_FACT, ops.library)
         .with_fact("output", output)
         .with_fact("expected_type", expected_type.name())
         .with_fact("actual_type", actual_type.id().name())
@@ -259,10 +265,11 @@ pub(super) fn require_libcudf_row_count(rows: usize, algorithm: &'static str) ->
         return Ok(());
     }
     Err(QueryError::new(
-        QueryErrorCode::CudfInvalidInput,
+        QueryErrorCode::RapidsInvalidInput,
         VECTOR_OPERATIONS.assemble,
         "vector result row count exceeds libcudf size_type range",
     )
+    .with_fact(RAPIDS_LIBRARY_FACT, "cudf")
     .with_fact("algorithm", algorithm)
     .with_fact("rows", rows)
     .with_fact("maximum_rows", i32::MAX)
@@ -301,7 +308,8 @@ pub(super) fn relation_element_type_for(
         DenseVectorBinding::VectorColumn(column) => column,
     };
     let field = schema.field_with_name(column).map_err(|_| {
-        QueryError::new(QueryErrorCode::CudfInvalidInput, ops.execute, "vector column is absent from input schema")
+        QueryError::new(QueryErrorCode::RapidsInvalidInput, ops.execute, "vector column is absent from input schema")
+            .with_fact(RAPIDS_LIBRARY_FACT, ops.library)
             .with_fact("node_id", node_id)
             .with_fact("algorithm", algorithm)
             .with_fact("reason", "missing_feature_column")
@@ -715,10 +723,11 @@ pub(super) fn checked_output_rows(rows: usize, factor: usize, node_id: NodeId, a
     })?;
     if output_rows > i32::MAX as usize {
         return Err(QueryError::new(
-            QueryErrorCode::CudfInvalidInput,
+            QueryErrorCode::RapidsInvalidInput,
             VECTOR_OPERATIONS.execute,
             "vector output row count exceeds libcudf size_type range",
         )
+        .with_fact(RAPIDS_LIBRARY_FACT, "cudf")
         .with_fact("node_id", node_id)
         .with_fact("algorithm", algorithm)
         .with_fact("input_rows", rows)

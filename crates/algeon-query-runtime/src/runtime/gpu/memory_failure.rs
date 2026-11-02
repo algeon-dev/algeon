@@ -174,7 +174,7 @@ impl DeviceMemoryFailureTracker {
                     trackers.installed.keys().find(|(installed_device, _)| *installed_device == device_ordinal).copied()
                 {
                     return Err(QueryError::new(
-                        QueryErrorCode::CudfPersistentFailure,
+                        QueryErrorCode::InternalInvariantViolation,
                         TRACKER_LOOKUP_OPERATION,
                         "installed device-manager callback generation does not match the recoverable tracker",
                     )
@@ -208,7 +208,7 @@ impl DeviceMemoryFailureTracker {
                 Ok(tracker)
             },
             _ => Err(QueryError::new(
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::DeviceFault,
                 TRACKER_LOOKUP_OPERATION,
                 "device-manager callback installation is permanently unusable",
             )
@@ -248,7 +248,7 @@ impl DeviceMemoryFailureTracker {
                 return Ok(());
             }
             return Err(QueryError::new(
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::InternalInvariantViolation,
                 TRACKER_LOOKUP_OPERATION,
                 "installation generation is already bound to a different callback tracker",
             )
@@ -258,7 +258,7 @@ impl DeviceMemoryFailureTracker {
         }
         let pending = trackers.pending.remove(&device_ordinal).ok_or_else(|| {
             QueryError::new(
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::InternalInvariantViolation,
                 TRACKER_LOOKUP_OPERATION,
                 "installed callback tracker was not the registered pre-install candidate",
             )
@@ -269,7 +269,7 @@ impl DeviceMemoryFailureTracker {
         if !Arc::ptr_eq(&pending.inner, &self.inner) {
             trackers.pending.insert(device_ordinal, pending);
             return Err(QueryError::new(
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::InternalInvariantViolation,
                 TRACKER_LOOKUP_OPERATION,
                 "pending callback tracker does not match the installed callback tracker",
             )
@@ -295,7 +295,7 @@ impl DeviceMemoryFailureTracker {
             Ok(_) => Ok(()),
             Err(existing) if existing == generation => Ok(()),
             Err(existing) => Err(QueryError::new(
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::InternalInvariantViolation,
                 TRACKER_LOOKUP_OPERATION,
                 "callback tracker is bound to a different installation generation",
             )
@@ -310,7 +310,7 @@ impl DeviceMemoryFailureTracker {
         match self.installation_generation() {
             Some(existing) if existing == generation => Ok(()),
             Some(existing) => Err(QueryError::new(
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::InternalInvariantViolation,
                 TRACKER_LOOKUP_OPERATION,
                 "installed callback generation does not match its original tracker",
             )
@@ -319,7 +319,7 @@ impl DeviceMemoryFailureTracker {
             .with_fact("observed_installation_generation", generation)
             .with_fact("reason", "callback_tracker_generation_mismatch")),
             None => Err(QueryError::new(
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::InternalInvariantViolation,
                 TRACKER_LOOKUP_OPERATION,
                 "installed callback's tracker is not bound to an installation generation",
             )

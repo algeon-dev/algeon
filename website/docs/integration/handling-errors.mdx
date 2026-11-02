@@ -16,7 +16,7 @@ own policies. [Error ownership](../design/errors.mdx) covers how errors are
 created and what each surface discloses.
 
 ~~~text
-cuDF / cuGraph / cuVS
+cuDF / cuGraph / cuVS / cuML
   -> shared native QueryError taxonomy
   -> algeon_datafusion::error::Error
   -> DataFusionError::External
@@ -34,6 +34,13 @@ cuDF / cuGraph / cuVS
 | `message` | Human diagnostic text. |
 | `facts` | Structured diagnostic context, raw by default. |
 | `source` | Original typed cause chain. |
+
+A failure that a RAPIDS library reported, or that broke a library's input
+contract, has a `rapids_*` code such as `rapids_invalid_input` and a
+`rapids_library` fact with the value `cudf`, `cugraph`, `cuvs` or `cuml`. The
+fact appears in the server log's `error_facts` and in `GetQueryStats` as
+`fact.rapids_library`, never in Flight metadata. Retry and protocol decisions
+read `kind` and `status`, which do not depend on the library.
 
 Do not parse `Display` or `Debug` output, since adapter `Error::Display` emits
 only the human message and native `QueryError` formatting can contain raw
@@ -70,6 +77,40 @@ in deterministic depth-first pre-order, bounded by depth and total node count,
 and returns the first Algeon error it reaches, whatever its severity. A `None` result means only that
 none was found within that budget. In that case, maintain the application's
 existing DataFusion error policy.
+
+## Read the native chain {/* #read-the-native-chain */}
+
+`Error::trusted_diagnostic()` prints the whole error on one line: code, kind,
+status, operation, message, the caller schema detail, every raw fact and the
+source chain. The line can hold query literals, object paths and column names,
+so print it in tests, debuggers and trusted local tools, never in operational
+logs or client responses.
+
+The source of an error converted from the native engine is a `QueryError`.
+Downcast it through the adapter's `native` re-export, which names the exact
+type the adapter linked. A direct dependency on another `algeon-query-planning`
+version would never match. Typed failure evidence, such as the allocator
+snapshot of a memory failure, is on `context()`:
+
+```rust
+use algeon_datafusion::error::{DataFusionErrorExt, native::QueryError};
+use datafusion::common::DataFusionError;
+
+fn inspect(error: &DataFusionError) {
+    let Some(algeon) = error.find_algeon_error() else { return };
+    eprintln!("{}", algeon.trusted_diagnostic());
+
+    let native = algeon.source_error().and_then(|source| source.downcast_ref::<QueryError>());
+    if let Some(usage) = native.and_then(|native| native.context().memory.as_ref()?.usage) {
+        eprintln!("peak {} of {} bytes", usage.peak_bytes, usage.limit_bytes);
+    }
+}
+```
+
+The chain stops at the `QueryError` for Parquet and object-store reads.
+Their reader text can name a sensitive location, so the read boundary keeps
+cuDF's classification and a URI-redacted `cudf_message` fact but attaches no
+source.
 
 ## Retry and recovery are evidence-based {/* #retry-and-recovery-are-evidence-based */}
 
@@ -111,6 +152,11 @@ no public Algeon identity.
 
 - `invalid_configuration` has kind `invalid_input`. `algorithm_did_not_converge`
   returns `FAILED_PRECONDITION`.
+- A query that names an unknown table or column fails in DataFusion's planner,
+  so its code is `datafusion_planning` or `field_not_found` and the message is
+  DataFusion's text. `DROP` of a missing object and an unknown GPU function are
+  `object_not_found`. A `CREATE EXTERNAL TABLE` whose location has no object,
+  neither a file nor a non-empty prefix, is `source_object_not_found`.
 - The static text refers to `GetQueryStats` for the query id in the status's
   `x-algeon-query-id` metadata. Every failure of a registered statement
   (`GetFlightInfo` planning, `DoGet`, `DoPut` updates, prepared statement
@@ -163,7 +209,7 @@ An `algorithm_did_not_converge` message names the algorithm, the iterations
 reached and the configured limits, with matching `algorithm`, `iterations`, `max_iterations` and
 `epsilon` metadata. Resubmitting the identical query reproduces the convergence
 failure. The message ends with the
-native layer's `remedy`. For Katz centrality the remedy is a lower `alpha` (below
+native layer's `remedy`, which the error carries once, as a fact. For Katz centrality the remedy is a lower `alpha` (below
 1/lambda_max, the reciprocal of the largest adjacency eigenvalue) or a higher
 `max_iterations`; for HITS and eigenvector centrality it is a higher
 `max_iterations` or `epsilon`.
@@ -235,6 +281,55 @@ without the trailing `EXPLAIN GPU` pointer or any `x-algeon-*` metadata. The
 [rejected summary row](../reference/gpu-coverage-report.mdx#rejected-summary-row)
 reference has the remaining rules.
 
+## Server log {/* #server-log */}
+
+The built-in server writes one failure event per failed Flight SQL statement,
+`converted adapter error to Flight SQL status`, followed by the statement's
+terminal line, `failed Flight SQL statement`. Both lines carry the statement's
+`query_id`; the failure event starts with its query span, which also carries
+the `correlation_id` when the client set one:
+
+~~~text
+INFO algeon_datafusion.flight_sql.query{query_id="d4b0794e-1560-43f7-9ff8-709894078bd5" correlation_id="d06-required-list-decimal" operation="do_get_statement"}: algeon_datafusion::server::error: converted adapter error to Flight SQL status error_code="final_plan_requirement_unsatisfied" error_kind="planning" error_status="permanent" error_operation="algeon_datafusion.planner.final_plan_requirement" error_message="GPU execution does not support a projected column with an unsupported Arrow type" client_message="native_required mode rejected a plan that needs DataFusion CPU: GPU execution does not support a projected column with an unsupported Arrow type" error_facts="blocking_kind=column_type, reason=unsupported_type"
+INFO algeon_datafusion.flight_sql.query{query_id="d4b0794e-1560-43f7-9ff8-709894078bd5" correlation_id="d06-required-list-decimal" operation="do_get_statement"}: algeon_datafusion::server::flight::status: failed Flight SQL statement query_id="d4b0794e-1560-43f7-9ff8-709894078bd5" outcome="failed" stage="execute_stream" grpc_code=InvalidArgument error_code="final_plan_requirement_unsatisfied" reason="unsupported_type" elapsed_ms=5
+~~~
+
+| Field | Content |
+| --- | --- |
+| `error_code`, `error_kind`, `error_status`, `error_operation` | The identity the status metadata carries. |
+| `error_message` | The adapter message, without caller column names or types. A failure DataFusion classified gets a fixed sentence for its code, because DataFusion's text can echo SQL tokens and list a relation's fields. |
+| `client_message` | The status text when it differs from `error_message`, still without caller schema names. |
+| `error_cause` | The deepest cause when it adds text the message lacks, such as libcugraph's or the object store's reason. DataFusion, schema, SQL parser and Arrow errors contribute no cause. |
+| `error_source_path` | The input path of a read failure. |
+| `error_facts` | The log-safe facts as `key=value` pairs: `native_*` classification, `rapids_library`, `reason`, `blocking_kind` and memory byte counts. |
+| `error_facts_truncated`, `error_diagnostics_truncated` | Present as `true` when a bound shortened the facts or the cause. |
+
+A failure with status `persistent`, such as `device_fault`, logs at `ERROR`,
+because that status asks for escalation. Otherwise the level follows the error
+kind:
+
+| Level | Kinds |
+| --- | --- |
+| `INFO` | `cancelled`, `not_found`, `permission_denied`, `unauthenticated`, `planning`, `invalid_input`, `unsupported` |
+| `WARN` | `resource_exhausted`, `dependency_failure` |
+| `ERROR` | `execution`, `invariant_violation`, `internal` |
+
+The terminal line uses the same level. `algorithm_did_not_converge` has kind
+`dependency_failure` and status `permanent`, and logs at `WARN`.
+
+The log omits raw facts, caller schema detail and statement text. Object-store
+URIs in messages, causes and paths are written as `<redacted-uri>`, and text
+that looks like a credential as `<redacted-credential>`. Local paths stay.
+
+Call `GetQueryStats` with the `query_id` from either line. Its
+`[structured_error]` section repeats the code and the log-safe facts as
+`fact.<name>` and adds the caller-visible schema detail, the statement text
+with `OPTIONS` values masked and the capped source chain. It is the place to look when a line reports `error_facts_truncated=true`.
+
+`--log` takes a tracing filter. `--log info,algeon_datafusion=debug` adds the
+planning report of each statement as a `DEBUG` line just before its failure
+event.
+
 ## Query stats {/* #query-stats */}
 
 `GetQueryStats` returns the retained diagnostics of one query as UTF-8 text.
@@ -256,8 +351,11 @@ conn = dbapi.connect(
 )
 ```
 
-The same key passed to `conn.adbc_connection.set_options(...)` changes the id
-for later statements on that connection.
+To change the id on an open connection, pass the same key to
+`conn.adbc_connection.set_options(...)` twice: first with an empty string,
+which removes the header, then with the new id. The driver appends a second
+header value otherwise, and the server rejects a request whose correlation id
+key has more than one value with `INVALID_ARGUMENT`.
 
 `GetQueryStatsSummary` takes the same body and returns only the `#` header
 lines, the attempt labels and the trailer, without the planning and execution

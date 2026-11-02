@@ -7,7 +7,6 @@
 //! only after cleanup and device-health checks.
 
 use std::{
-    backtrace::{Backtrace, BacktraceStatus},
     error::Error as StdError,
     ffi::{CStr, c_char},
     fmt, ptr,
@@ -116,15 +115,6 @@ impl ErrorKind {
     /// Map from a raw C error-code integer value.
     pub fn from_error_code_raw(raw: u32) -> Self {
         Self::from_error_code(cugraph_error_code_t(raw))
-    }
-
-    /// Whether a backtrace should be captured for this error kind.
-    ///
-    /// Only truly unexpected errors benefit from backtraces; expected
-    /// conditions like `InvalidInput` or `NotImplemented` have sufficient
-    /// context from the error kind and message alone.
-    fn capture_backtrace(&self) -> bool {
-        matches!(self, ErrorKind::Unexpected)
     }
 }
 
@@ -331,15 +321,12 @@ pub struct Error {
     message: String,
     context: Vec<(&'static str, String)>,
     source: Option<Box<dyn StdError + Send + Sync + 'static>>,
-    backtrace: Option<Box<Backtrace>>,
 }
 
 impl Error {
     /// Create a new error for the given kind and operation.
     ///
-    /// The error defaults to [`ErrorStatus::Permanent`]. A backtrace is
-    /// captured only for [`ErrorKind::Unexpected`] errors (when the
-    /// `RUST_BACKTRACE` environment variable is set).
+    /// The error defaults to [`ErrorStatus::Permanent`].
     pub fn new(kind: ErrorKind, operation: &'static str) -> Self {
         Self {
             kind,
@@ -349,11 +336,6 @@ impl Error {
             message: String::new(),
             context: Vec::new(),
             source: None,
-            backtrace: kind
-                .capture_backtrace()
-                .then(Backtrace::capture)
-                .filter(|bt| bt.status() == BacktraceStatus::Captured)
-                .map(Box::new),
         }
     }
 
@@ -386,14 +368,16 @@ impl Error {
         self
     }
 
-    /// Attach an underlying source error.
+    /// Attach an underlying source error when no source is already present.
     ///
     /// Accepts any source error that is safe to store and report from this
-    /// library's public error type.
+    /// library's public error type. A second source is discarded so error
+    /// decoration cannot replace the original causal chain.
     pub fn set_source<E>(mut self, source: E) -> Self
     where E: StdError + Send + Sync + 'static {
-        debug_assert!(self.source.is_none(), "the source error has been set");
-        self.source = Some(Box::new(source));
+        if self.source.is_none() {
+            self.source = Some(Box::new(source));
+        }
         self
     }
 
@@ -569,9 +553,6 @@ impl fmt::Debug for Error {
             }
             if let Some(ref src) = self.source {
                 write!(f, "\n\nSource: {:#}", src)?;
-            }
-            if let Some(ref bt) = self.backtrace {
-                write!(f, "\n\nBacktrace:\n{}", bt)?;
             }
             Ok(())
         }
@@ -964,6 +945,16 @@ mod tests {
         let std_source = std::error::Error::source(&err);
         assert!(std_source.is_some());
         assert_eq!(std_source.unwrap().to_string(), "GPU fault");
+    }
+
+    #[test]
+    fn second_source_keeps_the_first_causal_chain() {
+        let err = Error::new(ErrorKind::Unexpected, "ResourceHandle::new")
+            .set_source(std::io::Error::other("first source"))
+            .set_source(std::io::Error::other("second source"));
+
+        let std_source = std::error::Error::source(&err).expect("source");
+        assert_eq!(std_source.to_string(), "first source");
     }
 
     #[test]

@@ -58,8 +58,10 @@ Create the error where the failed contract is known:
   operation, message, non-colliding facts and source. Integrators need only the
   public constructors and `find_algeon_error()`.
 - Use the existing typed lower-layer constructors and provenance at cuDF,
-  cuGraph or cuVS boundaries. Their mappings use enums and status, never
-  message text.
+  cuGraph, cuVS or cuML boundaries. Their mappings use enums and status, never
+  message text. Each component crate owns its error model. A cuGraph or cuVS
+  status can record later CUDA probe evidence, so it is not derived from the
+  component code.
 - `kind` and `status` are mappings derived from `code`. Add a new `code` first,
   then update the exhaustive mappings and contract tests.
 
@@ -132,13 +134,23 @@ and tests compare each surface on its own terms, never as equal strings.
 | Trusted in-process diagnostics | Yes. | Yes. | Yes. | Kept. | Yes. |
 
 - Trusted in-process diagnostics are native `QueryError` formatting,
-  `QueryError::to_json()` and the coverage API's `trusted_diagnostic`. None of
-  them is a client response.
+  `QueryError::to_json()`, adapter `Error::trusted_diagnostic()` and the
+  coverage API's `trusted_diagnostic`. None of them is a client response or a
+  log line.
 - Adapter `with_fact` stays hidden from log and retained-diagnostic
   projections. `with_log_safe_fact` is an explicit opt-in for bounded
   operational classifications.
+- Native facts are raw at the adapter too, with two exceptions that
+  `from_native` copies into the log-safe projection: the byte counts of a
+  memory failure, when they parse as integers, and `rapids_library`, whose
+  value each RAPIDS library wrapper writes from a closed vocabulary.
 - `Error::message()` never carries blocking text or caller column names.
   `blocking_kind` is a log-safe fact next to `reason`.
+- DataFusion's own text for a statement it rejected reaches the status message
+  and query stats as `ClientDetail::DataFusionText`, never the log. The adapter
+  message of such a failure is a fixed sentence for its code.
+- Log lines carry no statement text. Query stats retain it with `OPTIONS`
+  values masked.
 - The sealed attempt report does not copy arbitrary messages or facts.
 - The Flight status and the rejected `EXPLAIN GPU` summary row read their code
   and text from the same client projection. That projection opens every

@@ -156,7 +156,7 @@ fn unavailable_remote_backend_is_permanent_structured_and_cannot_fallback() {
     let error =
         validate_remote_kvikio_capability(&resolved, &capability, "query_engine.test.remote_contract").unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::CudfUnsupported);
+    assert_eq!(error.code(), QueryErrorCode::RapidsUnsupported);
     assert_eq!(error.status(), error::QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("reason"), Some("remote_kvikio_backend_unavailable"));
     assert_eq!(error.fact_value("remote_capability_disposition"), Some("backend_build_disabled"));

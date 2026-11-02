@@ -80,6 +80,17 @@ pub(crate) fn client_message(error: &Error) -> ClientMessage {
         logged.insert_str(0, NATIVE_REQUIRED_REJECTION);
         text.insert_str(0, NATIVE_REQUIRED_REJECTION);
     }
+    // The native layer owns `remedy`, the change that makes the call succeed;
+    // the client text renders it once, after the failure itself.
+    let remedy = match (error.fact_value("remedy"), error.code()) {
+        (Some(remedy), ErrorCode::AlgorithmDidNotConverge) => Some(remedy),
+        (None, ErrorCode::AlgorithmDidNotConverge) => Some("change the convergence parameters"),
+        (remedy, _) => remedy.filter(|_| client_actionable_kind(error)),
+    };
+    if let Some(remedy) = remedy {
+        logged.push_str(&format!("; {remedy}"));
+        text.push_str(&format!("; {remedy}"));
+    }
     let pointer = matches!(detail, Some(ClientDetail::BlockingSubject { .. })).then_some(BLOCKING_SUBJECT_POINTER);
     ClientMessage { logged, text, pointer }
 }
@@ -90,21 +101,104 @@ pub(crate) fn client_failure(error: &DataFusionError, statement: FailedStatement
     if let Some(adapter) = error.find_algeon_error() {
         return (adapter.code(), client_message(adapter).text);
     }
+    let foreign = datafusion_failure(error, FOREIGN_FAILURE_OPERATION, statement);
+    (foreign.code(), client_message(&foreign).text)
+}
+
+impl Error {
+    /// Gives a DataFusion error without an Algeon identity the server code
+    /// [`classify`] assigns.
+    ///
+    /// The message is a fixed sentence for the code. DataFusion's own text can
+    /// echo SQL tokens and list caller fields, so it travels as
+    /// [`ClientDetail::DataFusionText`] to the status of the codes whose
+    /// caller text it is, and the DataFusion error stays the source.
+    #[cfg_attr(not(feature = "server"), expect(dead_code, reason = "only the Flight boundary builds a status"))]
+    pub(crate) fn from_datafusion_error(
+        error: DataFusionError,
+        operation: &'static str,
+        statement: FailedStatement,
+    ) -> Self {
+        datafusion_failure(&error, operation, statement).with_source(error)
+    }
+}
+
+/// [`Error::from_datafusion_error`] without the source.
+fn datafusion_failure(error: &DataFusionError, operation: &'static str, statement: FailedStatement) -> Error {
     let code = classify(error, statement);
-    let foreign = Error::new(code, FOREIGN_FAILURE_OPERATION, client_datafusion_error_message(error));
-    (code, client_message(&foreign).text)
+    let adapter = Error::new(code, operation, datafusion_failure_sentence(code))
+        .with_log_safe_fact("datafusion_error", datafusion_error_variant(error));
+    if datafusion_text_is_client_text(code) {
+        adapter.with_client_detail(ClientDetail::DataFusionText { text: client_datafusion_error_message(error) })
+    } else {
+        adapter
+    }
+}
+
+/// Codes whose status text is DataFusion's message for the statement.
+fn datafusion_text_is_client_text(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::SqlParse
+            | ErrorCode::FieldNotFound
+            | ErrorCode::ObjectNotFound
+            | ErrorCode::DataFusionPlanning
+            | ErrorCode::UnsupportedOperator
+            | ErrorCode::Cancelled
+    )
+}
+
+fn datafusion_failure_sentence(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::SqlParse => "the statement is not valid SQL",
+        ErrorCode::FieldNotFound => "a referenced field is not in its relation",
+        ErrorCode::ObjectNotFound => "the statement names an object that does not exist",
+        ErrorCode::DataFusionPlanning => "DataFusion rejected the statement during planning",
+        ErrorCode::UnsupportedOperator => "DataFusion does not implement a feature the statement uses",
+        ErrorCode::Cancelled => "the statement was cancelled",
+        ErrorCode::HostMemoryExhausted => "DataFusion's host memory pool rejected a reservation",
+        ErrorCode::SourceAccessDenied => "source object storage denied access",
+        ErrorCode::SourceUnauthenticated => "source object storage rejected the credentials",
+        ErrorCode::SourceObjectNotFound => "a source object does not exist",
+        ErrorCode::SourceTemporaryFailure => "source object storage failed temporarily",
+        ErrorCode::SourceDependencyFailure => "source object storage failed",
+        _ => "DataFusion failed while processing the statement",
+    }
+}
+
+/// Variant of the outermost DataFusion error, a log-safe classification.
+pub(crate) fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
+    match error {
+        DataFusionError::ArrowError(_, _) => "arrow",
+        DataFusionError::IoError(_) => "io",
+        DataFusionError::SQL(_, _) => "sql",
+        DataFusionError::NotImplemented(_) => "not_implemented",
+        DataFusionError::Internal(_) => "internal",
+        DataFusionError::Plan(_) => "plan",
+        DataFusionError::Configuration(_) => "configuration",
+        DataFusionError::SchemaError(_, _) => "schema",
+        DataFusionError::Execution(_) => "execution",
+        DataFusionError::ExecutionJoin(_) => "execution_join",
+        DataFusionError::ResourcesExhausted(_) => "resources_exhausted",
+        DataFusionError::External(_) => "external",
+        DataFusionError::Context(_, _) => "context",
+        DataFusionError::Diagnostic(_, _) => "diagnostic",
+        DataFusionError::Collection(_) => "collection",
+        DataFusionError::Shared(_) => "shared",
+        DataFusionError::Ffi(_) => "ffi",
+        _ => "other",
+    }
 }
 
 fn client_status_message(error: &Error) -> String {
     match error.code() {
         // The native layer supplies `remedy` with the parameters to change for the algorithm.
         ErrorCode::AlgorithmDidNotConverge => format!(
-            "{} did not converge after {} iterations (max_iterations={}, epsilon={}); {} and retry",
+            "{} did not converge after {} iterations (max_iterations={}, epsilon={})",
             error.fact_value("algorithm").unwrap_or("native algorithm"),
             error.fact_value("iterations").unwrap_or("unknown"),
             error.fact_value("max_iterations").unwrap_or("unknown"),
             error.fact_value("epsilon").unwrap_or("unknown"),
-            error.fact_value("remedy").unwrap_or("change the convergence parameters"),
         ),
         ErrorCode::SqlParse | ErrorCode::FieldNotFound | ErrorCode::ObjectNotFound | ErrorCode::DataFusionPlanning => {
             error.message().to_string()
@@ -258,6 +352,7 @@ fn client_schema_detail_message(detail: &ClientDetail, client_message: &str) -> 
         ClientDetail::Column { name } => format!("{client_message} (column '{name}')"),
         ClientDetail::OrderingKey { name } => format!("{client_message} (ORDER BY key '{name}')"),
         ClientDetail::BlockingSubject { text } => format!("GPU execution does not support {text}"),
+        ClientDetail::DataFusionText { text } => text.clone(),
     }
 }
 

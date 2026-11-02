@@ -74,7 +74,7 @@ impl HostOutputReservation {
         let released_bytes = self.estimated_bytes.checked_sub(actual_bytes).ok_or_else(|| {
             DataFusionError::from(
                 Error::new(
-                    ErrorCode::CudfInvariantViolation,
+                    ErrorCode::InternalInvariantViolation,
                     "algeon_datafusion.native_exec.host_output_reservation",
                     "materialized Arrow batch exceeded its pre-copy destination estimate",
                 )
@@ -604,7 +604,7 @@ mod tests {
 
         let error = reservation.reconcile(129).expect_err("actual bytes above estimate must be an invariant");
         let adapter = error.find_algeon_error().expect("structured adapter error must survive DataFusion conversion");
-        assert_eq!(adapter.code(), ErrorCode::CudfInvariantViolation);
+        assert_eq!(adapter.code(), ErrorCode::InternalInvariantViolation);
         assert_eq!(adapter.fact_value("estimated_materialization_bytes"), Some("128"));
         assert_eq!(adapter.fact_value("actual_materialization_bytes"), Some("129"));
         assert_eq!(pool.reserved(), 128, "reconciliation must never attempt post-D2H pool growth");

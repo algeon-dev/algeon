@@ -379,7 +379,7 @@ fn sealed_retry_advice_is_exhaustive_and_evidence_gated() {
         "OOM status without exact allocator evidence cannot recommend a retry"
     );
 
-    let temporary = failure(AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure), Vec::new());
+    let temporary = failure(AttemptFailureCode::Query(QueryErrorCode::RapidsTemporaryFailure), Vec::new());
     assert_eq!(
         advice_for(
             &RuntimeTerminalOutcome::failed(&temporary),

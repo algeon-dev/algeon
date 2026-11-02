@@ -1082,7 +1082,7 @@ fn unhealthy_stream_device_error(
     health: DeviceHealthSnapshot,
 ) -> QueryError {
     let mut error = QueryError::new(
-        QueryErrorCode::CudfPersistentFailure,
+        QueryErrorCode::DeviceFault,
         operation,
         "service stream pool device is unhealthy; runtime creation and reuse are rejected",
     )
@@ -1931,7 +1931,7 @@ mod tests {
         );
 
         let error = pool.acquire().expect_err("unhealthy device must reject idle runtime reuse");
-        assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
+        assert_eq!(error.code(), QueryErrorCode::DeviceFault);
         assert_eq!(error.fact_value("reason"), Some("device_health_rejected_stream_acquire"));
     }
 

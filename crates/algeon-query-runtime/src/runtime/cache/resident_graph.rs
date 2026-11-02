@@ -323,7 +323,7 @@ impl GpuResidentGraphCache {
         })?;
         if allocation_scope.device() != self.device() {
             return Err(QueryError::new(
-                QueryErrorCode::CudfInvariantViolation,
+                QueryErrorCode::InternalInvariantViolation,
                 OPERATION,
                 "resident graph allocation scope does not match its shared cache domain device",
             )
@@ -776,7 +776,7 @@ impl GpuResidentGraphInsertTransaction {
         scope_usage: Option<cudf::DeviceMemoryResourceUsage>,
     ) -> Result<()> {
         self.cache.ledger.close_admission_if_open("resident_graph_candidate_teardown_unproven")?;
-        let mut error = QueryError::new(QueryErrorCode::CudfPersistentFailure, OPERATION, message)
+        let mut error = QueryError::new(QueryErrorCode::CleanupFailed, OPERATION, message)
             .with_fact("reason", "resident_graph_candidate_teardown_unproven")
             .with_fact("device_ordinal", self.allocation_scope.device().ordinal())
             .with_fact("cache_allocation_domain_id", self.allocation_scope.domain_id());
@@ -929,7 +929,7 @@ where T: GpuResidentGraphTransposition
         let device = self.entry.allocation_scope.device();
         if device_health_snapshot(device).status() != DeviceHealthStatus::Healthy {
             return Err(QueryError::new(
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::DeviceFault,
                 OPERATION,
                 "resident graph allocation scope device is unhealthy after re-park",
             )
@@ -1152,7 +1152,7 @@ fn scope_usage_changed_after_reconciliation(
     allocation_domain_id: cudf::CacheAllocationDomainId,
 ) -> QueryError {
     QueryError::new(
-        QueryErrorCode::CudfInvariantViolation,
+        QueryErrorCode::InternalInvariantViolation,
         OPERATION,
         "resident graph allocation scope did not return to its retained baseline",
     )
@@ -1170,7 +1170,7 @@ fn record_teardown_quarantine(cache: &Arc<GpuResidentGraphCacheInner>, bytes: u6
     cache.ledger.close_admission(reason)?;
     cache.changed.notify_all();
     Err(QueryError::new(
-        QueryErrorCode::CudfPersistentFailure,
+        QueryErrorCode::CleanupFailed,
         OPERATION,
         "resident graph teardown was quarantined; the ledger charge remains retained",
     )

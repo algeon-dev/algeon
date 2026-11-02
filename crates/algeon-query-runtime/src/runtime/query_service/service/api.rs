@@ -213,22 +213,23 @@ impl QueryAdmissionOutcome {
             | QueryErrorCode::UnsupportedOperator
             | QueryErrorCode::UnsupportedExpression
             | QueryErrorCode::UnsupportedType
-            | QueryErrorCode::CudfUnsupported => Self::CapabilityRejected,
+            | QueryErrorCode::RapidsUnsupported => Self::CapabilityRejected,
             QueryErrorCode::InvalidPlan
             | QueryErrorCode::InvalidAttemptCorrelation
             | QueryErrorCode::InvalidConfiguration
             | QueryErrorCode::GraphInputInvalid
-            | QueryErrorCode::CudfInvalidInput => Self::InvalidInput,
+            | QueryErrorCode::RapidsInvalidInput => Self::InvalidInput,
             QueryErrorCode::Cancelled => Self::Cancelled,
-            QueryErrorCode::CudfTemporaryFailure
-            | QueryErrorCode::CudfPersistentFailure
+            QueryErrorCode::RapidsTemporaryFailure
+            | QueryErrorCode::RapidsPersistentFailure
             | QueryErrorCode::AlgorithmDidNotConverge
-            | QueryErrorCode::CudfDependencyFailure
+            | QueryErrorCode::RapidsDependencyFailure
             | QueryErrorCode::SourceAccessDenied
             | QueryErrorCode::SourceUnauthenticated
             | QueryErrorCode::SourceObjectNotFound
             | QueryErrorCode::SourceTemporaryFailure
-            | QueryErrorCode::CudfInvariantViolation
+            | QueryErrorCode::SourceDependencyFailure
+            | QueryErrorCode::RapidsInvariantViolation
             | QueryErrorCode::QueryMemoryLimitExceeded
             | QueryErrorCode::DeviceOutOfMemory
             | QueryErrorCode::DeviceAllocationFailed
@@ -314,7 +315,7 @@ mod outcome_tests {
             (QueryErrorCode::InvalidPlan, "invalid"),
             (QueryErrorCode::InvalidConfiguration, "invalid"),
             (QueryErrorCode::Cancelled, "cancelled"),
-            (QueryErrorCode::CudfInvariantViolation, "execution"),
+            (QueryErrorCode::RapidsInvariantViolation, "execution"),
         ];
         for (code, expected) in cases {
             let outcome = QueryAdmissionOutcome::from_error(&error(code).with_fact("reason", "unrelated_reason_name"));

@@ -15,9 +15,9 @@ use cudf::CudfAllocationAttribution;
 use cudf::core::error::FactKeyName;
 #[cfg(feature = "cuml")]
 use cuml::{ErrorCode, ErrorKind, ErrorStatus};
-#[cfg(any(feature = "cuvs", feature = "cuml"))]
-use query_planning::error::redact_uri_tokens;
 use query_planning::error::{MemoryFailure, MemoryUsage, QueryError, QueryErrorCode};
+#[cfg(any(feature = "cuvs", feature = "cuml"))]
+use query_planning::error::{RAPIDS_LIBRARY_FACT, redact_uri_tokens};
 pub(crate) use query_runtime::native_error::{
     cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure,
 };
@@ -73,6 +73,7 @@ pub(crate) fn with_attempt_domain_memory(context: &ExecutionContext, error: Quer
 pub(crate) fn cuvs_query_error(operation: &'static str, message: impl Into<String>, source: cuvs::Error) -> QueryError {
     let code = query_error_code_for_cuvs_error(&source);
     let error = QueryError::new(code, operation, message)
+        .with_fact(RAPIDS_LIBRARY_FACT, "cuvs")
         .with_fact("cuvs_kind", source.kind())
         .with_fact("cuvs_status", source.status())
         .with_fact("cuvs_operation", source.operation());
@@ -111,7 +112,8 @@ where
     E: StdError + Send + Sync + 'static,
 {
     let source_kind: String = source_kind.into();
-    QueryError::new(QueryErrorCode::CudfInvariantViolation, operation, message)
+    QueryError::new(QueryErrorCode::RapidsInvariantViolation, operation, message)
+        .with_fact(RAPIDS_LIBRARY_FACT, "cudf")
         .with_fact("cudf_interop_kind", source_kind)
         .with_source(source)
 }
@@ -120,16 +122,16 @@ where
 #[cfg(feature = "cuvs")]
 pub(crate) fn query_error_code_for_cuvs_error(error: &cuvs::Error) -> QueryErrorCode {
     match error.kind() {
-        cuvs::ErrorKind::InvalidInput => QueryErrorCode::CudfInvalidInput,
-        cuvs::ErrorKind::Unsupported => QueryErrorCode::CudfUnsupported,
+        cuvs::ErrorKind::InvalidInput => QueryErrorCode::RapidsInvalidInput,
+        cuvs::ErrorKind::Unsupported => QueryErrorCode::RapidsUnsupported,
         cuvs::ErrorKind::OutOfMemory => QueryErrorCode::DeviceAllocationFailed,
         cuvs::ErrorKind::InvalidState => QueryErrorCode::InternalInvariantViolation,
         cuvs::ErrorKind::Unexpected => match error.status() {
-            cuvs::ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
+            cuvs::ErrorStatus::Temporary => QueryErrorCode::RapidsTemporaryFailure,
             cuvs::ErrorStatus::Persistent => QueryErrorCode::DeviceFault,
-            cuvs::ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
+            cuvs::ErrorStatus::Permanent => QueryErrorCode::RapidsDependencyFailure,
         },
-        _ => QueryErrorCode::CudfDependencyFailure,
+        _ => QueryErrorCode::RapidsDependencyFailure,
     }
 }
 
@@ -163,7 +165,7 @@ fn classify_cuml_error(
     attribution: cudf::CudfAllocationAttribution,
 ) -> QueryErrorCode {
     if code == ErrorCode::HostOutOfMemory {
-        return QueryErrorCode::CudfTemporaryFailure;
+        return QueryErrorCode::RapidsTemporaryFailure;
     }
     match attribution {
         CudfAllocationAttribution::ConfirmedQueryLimit => return QueryErrorCode::QueryMemoryLimitExceeded,
@@ -172,28 +174,28 @@ fn classify_cuml_error(
         CudfAllocationAttribution::NonAllocationFailure => {},
     }
     match kind {
-        ErrorKind::InvalidInput => QueryErrorCode::CudfInvalidInput,
-        ErrorKind::Unsupported => QueryErrorCode::CudfUnsupported,
+        ErrorKind::InvalidInput => QueryErrorCode::RapidsInvalidInput,
+        ErrorKind::Unsupported => QueryErrorCode::RapidsUnsupported,
         ErrorKind::ExecutionContext => QueryErrorCode::InternalInvariantViolation,
         ErrorKind::ResourceExhausted => QueryErrorCode::SizeOverflow,
         ErrorKind::DependencyFailure => match status {
-            ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
+            ErrorStatus::Temporary => QueryErrorCode::RapidsTemporaryFailure,
             ErrorStatus::Persistent => QueryErrorCode::DeviceFault,
-            ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
+            ErrorStatus::Permanent => QueryErrorCode::RapidsDependencyFailure,
         },
-        ErrorKind::InvariantViolation => QueryErrorCode::CudfInvariantViolation,
+        ErrorKind::InvariantViolation => QueryErrorCode::RapidsInvariantViolation,
     }
 }
 
 #[cfg(feature = "cuml")]
 pub fn cuml_query_error(operation: &'static str, message: impl Into<String>, source: cuml::Error) -> QueryError {
     let mut error = QueryError::new(query_error_code_for_cuml_error(&source), operation, message)
+        .with_fact(RAPIDS_LIBRARY_FACT, "cuml")
         .with_fact("cuml_code", source.code())
         .with_fact("cuml_kind", source.kind())
         .with_fact("cuml_status", source.status())
         .with_fact("cuml_phase", source.phase())
-        .with_fact("cuml_operation", source.operation())
-        .with_fact("cuml_call_chain", source.call_chain().join(" -> "));
+        .with_fact("cuml_operation", source.operation());
     if !source.message().trim().is_empty() {
         error = error.with_fact("cuml_message", redact_uri_tokens(source.message().trim()));
     }

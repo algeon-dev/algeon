@@ -558,7 +558,7 @@ fn register_masked_tables(ctx: &SessionContext) {
 
 fn assert_null_input_error(error: &DataFusionError, function: &str, role: &str, column: &str, reason: &str) {
     let typed = error.find_algeon_error().unwrap_or_else(|| panic!("typed error expected: {error:?}"));
-    assert_eq!(typed.code(), ErrorCode::CudfInvalidInput, "{error}");
+    assert_eq!(typed.code(), ErrorCode::RapidsInvalidInput, "{error}");
     assert!(typed.message().contains(function), "{}", typed.message());
     assert_eq!(typed.fact_value("relation_role"), Some(role), "{error}");
     assert_eq!(typed.fact_value("reason"), Some(reason), "{error}");

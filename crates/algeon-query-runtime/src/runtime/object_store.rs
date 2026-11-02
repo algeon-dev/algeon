@@ -377,9 +377,15 @@ fn build_s3_store(key: &S3ObjectStoreKey, profile: Option<&SourceStorageProfile>
     if let Some(profile) = s3_profile {
         if let Some(endpoint) = profile.endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
             if endpoint_authority_contains_userinfo(endpoint) {
-                return Err(
-                    s3_store_build_error(key, region, s3_profile).with_fact("reason", "endpoint_userinfo_unsupported")
-                );
+                // The endpoint is operator configuration; credentials belong
+                // in the credential settings, never in the URL.
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidConfiguration,
+                    "query_engine.source_object_store.s3",
+                    "the S3 endpoint must not carry user information; configure credentials separately",
+                )
+                .with_fact("reason", "endpoint_userinfo_unsupported")
+                .with_fact("endpoint_configured", true));
             }
             builder = builder.with_endpoint(endpoint);
             if profile.allow_http.unwrap_or_else(|| endpoint.trim_start().starts_with("http://")) {
@@ -401,7 +407,7 @@ fn s3_store_build_error(
     s3_profile: Option<&S3SourceStorageProfile>,
 ) -> QueryError {
     let mut query_error = QueryError::new(
-        QueryErrorCode::CudfDependencyFailure,
+        QueryErrorCode::SourceDependencyFailure,
         "query_engine.source_object_store.s3",
         "failed to build S3 object-store client for native control-plane work",
     )
@@ -439,7 +445,7 @@ pub(super) fn default_object_store_control_runtime() -> Result<Arc<TokioRuntime>
     }
     let _guard = INIT_LOCK.lock().map_err(|_| {
         QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+            QueryErrorCode::InternalInvariantViolation,
             "query_engine.runtime.object_store_control_runtime",
             "object-store control runtime initialization lock was poisoned",
         )
@@ -451,7 +457,7 @@ pub(super) fn default_object_store_control_runtime() -> Result<Arc<TokioRuntime>
         Arc::new(Builder::new_multi_thread().thread_name("algeon-object-store-control").enable_all().build().map_err(
             |error| {
                 QueryError::new(
-                    QueryErrorCode::CudfDependencyFailure,
+                    QueryErrorCode::Internal,
                     "query_engine.runtime.object_store_control_runtime",
                     "failed to initialize object-store control runtime",
                 )
@@ -579,7 +585,7 @@ mod tests {
         let error = build_s3_store(&key, Some(&profile)).unwrap_err();
         let rendered = format!("{error:?}\n{error}");
 
-        assert_eq!(error.code(), QueryErrorCode::CudfDependencyFailure);
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.fact_value("reason"), Some("endpoint_userinfo_unsupported"));
         assert_eq!(error.fact_value("endpoint_configured"), Some("true"));
         assert!(error.source_error().is_none());
@@ -655,7 +661,7 @@ mod tests {
 
         let error = build_s3_store(&key, Some(&profile)).unwrap_err();
 
-        assert_eq!(error.code(), QueryErrorCode::CudfDependencyFailure);
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.fact_value("reason"), Some("endpoint_userinfo_unsupported"));
         assert!(error.source_error().is_none());
     }

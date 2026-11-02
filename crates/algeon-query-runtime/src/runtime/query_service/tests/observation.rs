@@ -12,7 +12,7 @@ fn unhealthy_device_rejects_query_admission_before_grant_or_queue() {
 
     let error = service.try_admit_query().expect_err("unhealthy device must reject query admission");
 
-    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
+    assert_eq!(error.code(), QueryErrorCode::DeviceFault);
     assert_eq!(error.fact_value("reason"), Some("no_healthy_compatible_device"));
     let expected_device_ordinal = device_ordinal.to_string();
     assert_eq!(error.fact_value("device_ordinal"), Some(expected_device_ordinal.as_str()));
@@ -564,7 +564,7 @@ fn sweep_finishes_health_rejection_after_waiter_consumes_terminal_error() {
 
     assert_eq!(service.queued_len(), 0, "the sweep removes the health-rejected waiter");
     let error = waiter.try_admit().expect_err("waiter consumes its recorded health rejection before sweep finish");
-    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
+    assert_eq!(error.code(), QueryErrorCode::DeviceFault);
     assert_eq!(error.fact_value("reason"), Some("no_healthy_compatible_device"));
     assert!(observation.sealed_snapshot().is_none(), "waiter error handoff does not drop the observation");
 
@@ -575,7 +575,7 @@ fn sweep_finishes_health_rejection_after_waiter_consumes_terminal_error() {
     let sealed = observation.sealed_snapshot().expect("sweep finalizes the health-rejected completion");
     assert!(matches!(
         &sealed.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::Query(QueryErrorCode::CudfPersistentFailure)
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::Query(QueryErrorCode::DeviceFault)
     ));
     assert_eq!(
         observed_admission_events(&observation),

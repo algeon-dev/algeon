@@ -1010,7 +1010,7 @@ fn project_over_parquet(
 }
 
 fn assert_cudf_input_failure(error: &QueryError, cudf_code: &str) {
-    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput, "got {error:?}");
+    assert_eq!(error.code(), QueryErrorCode::RapidsInvalidInput, "got {error:?}");
     assert_eq!(error.fact_value("cudf_code"), Some(cudf_code), "got {error:?}");
 }
 

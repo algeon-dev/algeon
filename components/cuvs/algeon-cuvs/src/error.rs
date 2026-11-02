@@ -1,9 +1,4 @@
-use std::{
-    backtrace::{Backtrace, BacktraceStatus},
-    error::Error as StdError,
-    ffi::CStr,
-    fmt,
-};
+use std::{error::Error as StdError, ffi::CStr, fmt};
 
 use cudf::{
     ErrorCode,
@@ -19,12 +14,6 @@ pub enum ErrorKind {
     InvalidState,
     OutOfMemory,
     Unsupported,
-}
-
-impl ErrorKind {
-    fn capture_backtrace(&self) -> bool {
-        matches!(self, ErrorKind::Unexpected)
-    }
 }
 
 impl fmt::Display for ErrorKind {
@@ -63,7 +52,6 @@ pub struct Error {
     message: String,
     context: Vec<(&'static str, String)>,
     source: Option<Box<dyn StdError + Send + Sync + 'static>>,
-    backtrace: Option<Box<Backtrace>>,
 }
 
 impl Error {
@@ -75,11 +63,6 @@ impl Error {
             message: String::new(),
             context: Vec::new(),
             source: None,
-            backtrace: kind
-                .capture_backtrace()
-                .then(Backtrace::capture)
-                .filter(|bt| bt.status() == BacktraceStatus::Captured)
-                .map(Box::new),
         }
     }
 
@@ -101,10 +84,15 @@ impl Error {
         self
     }
 
+    /// Attaches the source error when no source is already present.
+    ///
+    /// A second source is discarded so error decoration cannot replace the
+    /// original causal chain.
     pub fn set_source<E>(mut self, source: E) -> Self
     where E: StdError + Send + Sync + 'static {
-        debug_assert!(self.source.is_none(), "source already set");
-        self.source = Some(Box::new(source));
+        if self.source.is_none() {
+            self.source = Some(Box::new(source));
+        }
         self
     }
 
@@ -183,9 +171,6 @@ impl fmt::Debug for Error {
             }
             if let Some(source) = &self.source {
                 write!(f, "\n\nSource: {source:#}")?;
-            }
-            if let Some(backtrace) = &self.backtrace {
-                write!(f, "\n\nBacktrace:\n{backtrace}")?;
             }
             Ok(())
         }
@@ -361,5 +346,15 @@ mod tests {
             let error = native_error(cuvsError_t::CUVS_ERROR, native_kind, "test", "not an allocation message");
             assert_eq!((error.kind(), error.status()), (kind, status));
         }
+    }
+
+    #[test]
+    fn second_source_keeps_the_first_causal_chain() {
+        let error = Error::new(ErrorKind::Unexpected, "test")
+            .set_source(std::io::Error::other("first source"))
+            .set_source(std::io::Error::other("second source"));
+
+        let source = StdError::source(&error).expect("source");
+        assert_eq!(source.to_string(), "first source");
     }
 }

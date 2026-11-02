@@ -680,11 +680,14 @@ pub fn algeon_datafusion::cuvs_sql::cuvs_options_json_schema(query_planning::pla
 pub fn algeon_datafusion::cuvs_sql::cuvs_relation_planner() -> alloc::sync::Arc<dyn datafusion_expr::planner::RelationPlanner>
 pub type algeon_datafusion::cuvs_sql::CuvsAlgoExec = algeon_datafusion::native_exec::relation_function::RelationFunctionExec<algeon_datafusion::cuvs_sql::exec::node::CuvsRelationFunctionSpec>
 pub mod algeon_datafusion::error
+pub use algeon_datafusion::error::native
 pub enum algeon_datafusion::error::ClientDetail
 pub algeon_datafusion::error::ClientDetail::BlockingSubject
 pub algeon_datafusion::error::ClientDetail::BlockingSubject::text: alloc::string::String
 pub algeon_datafusion::error::ClientDetail::Column
 pub algeon_datafusion::error::ClientDetail::Column::name: alloc::string::String
+pub algeon_datafusion::error::ClientDetail::DataFusionText
+pub algeon_datafusion::error::ClientDetail::DataFusionText::text: alloc::string::String
 pub algeon_datafusion::error::ClientDetail::Field
 pub algeon_datafusion::error::ClientDetail::Field::name: alloc::string::String
 pub algeon_datafusion::error::ClientDetail::OrderingKey
@@ -705,12 +708,6 @@ pub fn algeon_datafusion::error::ClientDetail::fmt(&self, &mut core::fmt::Format
 pub algeon_datafusion::error::ErrorCode::AlgorithmDidNotConverge
 pub algeon_datafusion::error::ErrorCode::Cancelled
 pub algeon_datafusion::error::ErrorCode::CleanupFailed
-pub algeon_datafusion::error::ErrorCode::CudfDependencyFailure
-pub algeon_datafusion::error::ErrorCode::CudfInvalidInput
-pub algeon_datafusion::error::ErrorCode::CudfInvariantViolation
-pub algeon_datafusion::error::ErrorCode::CudfPersistentFailure
-pub algeon_datafusion::error::ErrorCode::CudfTemporaryFailure
-pub algeon_datafusion::error::ErrorCode::CudfUnsupported
 pub algeon_datafusion::error::ErrorCode::DataFusionPlanning
 pub algeon_datafusion::error::ErrorCode::DeviceAllocationFailed
 pub algeon_datafusion::error::ErrorCode::DeviceFault
@@ -733,6 +730,12 @@ pub algeon_datafusion::error::ErrorCode::ObjectNotFound
 pub algeon_datafusion::error::ErrorCode::PlanningTimeout
 pub algeon_datafusion::error::ErrorCode::QueryBudgetUnavailable
 pub algeon_datafusion::error::ErrorCode::QueryMemoryLimitExceeded
+pub algeon_datafusion::error::ErrorCode::RapidsDependencyFailure
+pub algeon_datafusion::error::ErrorCode::RapidsInvalidInput
+pub algeon_datafusion::error::ErrorCode::RapidsInvariantViolation
+pub algeon_datafusion::error::ErrorCode::RapidsPersistentFailure
+pub algeon_datafusion::error::ErrorCode::RapidsTemporaryFailure
+pub algeon_datafusion::error::ErrorCode::RapidsUnsupported
 pub algeon_datafusion::error::ErrorCode::RequiredGpuOperationUnsupported
 pub algeon_datafusion::error::ErrorCode::ServerTransportFailure
 pub algeon_datafusion::error::ErrorCode::ServiceOverloaded
@@ -792,6 +795,7 @@ pub fn algeon_datafusion::error::Error::new(algeon_datafusion::error::ErrorCode,
 pub fn algeon_datafusion::error::Error::operation(&self) -> &'static str
 pub fn algeon_datafusion::error::Error::source_error(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn algeon_datafusion::error::Error::status(&self) -> algeon_datafusion::error::ErrorStatus
+pub fn algeon_datafusion::error::Error::trusted_diagnostic(&self) -> alloc::string::String
 pub fn algeon_datafusion::error::Error::with_boxed_source(self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync + 'static)>) -> Self
 pub fn algeon_datafusion::error::Error::with_client_detail(self, algeon_datafusion::error::ClientDetail) -> Self
 pub fn algeon_datafusion::error::Error::with_fact(self, &'static str, impl alloc::string::ToString) -> Self

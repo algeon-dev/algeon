@@ -472,7 +472,7 @@ fn ivf_flat_cancellation_after_index_build_releases_query_allocations() {
 
 fn compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_allocations() {
     let error = execute_failing_columns_knn(vec![1.0], 2);
-    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+    assert_eq!(error.code(), QueryErrorCode::RapidsInvalidInput);
     assert_eq!(error.operation(), "query_engine.vector_algorithm.execute");
     assert_eq!(error.fact_value("algorithm"), Some("brute_force_knn"));
     assert_eq!(error.fact_value("reason"), Some("k_exceeds_dataset_rows"));
@@ -480,7 +480,7 @@ fn compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_alloc
 
 fn compiled_knn_non_finite_input_projects_cudf_validation_details() {
     let error = execute_failing_columns_knn(vec![1.0, f32::NAN, f32::INFINITY], 1);
-    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+    assert_eq!(error.code(), QueryErrorCode::RapidsInvalidInput);
     assert_eq!(error.operation(), "query_engine.vector_algorithm.pack");
     assert_eq!(error.fact_value("relation_role"), Some("dataset"));
     assert_eq!(error.fact_value("validation_reason"), Some("non_finite_vector_value"));

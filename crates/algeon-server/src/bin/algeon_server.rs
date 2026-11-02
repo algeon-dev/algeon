@@ -256,13 +256,7 @@ const CHECK_CONFIG_FAILED: &str = "Algeon server configuration check failed";
 
 fn log_server_error(error: &ServerError, message: &'static str) {
     let diagnostics = ErrorLogDiagnostics::from_error(error.as_adapter_error());
-    let other_facts = error
-        .facts()
-        .iter()
-        .filter(|(key, _)| !DEDICATED_FACTS.contains(key))
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let other_facts = rendered_other_facts(error.message(), error.facts().iter());
     tracing::error!(
         target: "algeon_server_bin",
         error_code = error.code().as_str(),
@@ -279,6 +273,18 @@ fn log_server_error(error: &ServerError, message: &'static str) {
         error_diagnostics_truncated = diagnostics.truncated().then_some(true),
         message
     );
+}
+
+/// Facts other than the dedicated fields, as space-separated `key=value`.
+/// A wrapped native error's `native_message` is left out when the logged
+/// message already contains it.
+fn rendered_other_facts<'a>(message: &str, facts: impl Iterator<Item = (&'static str, &'a str)>) -> String {
+    facts
+        .filter(|(key, _)| !DEDICATED_FACTS.contains(key))
+        .filter(|(key, value)| *key != "native_message" || !repeats_message(message, value))
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Returns true when `cause` repeats text in `message`. Because log
@@ -307,6 +313,20 @@ fn init_tracing(log_flag: Option<&str>, to_stderr: bool) -> Result<(), Box<dyn S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_error_facts_drop_a_native_message_the_logged_message_repeats() {
+        let message = "invalid server configuration: device 0 limit is too large [device_ordinal=0]";
+        let facts =
+            [("device_ordinal", "0"), ("native_message", "device 0 limit is too large"), ("reason", "too_large")];
+        assert_eq!(rendered_other_facts(message, facts.into_iter()), "device_ordinal=0");
+
+        let distinct = [("native_message", "the native layer said something else")];
+        assert_eq!(
+            rendered_other_facts(message, distinct.into_iter()),
+            "native_message=the native layer said something else"
+        );
+    }
 
     fn parse(args: &[&str]) -> Result<Command, String> {
         parse_args(args.iter().map(|arg| arg.to_string()))

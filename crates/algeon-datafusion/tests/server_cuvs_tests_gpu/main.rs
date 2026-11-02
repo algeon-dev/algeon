@@ -155,7 +155,7 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
              n_clusters => 2)",
     )
     .await;
-    for reason in ["validation_reason=non_finite_vector_value", "non_finite_count=1", "remedy=replace or reject"] {
+    for reason in ["validation_reason=non_finite_vector_value", "non_finite_count=1", "; replace or reject"] {
         assert!(status.message().contains(reason), "{status:?}");
     }
 
@@ -188,12 +188,35 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
     }
     assert_eq!(
         status.metadata().get("x-algeon-error-code").and_then(|code| code.to_str().ok()),
-        Some("cudf_invalid_input")
+        Some("rapids_invalid_input")
     );
     assert_eq!(
         status.metadata().get("x-algeon-reason").and_then(|reason| reason.to_str().ok()),
         Some("null_feature_value")
     );
+    // The library name is a log and query-stats fact, never Flight metadata.
+    assert!(status.metadata().get("x-algeon-rapids-library").is_none(), "{status:?}");
+    let query_id = status
+        .metadata()
+        .get("x-algeon-query-id")
+        .and_then(|query_id| query_id.to_str().ok())
+        .expect("query id metadata")
+        .to_string();
+    // The structured error is retained once the attempt report seals.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let stats = loop {
+        let action =
+            arrow_flight::Action { r#type: "GetQueryStats".to_string(), body: query_id.clone().into_bytes().into() };
+        let mut results = client.do_action(action).await.expect("GetQueryStats action");
+        let result = results.message().await.expect("GetQueryStats result").expect("one GetQueryStats result");
+        let stats = String::from_utf8(result.body.to_vec()).expect("stats are UTF-8 text");
+        if stats.contains("# sealed=true\n") {
+            break stats;
+        }
+        assert!(Instant::now() < deadline, "stats never sealed:\n{stats}");
+        sleep(Duration::from_millis(20)).await;
+    };
+    assert!(stats.contains("fact.rapids_library=cuvs\n"), "{stats}");
 }
 
 async fn register_vector_views(client: &mut FlightSqlServiceClient<Channel>) {

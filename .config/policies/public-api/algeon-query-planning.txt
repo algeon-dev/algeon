@@ -725,12 +725,6 @@ pub enum query_planning::error::QueryErrorCode
 pub query_planning::error::QueryErrorCode::AlgorithmDidNotConverge
 pub query_planning::error::QueryErrorCode::Cancelled
 pub query_planning::error::QueryErrorCode::CleanupFailed
-pub query_planning::error::QueryErrorCode::CudfDependencyFailure
-pub query_planning::error::QueryErrorCode::CudfInvalidInput
-pub query_planning::error::QueryErrorCode::CudfInvariantViolation
-pub query_planning::error::QueryErrorCode::CudfPersistentFailure
-pub query_planning::error::QueryErrorCode::CudfTemporaryFailure
-pub query_planning::error::QueryErrorCode::CudfUnsupported
 pub query_planning::error::QueryErrorCode::DeviceAllocationFailed
 pub query_planning::error::QueryErrorCode::DeviceFault
 pub query_planning::error::QueryErrorCode::DeviceOutOfMemory
@@ -744,9 +738,16 @@ pub query_planning::error::QueryErrorCode::InvalidPlan
 pub query_planning::error::QueryErrorCode::MemoryReservationFailed
 pub query_planning::error::QueryErrorCode::QueryBudgetUnavailable
 pub query_planning::error::QueryErrorCode::QueryMemoryLimitExceeded
+pub query_planning::error::QueryErrorCode::RapidsDependencyFailure
+pub query_planning::error::QueryErrorCode::RapidsInvalidInput
+pub query_planning::error::QueryErrorCode::RapidsInvariantViolation
+pub query_planning::error::QueryErrorCode::RapidsPersistentFailure
+pub query_planning::error::QueryErrorCode::RapidsTemporaryFailure
+pub query_planning::error::QueryErrorCode::RapidsUnsupported
 pub query_planning::error::QueryErrorCode::ServiceOverloaded
 pub query_planning::error::QueryErrorCode::SizeOverflow
 pub query_planning::error::QueryErrorCode::SourceAccessDenied
+pub query_planning::error::QueryErrorCode::SourceDependencyFailure
 pub query_planning::error::QueryErrorCode::SourceObjectNotFound
 pub query_planning::error::QueryErrorCode::SourceTemporaryFailure
 pub query_planning::error::QueryErrorCode::SourceUnauthenticated
@@ -846,6 +847,7 @@ pub const fn query_planning::error::ResourceBoundary::new(&'static str, query_pl
 pub const fn query_planning::error::ResourceBoundary::with_resume(self, &'static str) -> Self
 pub const fn query_planning::error::ResourceBoundary::with_side(self, query_planning::plan::JoinSide) -> Self
 pub const fn query_planning::error::ResourceBoundary::with_stage(self, &'static str) -> Self
+pub const query_planning::error::RAPIDS_LIBRARY_FACT: &str
 pub fn query_planning::error::bytes_with_gib(u64) -> alloc::string::String
 pub fn query_planning::error::redact_uri_tokens(&str) -> alloc::string::String
 pub type query_planning::error::Result<T> = core::result::Result<T, query_planning::error::QueryError>

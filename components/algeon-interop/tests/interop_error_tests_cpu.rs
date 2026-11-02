@@ -15,6 +15,15 @@ fn interop_error_set_source_keeps_flat_display_and_exposes_source_chain() {
 }
 
 #[test]
+fn interop_error_second_source_keeps_the_first_causal_chain() {
+    let err = InteropError::new(InteropErrorKind::NotFound, "missing prepared export binding")
+        .set_source(std::io::Error::other("first source"))
+        .set_source(std::io::Error::other("second source"));
+
+    assert_eq!(std::error::Error::source(&err).map(std::string::ToString::to_string).as_deref(), Some("first source"));
+}
+
+#[test]
 fn interop_error_equality_ignores_opaque_source_objects() {
     let left = InteropError::new(InteropErrorKind::InvalidView, "same message")
         .with_context("buffer_id", "10")

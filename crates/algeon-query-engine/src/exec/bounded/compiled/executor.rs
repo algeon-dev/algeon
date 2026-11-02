@@ -66,7 +66,7 @@ pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -
     matches!(
         error.code(),
         QueryErrorCode::QueryMemoryLimitExceeded
-            | QueryErrorCode::CudfTemporaryFailure
+            | QueryErrorCode::RapidsTemporaryFailure
             | QueryErrorCode::ServiceOverloaded
     )
 }

@@ -251,7 +251,8 @@ pub(super) fn classify_physical_planning_error(error: &DataFusionError) -> Query
         | ErrorCode::SourceAccessDenied
         | ErrorCode::SourceUnauthenticated
         | ErrorCode::SourceObjectNotFound
-        | ErrorCode::SourceTemporaryFailure => QueryGpuRejectionPhase::PlanningIo,
+        | ErrorCode::SourceTemporaryFailure
+        | ErrorCode::SourceDependencyFailure => QueryGpuRejectionPhase::PlanningIo,
         _ => QueryGpuRejectionPhase::PhysicalPlanning,
     }
 }

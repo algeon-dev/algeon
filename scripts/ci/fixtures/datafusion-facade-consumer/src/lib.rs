@@ -5,7 +5,10 @@ use algeon_datafusion::{
         AlgeonAttempt, AttemptOptions, QueryAttemptReport, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
-    error::{Error, ErrorCode, ErrorStatus, Result},
+    error::{
+        Error, ErrorCode, ErrorStatus, Result,
+        native::{QueryError, QueryErrorCode},
+    },
     observability::{BackendMetricsSnapshot, backend_metric_descriptors},
     report::PlanningReport,
 };
@@ -32,6 +35,11 @@ pub fn terminal_outcome_contract(outcome: RuntimeTerminalOutcome) -> &'static st
 
 pub fn error_contract(error: &Error) -> (ErrorCode, &'static str, ErrorStatus) {
     (error.code(), error.operation(), error.status())
+}
+
+pub fn native_error_contract(error: &Error) -> Option<(QueryErrorCode, String)> {
+    let native = error.source_error()?.downcast_ref::<QueryError>()?;
+    Some((native.code(), error.trusted_diagnostic()))
 }
 
 pub fn planning_contract() -> PlanningReport {

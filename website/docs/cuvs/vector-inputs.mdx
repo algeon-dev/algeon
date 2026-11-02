@@ -86,7 +86,7 @@ ID, for every feature column, and for a list column and its elements. Results
 of aggregates, Parquet columns, and lists built in SQL therefore need no
 rewrite. The contract applies to values. A null ID, a null feature value, a
 null list row, or a null list element fails the query with an invalid-input
-error (`cudf_invalid_input`) that names the function, the relation role, and
+error (`rapids_invalid_input`) that names the function, the relation role, and
 the column. `gpu_validate_call` reads no values and cannot find nulls.
 
 Add `COALESCE(column, CAST(0 AS REAL))` only when the data contains nulls and a

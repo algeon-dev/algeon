@@ -124,9 +124,15 @@ impl InteropError {
         self
     }
 
+    /// Attaches the source error when no source is already present.
+    ///
+    /// A second source is discarded so error decoration cannot replace the
+    /// original causal chain.
     pub fn set_source<E>(mut self, source: E) -> Self
     where E: std::error::Error + Send + Sync + 'static {
-        self.source = Some(Arc::new(source));
+        if self.source.is_none() {
+            self.source = Some(Arc::new(source));
+        }
         self
     }
 

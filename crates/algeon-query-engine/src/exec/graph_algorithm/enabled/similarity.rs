@@ -1,7 +1,10 @@
 //! Shared explicit-pair similarity execution.
 
 use cugraph::cudf_interop::vertex_pairs_from_prepared_columns;
-use query_planning::plan::{GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, planned_resident_graph_key};
+use query_planning::{
+    error::RAPIDS_LIBRARY_FACT,
+    plan::{GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, planned_resident_graph_key},
+};
 
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NvtxRange, QueryError,
@@ -99,18 +102,20 @@ pub(super) fn execute_similarity(
         }
         let first_export = first.try_prepare_device_column_export().map_err(|error| {
             QueryError::new(
-                QueryErrorCode::CudfDependencyFailure,
+                QueryErrorCode::RapidsDependencyFailure,
                 "query_engine.graph_algorithm.prepare_vertex_pair_column_export",
                 "failed to prepare the first cuGraph vertex-pair column export",
             )
+            .with_fact(RAPIDS_LIBRARY_FACT, "cudf")
             .with_source(error)
         })?;
         let second_export = second.try_prepare_device_column_export().map_err(|error| {
             QueryError::new(
-                QueryErrorCode::CudfDependencyFailure,
+                QueryErrorCode::RapidsDependencyFailure,
                 "query_engine.graph_algorithm.prepare_vertex_pair_column_export",
                 "failed to prepare the second cuGraph vertex-pair column export",
             )
+            .with_fact(RAPIDS_LIBRARY_FACT, "cudf")
             .with_source(error)
         })?;
         let vertex_pairs =

@@ -1394,7 +1394,7 @@ fn is_configuration_failure(failure: &AttemptFailureSummary) -> bool {
             | AttemptFailureCode::Query(QueryErrorCode::UnsupportedOperator)
             | AttemptFailureCode::Query(QueryErrorCode::UnsupportedExpression)
             | AttemptFailureCode::Query(QueryErrorCode::UnsupportedType)
-            | AttemptFailureCode::Query(QueryErrorCode::CudfUnsupported)
+            | AttemptFailureCode::Query(QueryErrorCode::RapidsUnsupported)
             | AttemptFailureCode::Query(QueryErrorCode::QueryMemoryLimitExceeded)
     )
 }

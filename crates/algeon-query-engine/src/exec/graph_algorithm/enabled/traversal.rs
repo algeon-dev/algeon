@@ -8,9 +8,12 @@ use cugraph::{
     traversal::{BfsPredicateParams, BfsResult, BfsTargetInfo},
     types::CugraphElement,
 };
-use query_planning::plan::{
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphEdgePredicateInput,
-    GraphPredicateInput, GraphSsspSource, planned_resident_graph_key,
+use query_planning::{
+    error::RAPIDS_LIBRARY_FACT,
+    plan::{
+        GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphEdgePredicateInput,
+        GraphPredicateInput, GraphSsspSource, planned_resident_graph_key,
+    },
 };
 
 use super::{
@@ -366,10 +369,11 @@ where
     let rows = vertex.len();
     if rows as u64 > path_output.max_output_rows {
         return Err(QueryError::new(
-            QueryErrorCode::CudfInvariantViolation,
+            QueryErrorCode::RapidsInvariantViolation,
             "query_engine.graph_algorithm.bfs_path",
             "native BFS path output exceeded its admitted row bound",
         )
+        .with_fact(RAPIDS_LIBRARY_FACT, "cugraph")
         .with_fact("path_rows", rows)
         .with_fact("max_output_rows", path_output.max_output_rows));
     }

@@ -7,6 +7,8 @@
 pub mod attempt;
 pub mod metrics;
 pub mod native_error;
+#[doc(hidden)]
+pub mod object_store_error;
 pub mod observability;
 pub mod runtime;
 

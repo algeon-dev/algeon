@@ -38,7 +38,6 @@ struct ErrorInner {
     message: String,
     details: Vec<(&'static str, String)>,
     ffi_detail: Option<CumlErrorDetail>,
-    call_chain: Vec<&'static str>,
     source: Option<Box<dyn StdError + Send + Sync + 'static>>,
 }
 
@@ -58,7 +57,6 @@ impl Error {
                 message: message.into(),
                 details: vec![],
                 ffi_detail: None,
-                call_chain: vec![],
                 source: None,
             }),
         }
@@ -90,9 +88,6 @@ impl Error {
     pub fn ffi_detail(&self) -> Option<&CumlErrorDetail> {
         self.inner.ffi_detail.as_ref()
     }
-    pub fn call_chain(&self) -> &[&'static str] {
-        &self.inner.call_chain
-    }
     pub fn is_temporary(&self) -> bool {
         self.status() == ErrorStatus::Temporary
     }
@@ -106,8 +101,14 @@ impl Error {
         self.inner.details.push((key, value.to_string()));
         self
     }
+    /// Attaches the source error when no source is already present.
+    ///
+    /// A second source is discarded so error decoration cannot replace the
+    /// original causal chain.
     pub(crate) fn with_source<E: StdError + Send + Sync + 'static>(mut self, source: E) -> Self {
-        self.inner.source = Some(Box::new(source));
+        if self.inner.source.is_none() {
+            self.inner.source = Some(Box::new(source));
+        }
         self
     }
     fn with_ffi_detail(mut self, detail: CumlErrorDetail) -> Self {
@@ -135,7 +136,6 @@ impl fmt::Debug for Error {
             .field("code", &self.code())
             .field("phase", &self.phase())
             .field("operation", &self.operation())
-            .field("call_chain", &self.call_chain())
             .field("ffi_detail", &self.ffi_detail())
             .field("details", &self.inner.details)
             .field("source", &self.inner.source)
@@ -246,4 +246,19 @@ pub(crate) fn check_status(status: cuml_sys::cuml_status_t, op: &'static str) ->
         out = out.with_ffi_detail(detail);
     }
     Err(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_source_keeps_the_first_causal_chain() {
+        let error = invalid_input("test", "invalid input")
+            .with_source(std::io::Error::other("first source"))
+            .with_source(std::io::Error::other("second source"));
+
+        let source = StdError::source(&error).expect("source");
+        assert_eq!(source.to_string(), "first source");
+    }
 }

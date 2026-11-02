@@ -23,6 +23,9 @@
 //!   logs and `Debug`, because the Flight server logs the message verbatim.
 //! - Ordinary DataFusion errors keep their identity; `classify` assigns them a
 //!   server code without making them Algeon errors.
+//! - [`Error::trusted_diagnostic`] is the adapter's trusted in-process
+//!   projection. It renders raw facts, client detail and the source chain, so
+//!   it is neither a client response nor log text.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -32,19 +35,28 @@ use std::{
 };
 
 use datafusion::{
+    arrow::error::ArrowError,
     common::{DataFusionError, SchemaError},
     logical_expr::{DdlStatement, LogicalPlan},
     object_store::Error as ObjectStoreError,
+    sql::sqlparser::parser::ParserError,
 };
-use query_engine::object_store_error::query_error_code_for_object_store_error;
-use query_planning::error::QueryError;
-use query_runtime::native_error::{cudf_message_fact, query_error_code_for_cudf_error};
+use query_planning::error::{QueryError, RAPIDS_LIBRARY_FACT, quote};
+use query_runtime::{
+    native_error::{cudf_message_fact, query_error_code_for_cudf_error},
+    object_store_error::query_error_code_for_object_store_error,
+};
 
 pub(crate) mod client;
 mod code;
 
 use code::code_for_native_error;
 pub use code::{ErrorCode, ErrorKind, ErrorStatus};
+/// Native-engine error types, so a caller can downcast
+/// [`Error::source_error`] to the `QueryError` this adapter linked without
+/// depending on `algeon-query-planning` itself. A direct dependency on a
+/// different version yields a distinct type that never matches the downcast.
+pub use query_planning::error as native;
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
@@ -53,6 +65,9 @@ const NATIVE_FACT_COLLISION_KEYS: &str = "native_fact_collision_keys";
 /// text and are included in retained query diagnostics.
 const NATIVE_MEMORY_FACT_KEYS: [&str; 4] =
     ["requested_allocation_bytes", "budget_bytes", "budget_peak_bytes", "budget_current_bytes"];
+/// Native facts whose values come from a closed owner-written vocabulary and
+/// are copied into the log-safe projection as they are.
+const NATIVE_LOG_SAFE_FACT_KEYS: [&str; 1] = [RAPIDS_LIBRARY_FACT];
 const FACT_COLLISION_KEYS: &str = "fact_collision_keys";
 const EMPTY_FACT_KEY: &str = "<empty>";
 const FALLBACK_OPERATION: &str = "algeon_datafusion.error.unspecified_operation";
@@ -121,6 +136,13 @@ pub enum ClientDetail {
         /// Client-visible plan-element description, which may include SQL literals and identifiers.
         text: String,
     },
+    /// DataFusion's own message for a statement it rejected. It can echo SQL
+    /// tokens and list the fields of a relation, so it is the caller's status
+    /// text while the adapter message stays a fixed sentence.
+    DataFusionText {
+        /// DataFusion's message, bounded like other foreign status text.
+        text: String,
+    },
 }
 
 impl ClientDetail {
@@ -140,6 +162,8 @@ impl ClientDetail {
             Self::Column { name } => vec![("column", name.as_str())],
             Self::OrderingKey { name } => vec![("key", name.as_str())],
             Self::BlockingSubject { text } => vec![("blocking_subject", text.as_str())],
+            // The status message is the only wire surface of this text.
+            Self::DataFusionText { .. } => Vec::new(),
         }
     }
 
@@ -160,6 +184,7 @@ impl fmt::Debug for ClientDetail {
             Self::Column { .. } => f.debug_struct("Column").finish_non_exhaustive(),
             Self::OrderingKey { .. } => f.debug_struct("OrderingKey").finish_non_exhaustive(),
             Self::BlockingSubject { .. } => f.debug_struct("BlockingSubject").finish_non_exhaustive(),
+            Self::DataFusionText { .. } => f.debug_struct("DataFusionText").finish_non_exhaustive(),
         }
     }
 }
@@ -800,6 +825,7 @@ impl Error {
         // so only one mapping table exists.
         let code = code_for_native_error(query_error_code_for_cudf_error(&source));
         let mut error = Self::new(code, operation, message)
+            .with_log_safe_fact(RAPIDS_LIBRARY_FACT, "cudf")
             .with_log_safe_fact("cudf_code", source.code())
             .with_log_safe_fact("cudf_kind", source.kind())
             .with_log_safe_fact("cudf_status", source.status())
@@ -816,6 +842,21 @@ impl Error {
             None => error,
         }
         .with_source(source)
+    }
+
+    /// Wraps an object-store failure the adapter met itself, with the source
+    /// code the native classification assigns to it.
+    #[cfg_attr(
+        not(feature = "server"),
+        expect(dead_code, reason = "only the server's DDL boundary reads object stores")
+    )]
+    pub(crate) fn from_object_store_error(
+        operation: &'static str,
+        message: impl Into<String>,
+        source: ObjectStoreError,
+    ) -> Self {
+        let code = code_for_native_error(query_error_code_for_object_store_error(&source));
+        Self::new(code, operation, message).with_source(source)
     }
 
     /// Wraps a native-engine error at the DataFusion adapter boundary.
@@ -846,7 +887,9 @@ impl Error {
                 continue;
             }
             let value = value.into_owned();
-            if NATIVE_MEMORY_FACT_KEYS.contains(&key) && value.parse::<u64>().is_ok() {
+            if NATIVE_LOG_SAFE_FACT_KEYS.contains(&key)
+                || (NATIVE_MEMORY_FACT_KEYS.contains(&key) && value.parse::<u64>().is_ok())
+            {
                 error.facts.insert_log_safe(key, value);
             } else {
                 error.facts.insert(key, value);
@@ -893,7 +936,6 @@ impl Error {
             "training_rows",
             "non_finite_count",
             "null_count",
-            "remedy",
             "occurrence_id",
             "node_id",
             "input_node_id",
@@ -979,6 +1021,55 @@ impl Error {
     pub fn source_error(&self) -> Option<&(dyn StdError + 'static)> {
         self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }
+
+    /// Renders every diagnostic field of this error on one line.
+    ///
+    /// The line reads `code=… kind=… status=… operation=… message=…`, then
+    /// `client_detail={…}` when [`Self::client_detail`] is present,
+    /// `facts={…}` with every raw fact in key order, and `source=…` with the
+    /// immediate source's `Display` when a source is attached. A native
+    /// `QueryError` or `cudf::Error` source renders its own sources, so the
+    /// line carries that chain once. Values that are not bare identifiers or
+    /// paths are quoted as escaped string literals.
+    ///
+    /// This is a trusted in-process diagnostic. It contains raw facts, caller
+    /// schema names and foreign source text, so it is not a client response
+    /// and must not be written to operational logs, which use
+    /// [`fmt::Debug`] and the log-safe projection.
+    pub fn trusted_diagnostic(&self) -> String {
+        let mut line = format!(
+            "code={} kind={} status={} operation={} message={}",
+            self.code.as_str(),
+            self.kind().as_str(),
+            self.status().as_str(),
+            self.operation,
+            quote(&self.message),
+        );
+        if let Some(detail) = self.client_detail() {
+            line.push_str(" client_detail={");
+            push_quoted_entries(&mut line, detail.entries());
+            line.push('}');
+        }
+        line.push_str(" facts={");
+        push_quoted_entries(&mut line, self.facts.iter());
+        line.push('}');
+        if let Some(source) = self.source_error() {
+            line.push_str(" source=");
+            line.push_str(&quote(&source.to_string()));
+        }
+        line
+    }
+}
+
+fn push_quoted_entries<'k, 'v>(line: &mut String, entries: impl IntoIterator<Item = (&'k str, &'v str)>) {
+    for (index, (key, value)) in entries.into_iter().enumerate() {
+        if index > 0 {
+            line.push_str(", ");
+        }
+        line.push_str(key);
+        line.push('=');
+        line.push_str(&quote(value));
+    }
 }
 
 impl fmt::Display for Error {
@@ -1031,12 +1122,43 @@ fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
 }
 
 fn log_diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
-    let message = if let Some(error) = error.downcast_ref::<cudf::Error>() {
-        normalize_diagnostic_message(error.message())
-    } else {
-        diagnostic_error_message(error)
+    // DataFusion's text, and the schema, parser and Arrow errors under it,
+    // can echo SQL tokens, caller schema names and data values; it is
+    // caller-visible only, so those layers contribute no log cause.
+    if error.is::<DataFusionError>()
+        || error.is::<Arc<DataFusionError>>()
+        || error.is::<SchemaError>()
+        || error.is::<ParserError>()
+        || error.is::<ArrowError>()
+    {
+        return String::new();
+    }
+    let message = match rapids_error_message(error) {
+        Some(message) => normalize_diagnostic_message(message),
+        None => diagnostic_error_message(error),
     };
     sanitize_log_text(&message)
+}
+
+/// A RAPIDS library error's own message. Its `Display` also renders kind,
+/// status, operation and context, which the wrapping error's facts carry.
+fn rapids_error_message<'a>(error: &'a (dyn StdError + 'static)) -> Option<&'a str> {
+    if let Some(error) = error.downcast_ref::<cudf::Error>() {
+        return Some(error.message());
+    }
+    #[cfg(feature = "cugraph")]
+    if let Some(error) = error.downcast_ref::<cugraph::Error>() {
+        return Some(error.message());
+    }
+    #[cfg(feature = "cuvs")]
+    if let Some(error) = error.downcast_ref::<cuvs::Error>() {
+        return Some(error.message());
+    }
+    #[cfg(feature = "cuml")]
+    if let Some(error) = error.downcast_ref::<cuml::Error>() {
+        return Some(error.message());
+    }
+    None
 }
 
 fn diagnostic_source_path<'a>(error: &'a (dyn StdError + 'static)) -> Option<&'a str> {

@@ -7,7 +7,7 @@ use cugraph::cudf_interop::TableGraphOptions;
 #[cfg(feature = "cugraph")]
 use cugraph::cudf_interop::graph_from_prepared_table_export;
 #[cfg(feature = "cugraph")]
-use query_planning::plan::ResidentGraphKey;
+use query_planning::{error::RAPIDS_LIBRARY_FACT, plan::ResidentGraphKey};
 #[cfg(feature = "cugraph")]
 use query_runtime::runtime::cache::resident_graph::GpuResidentGraphCache;
 #[cfg(feature = "cugraph")]
@@ -172,10 +172,11 @@ where
             let construction_edges = cached_edges;
             let export = construction_edges.try_prepare_device_table_export().map_err(|error| {
                 QueryError::new(
-                    QueryErrorCode::CudfDependencyFailure,
+                    QueryErrorCode::RapidsDependencyFailure,
                     "query_engine.graph_algorithm.resident_cache.prepare_table_export",
                     "failed to prepare resident-cache graph edge-list export",
                 )
+                .with_fact(RAPIDS_LIBRARY_FACT, "cudf")
                 .with_source(error)
             })?;
             let _graph_build_range = graph_build_range(operation);
@@ -491,7 +492,7 @@ mod tests {
         let mut finalizer = Some(());
         let mut finished = 0;
         let scope_error = QueryError::new(
-            QueryErrorCode::CudfPersistentFailure,
+            QueryErrorCode::RapidsPersistentFailure,
             "query_engine.graph_algorithm.resident_cache.test",
             "scope fence failed",
         );
@@ -509,7 +510,7 @@ mod tests {
         let mut finalizer = Some(());
         let mut finished = 0;
         let health_error = QueryError::new(
-            QueryErrorCode::CudfPersistentFailure,
+            QueryErrorCode::DeviceFault,
             "query_engine.graph_algorithm.resident_cache.test",
             "re-park health proof failed",
         );

@@ -59,6 +59,7 @@ fn cudf_query_error_preserves_foreign_message_as_cudf_message_fact() {
     let error = cudf_query_error("query_engine.test.from_cudf", "wrapped cudf failure", source);
 
     assert_eq!(error.fact_value("cudf_message"), Some(expected_message.as_str()));
+    assert_eq!(error.fact_value("rapids_library"), Some("cudf"));
     assert!(error.source_error().is_some());
 }
 
@@ -81,7 +82,7 @@ fn cudf_value_errors_from_checked_arithmetic_classify_as_invalid_input() {
 
         let error = cudf_query_error("query_engine.test.from_cudf", "wrapped cudf failure", source);
 
-        assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput, "{code}");
+        assert_eq!(error.code(), QueryErrorCode::RapidsInvalidInput, "{code}");
         assert_eq!(error.fact_value("cudf_code"), Some(code.to_string().as_str()));
         assert_eq!(error.fact_value("cudf_status"), Some("permanent"));
     }
@@ -109,7 +110,7 @@ fn cudf_allocation_attribution_drives_native_classification_not_scope_usage() {
             QueryErrorCode::DeviceAllocationFailed,
         ),
         (cudf::ErrorCode::OutOfMemory, None, true, QueryErrorCode::DeviceAllocationFailed),
-        (cudf::ErrorCode::IoFailure, None, true, QueryErrorCode::CudfDependencyFailure),
+        (cudf::ErrorCode::IoFailure, None, true, QueryErrorCode::RapidsDependencyFailure),
     ];
 
     for (index, (code, failure_source, with_budget_scope, expected)) in cases.into_iter().enumerate() {

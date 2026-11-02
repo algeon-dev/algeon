@@ -13,7 +13,9 @@
 use std::borrow::Cow;
 
 use cudf::core::error::FactKeyName;
-use query_planning::error::{MemoryFailure, MemoryUsage, QueryError, QueryErrorCode, redact_uri_tokens};
+use query_planning::error::{
+    MemoryFailure, MemoryUsage, QueryError, QueryErrorCode, RAPIDS_LIBRARY_FACT, redact_uri_tokens,
+};
 
 /// Wraps a `cudf::Error` at the native-engine boundary.
 ///
@@ -43,7 +45,7 @@ pub fn cudf_query_error_without_source(
 ///
 /// Native type support reports unsupported Arrow types as `UnsupportedType`.
 /// [`query_error_code_for_cudf_error`] maps cuDF `UnsupportedDtype` to the
-/// `CudfUnsupported` code. The `cudf_*` facts and source chain match
+/// `RapidsUnsupported` code. The `cudf_*` facts and source chain match
 /// [`cudf_query_error`], plus `cudf_reason` when cuDF attached one.
 pub fn cudf_unsupported_type_error(
     operation: &'static str,
@@ -64,6 +66,7 @@ fn cudf_query_error_with_code(
     source: &cudf::Error,
 ) -> QueryError {
     let mut error = QueryError::new(code, operation, message)
+        .with_fact(RAPIDS_LIBRARY_FACT, "cudf")
         .with_fact("cudf_code", source.code())
         .with_fact("cudf_kind", source.kind())
         .with_fact("cudf_status", source.status())
@@ -101,11 +104,11 @@ pub fn query_error_code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
             QueryErrorCode::HostMaterializationLimitExceeded
         },
         cudf::CudfErrorClassification::ResourceExhausted => QueryErrorCode::DeviceAllocationFailed,
-        cudf::CudfErrorClassification::TemporaryFailure => QueryErrorCode::CudfTemporaryFailure,
+        cudf::CudfErrorClassification::TemporaryFailure => QueryErrorCode::RapidsTemporaryFailure,
         cudf::CudfErrorClassification::PersistentFailure => QueryErrorCode::DeviceFault,
-        cudf::CudfErrorClassification::InvalidInput => QueryErrorCode::CudfInvalidInput,
-        cudf::CudfErrorClassification::Unsupported => QueryErrorCode::CudfUnsupported,
-        cudf::CudfErrorClassification::DependencyFailure => QueryErrorCode::CudfDependencyFailure,
+        cudf::CudfErrorClassification::InvalidInput => QueryErrorCode::RapidsInvalidInput,
+        cudf::CudfErrorClassification::Unsupported => QueryErrorCode::RapidsUnsupported,
+        cudf::CudfErrorClassification::DependencyFailure => QueryErrorCode::RapidsDependencyFailure,
         cudf::CudfErrorClassification::InvariantViolation => QueryErrorCode::InternalInvariantViolation,
     }
 }

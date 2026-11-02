@@ -1,6 +1,6 @@
 use cudf::{Series, TypeId};
 use query_planning::{
-    error::{QueryError, QueryErrorCode, Result},
+    error::{QueryError, QueryErrorCode, RAPIDS_LIBRARY_FACT, Result},
     plan::MlRelationBinding,
 };
 use query_runtime::{native_error::cudf_query_error, runtime::ExecutionContext};
@@ -64,10 +64,11 @@ pub(super) fn assemble_ml_output(
     })?;
     if output.num_rows() != rows {
         return Err(QueryError::new(
-            QueryErrorCode::CudfInvariantViolation,
+            QueryErrorCode::RapidsInvariantViolation,
             ASSEMBLE,
             "ML output row count differs from input",
         )
+        .with_fact(RAPIDS_LIBRARY_FACT, "cuml")
         .with_fact("reason", "invalid_native_output_contract"));
     }
     Ok(GpuDataFrame::new(output))

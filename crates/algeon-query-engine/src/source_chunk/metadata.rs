@@ -732,7 +732,7 @@ mod tests {
         assert!(!should_propagate_footer_metadata_error(&temporary, FooterMetadataRequirement::Optional));
         assert!(should_propagate_footer_metadata_error(&temporary, FooterMetadataRequirement::Required));
 
-        let dependency = footer_error(QueryErrorCode::CudfDependencyFailure);
+        let dependency = footer_error(QueryErrorCode::SourceDependencyFailure);
         assert!(!should_propagate_footer_metadata_error(&dependency, FooterMetadataRequirement::Optional));
         assert!(should_propagate_footer_metadata_error(&dependency, FooterMetadataRequirement::Required));
     }

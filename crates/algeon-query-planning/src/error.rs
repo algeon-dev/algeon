@@ -68,25 +68,34 @@ pub enum QueryErrorCode {
     /// This code describes materialized edge or side-input data. `InvalidPlan`
     /// describes malformed native IR.
     GraphInputInvalid,
-    /// cuDF rejected an input, including permanent `NotFound` conditions.
-    CudfInvalidInput,
-    /// cuDF reported a permanent unsupported capability.
-    CudfUnsupported,
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) rejected an
+    /// input, including permanent `NotFound` conditions.
+    ///
+    /// The `rapids_library` fact names the library. Graph inputs that violate
+    /// an engine-owned contract before any library call are
+    /// `GraphInputInvalid`.
+    RapidsInvalidInput,
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported a
+    /// permanent unsupported capability.
+    RapidsUnsupported,
     /// A host materialization size computation overflowed the platform range.
     /// The same request cannot be retried safely without changing its shape.
     SizeOverflow,
     /// One unsplittable Arrow host row exceeds the configured deterministic
     /// materialization ceiling.
     HostMaterializationLimitExceeded,
-    /// cuDF reported a temporary dependency/runtime failure.
-    CudfTemporaryFailure,
-    /// cuDF reported a persistent dependency/runtime failure.
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported a
+    /// temporary dependency/runtime failure.
+    RapidsTemporaryFailure,
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported a
+    /// persistent dependency/runtime failure.
     ///
     /// The failure has been observed to recur or is known to continue. Stop
     /// automatic retries and escalate or wait for intervention.
-    CudfPersistentFailure,
-    /// cuDF reported a permanent dependency failure.
-    CudfDependencyFailure,
+    RapidsPersistentFailure,
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported a
+    /// permanent dependency failure.
+    RapidsDependencyFailure,
     /// An iterative native algorithm reached its configured iteration bound.
     AlgorithmDidNotConverge,
     /// Source object storage denied access to the requested object or metadata.
@@ -97,8 +106,12 @@ pub enum QueryErrorCode {
     SourceObjectNotFound,
     /// Source object storage failed with a retryable transport or service error.
     SourceTemporaryFailure,
-    /// cuDF reported an invariant or execution-context violation.
-    CudfInvariantViolation,
+    /// A source reader, source cache or object store failed permanently while
+    /// serving the request.
+    SourceDependencyFailure,
+    /// A RAPIDS library (cuDF, cuGraph, cuVS or cuML) reported an
+    /// invariant or execution-context violation.
+    RapidsInvariantViolation,
     /// The native admission controller could not reserve requested memory.
     ///
     /// Represents a temporary resource condition driving retry or backoff
@@ -144,19 +157,20 @@ impl QueryErrorCode {
         Self::InvalidAttemptCorrelation,
         Self::InvalidConfiguration,
         Self::GraphInputInvalid,
-        Self::CudfInvalidInput,
-        Self::CudfUnsupported,
+        Self::RapidsInvalidInput,
+        Self::RapidsUnsupported,
         Self::SizeOverflow,
         Self::HostMaterializationLimitExceeded,
-        Self::CudfTemporaryFailure,
-        Self::CudfPersistentFailure,
-        Self::CudfDependencyFailure,
+        Self::RapidsTemporaryFailure,
+        Self::RapidsPersistentFailure,
+        Self::RapidsDependencyFailure,
         Self::AlgorithmDidNotConverge,
         Self::SourceAccessDenied,
         Self::SourceUnauthenticated,
         Self::SourceObjectNotFound,
         Self::SourceTemporaryFailure,
-        Self::CudfInvariantViolation,
+        Self::SourceDependencyFailure,
+        Self::RapidsInvariantViolation,
         Self::MemoryReservationFailed,
         Self::ServiceOverloaded,
         Self::QueryBudgetUnavailable,
@@ -181,19 +195,20 @@ impl QueryErrorCode {
             Self::InvalidAttemptCorrelation => "invalid_attempt_correlation",
             Self::InvalidConfiguration => "invalid_configuration",
             Self::GraphInputInvalid => "graph_input_invalid",
-            Self::CudfInvalidInput => "cudf_invalid_input",
-            Self::CudfUnsupported => "cudf_unsupported",
+            Self::RapidsInvalidInput => "rapids_invalid_input",
+            Self::RapidsUnsupported => "rapids_unsupported",
             Self::SizeOverflow => "size_overflow",
             Self::HostMaterializationLimitExceeded => "host_materialization_limit_exceeded",
-            Self::CudfTemporaryFailure => "cudf_temporary_failure",
-            Self::CudfPersistentFailure => "cudf_persistent_failure",
-            Self::CudfDependencyFailure => "cudf_dependency_failure",
+            Self::RapidsTemporaryFailure => "rapids_temporary_failure",
+            Self::RapidsPersistentFailure => "rapids_persistent_failure",
+            Self::RapidsDependencyFailure => "rapids_dependency_failure",
             Self::AlgorithmDidNotConverge => "algorithm_did_not_converge",
             Self::SourceAccessDenied => "source_access_denied",
             Self::SourceUnauthenticated => "source_unauthenticated",
             Self::SourceObjectNotFound => "source_object_not_found",
             Self::SourceTemporaryFailure => "source_temporary_failure",
-            Self::CudfInvariantViolation => "cudf_invariant_violation",
+            Self::SourceDependencyFailure => "source_dependency_failure",
+            Self::RapidsInvariantViolation => "rapids_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::ServiceOverloaded => "service_overloaded",
             Self::QueryBudgetUnavailable => "query_budget_unavailable",
@@ -322,8 +337,8 @@ pub(crate) const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         QueryErrorCode::InvalidAttemptCorrelation => QueryErrorKind::InvalidInput,
         QueryErrorCode::InvalidConfiguration => QueryErrorKind::InvalidInput,
         QueryErrorCode::GraphInputInvalid => QueryErrorKind::InvalidInput,
-        QueryErrorCode::CudfInvalidInput => QueryErrorKind::InvalidInput,
-        QueryErrorCode::CudfUnsupported => QueryErrorKind::Unsupported,
+        QueryErrorCode::RapidsInvalidInput => QueryErrorKind::InvalidInput,
+        QueryErrorCode::RapidsUnsupported => QueryErrorKind::Unsupported,
         QueryErrorCode::SizeOverflow
         | QueryErrorCode::HostMaterializationLimitExceeded
         | QueryErrorCode::MemoryReservationFailed
@@ -332,17 +347,18 @@ pub(crate) const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         | QueryErrorCode::QueryMemoryLimitExceeded
         | QueryErrorCode::DeviceOutOfMemory
         | QueryErrorCode::DeviceAllocationFailed => QueryErrorKind::ResourceExhausted,
-        QueryErrorCode::CudfTemporaryFailure
-        | QueryErrorCode::CudfPersistentFailure
-        | QueryErrorCode::CudfDependencyFailure
+        QueryErrorCode::RapidsTemporaryFailure
+        | QueryErrorCode::RapidsPersistentFailure
+        | QueryErrorCode::RapidsDependencyFailure
         | QueryErrorCode::AlgorithmDidNotConverge
         | QueryErrorCode::SourceAccessDenied
         | QueryErrorCode::SourceUnauthenticated
         | QueryErrorCode::SourceObjectNotFound
         | QueryErrorCode::SourceTemporaryFailure
+        | QueryErrorCode::SourceDependencyFailure
         | QueryErrorCode::DeviceFault
         | QueryErrorCode::CleanupFailed => QueryErrorKind::DependencyFailure,
-        QueryErrorCode::CudfInvariantViolation | QueryErrorCode::InternalInvariantViolation => {
+        QueryErrorCode::RapidsInvariantViolation | QueryErrorCode::InternalInvariantViolation => {
             QueryErrorKind::InvariantViolation
         },
         QueryErrorCode::Internal => QueryErrorKind::Internal,
@@ -359,14 +375,14 @@ pub(crate) const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
 pub(crate) const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     match code {
         QueryErrorCode::Cancelled => QueryErrorStatus::Permanent,
-        QueryErrorCode::CudfTemporaryFailure
+        QueryErrorCode::RapidsTemporaryFailure
         | QueryErrorCode::SourceTemporaryFailure
         | QueryErrorCode::MemoryReservationFailed
         | QueryErrorCode::ServiceOverloaded
         | QueryErrorCode::QueryBudgetUnavailable
         | QueryErrorCode::DeviceOutOfMemory
         | QueryErrorCode::DeviceAllocationFailed => QueryErrorStatus::Temporary,
-        QueryErrorCode::CudfPersistentFailure => QueryErrorStatus::Persistent,
+        QueryErrorCode::RapidsPersistentFailure => QueryErrorStatus::Persistent,
         QueryErrorCode::UnsupportedPipelineContract
         | QueryErrorCode::UnsupportedOperator
         | QueryErrorCode::UnsupportedExpression
@@ -375,16 +391,17 @@ pub(crate) const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::InvalidAttemptCorrelation
         | QueryErrorCode::InvalidConfiguration
         | QueryErrorCode::GraphInputInvalid
-        | QueryErrorCode::CudfInvalidInput
-        | QueryErrorCode::CudfUnsupported
+        | QueryErrorCode::RapidsInvalidInput
+        | QueryErrorCode::RapidsUnsupported
         | QueryErrorCode::SizeOverflow
         | QueryErrorCode::HostMaterializationLimitExceeded
-        | QueryErrorCode::CudfDependencyFailure
+        | QueryErrorCode::RapidsDependencyFailure
         | QueryErrorCode::AlgorithmDidNotConverge
         | QueryErrorCode::SourceAccessDenied
         | QueryErrorCode::SourceUnauthenticated
         | QueryErrorCode::SourceObjectNotFound
-        | QueryErrorCode::CudfInvariantViolation
+        | QueryErrorCode::SourceDependencyFailure
+        | QueryErrorCode::RapidsInvariantViolation
         | QueryErrorCode::QueryMemoryLimitExceeded
         | QueryErrorCode::InternalInvariantViolation => QueryErrorStatus::Permanent,
         QueryErrorCode::DeviceFault | QueryErrorCode::CleanupFailed => QueryErrorStatus::Persistent,
@@ -403,24 +420,25 @@ pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageC
         QueryErrorCode::InvalidAttemptCorrelation
         | QueryErrorCode::InvalidConfiguration
         | QueryErrorCode::GraphInputInvalid
-        | QueryErrorCode::CudfInvalidInput => TriageCode::InvalidInput,
-        QueryErrorCode::CudfUnsupported => TriageCode::UnsupportedOperator,
+        | QueryErrorCode::RapidsInvalidInput => TriageCode::InvalidInput,
+        QueryErrorCode::RapidsUnsupported => TriageCode::UnsupportedOperator,
         QueryErrorCode::SizeOverflow
         | QueryErrorCode::HostMaterializationLimitExceeded
         | QueryErrorCode::QueryMemoryLimitExceeded
         | QueryErrorCode::DeviceOutOfMemory
         | QueryErrorCode::DeviceAllocationFailed => TriageCode::ResourceExhausted,
-        QueryErrorCode::CudfTemporaryFailure
-        | QueryErrorCode::CudfPersistentFailure
-        | QueryErrorCode::CudfDependencyFailure
+        QueryErrorCode::RapidsTemporaryFailure
+        | QueryErrorCode::RapidsPersistentFailure
+        | QueryErrorCode::RapidsDependencyFailure
         | QueryErrorCode::AlgorithmDidNotConverge => TriageCode::DependencyFailure,
-        QueryErrorCode::CudfInvariantViolation => TriageCode::InvariantViolation,
+        QueryErrorCode::RapidsInvariantViolation => TriageCode::InvariantViolation,
         QueryErrorCode::ServiceOverloaded => TriageCode::ServiceOverloaded,
         QueryErrorCode::Internal => TriageCode::Internal,
         QueryErrorCode::SourceAccessDenied
         | QueryErrorCode::SourceUnauthenticated
         | QueryErrorCode::SourceObjectNotFound
-        | QueryErrorCode::SourceTemporaryFailure => TriageCode::SourceFailure,
+        | QueryErrorCode::SourceTemporaryFailure
+        | QueryErrorCode::SourceDependencyFailure => TriageCode::SourceFailure,
         QueryErrorCode::MemoryReservationFailed => TriageCode::MemoryReservationDenied,
         QueryErrorCode::QueryBudgetUnavailable => TriageCode::MemoryReservationDenied,
         QueryErrorCode::DeviceFault | QueryErrorCode::CleanupFailed => TriageCode::DependencyFailure,
@@ -859,6 +877,14 @@ impl QueryError {
     }
 }
 
+/// Fact naming the RAPIDS library that reported a failure: `cudf`,
+/// `cugraph`, `cuvs` or `cuml`.
+///
+/// Each library's error wrapper sets it with its own name, because the
+/// `Rapids*` codes do not say which library failed. The DataFusion adapter
+/// projects it into logs and query stats as a log-safe fact.
+pub const RAPIDS_LIBRARY_FACT: &str = "rapids_library";
+
 /// Redacts whitespace-delimited `scheme://...` tokens and normalizes spaces.
 ///
 /// Native boundaries project foreign error text into diagnostic facts. They
@@ -936,7 +962,11 @@ impl StdError for QueryError {
     }
 }
 
-fn quote(value: &str) -> String {
+/// Renders a diagnostic value bare when it is an identifier, path or number,
+/// and as an escaped Rust string literal otherwise. The structured one-line
+/// diagnostics of native and adapter errors share this quoting.
+#[doc(hidden)]
+pub fn quote(value: &str) -> String {
     if value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '(' | ')')) {
         value.to_string()
     } else {
@@ -1055,7 +1085,7 @@ mod tests {
     #[test]
     fn duplicate_fact_decoration_preserves_first_value_and_records_collision() {
         let error = QueryError::new(
-            QueryErrorCode::CudfInvalidInput,
+            QueryErrorCode::RapidsInvalidInput,
             "query_engine.test.fact_collision",
             "fact collision probe",
         )
@@ -1065,16 +1095,16 @@ mod tests {
 
         assert_eq!(error.fact_value("layer"), Some("outer"));
         assert_eq!(error.fact_value(FACT_COLLISION_KEYS), Some("<empty>,layer"));
-        assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+        assert_eq!(error.code(), QueryErrorCode::RapidsInvalidInput);
     }
 
     #[test]
     fn repeated_source_decoration_preserves_first_cause() {
         let first =
-            QueryError::new(QueryErrorCode::CudfInvalidInput, "query_engine.test.first_cause", "the original cause");
+            QueryError::new(QueryErrorCode::RapidsInvalidInput, "query_engine.test.first_cause", "the original cause");
         let expected_cause = first.to_string();
         let error = QueryError::new(
-            QueryErrorCode::CudfInvalidInput,
+            QueryErrorCode::RapidsInvalidInput,
             "query_engine.test.source_preservation",
             "source preservation probe",
         )

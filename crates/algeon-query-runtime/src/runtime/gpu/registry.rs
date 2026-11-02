@@ -488,7 +488,7 @@ fn bind_engine_device_health(
     let health = device_health_snapshot(device);
     if health.status() == DeviceHealthStatus::Unhealthy {
         return Err(QueryError::new(
-            QueryErrorCode::CudfPersistentFailure,
+            QueryErrorCode::DeviceFault,
             "query_engine.gpu.device_registry.health",
             "unrecoverable CUDA device health prevents backend publication",
         )
