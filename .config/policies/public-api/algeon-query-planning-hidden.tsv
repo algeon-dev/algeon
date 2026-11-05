@@ -144,7 +144,7 @@ query_planning::plan::core::QueryPlan::with_nodes_for_test	test-hooks	query-plan
 query_planning::plan::estimated_output_bytes	cross-crate	query-planning plan	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::plan::join::JoinSpec.advisory_output_statistics	cross-crate	query-planning plan::join	tests: algeon-datafusion, algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::plan::join::JoinSpec::with_advisory_output_statistics	cross-crate	query-planning plan::join	prod: algeon-datafusion; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::prepared	cross-crate	query-planning crate root	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared	cross-crate	query-planning crate root	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::AVG_COUNT_STATE_TYPE	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::AvgStateAliases	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::DataFusionExactHostAccumulator	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
@@ -172,7 +172,7 @@ query_planning::prepared::avg_final_expr	cross-crate	query-planning prepared	pro
 query_planning::prepared::avg_sum_state_type	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::datafusion_exact_host_accumulator	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::datafusion_exact_host_group_key_supported	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::prepared::lower_column_expr	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::lower_column_expr	cross-crate	query-planning prepared	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::lower_named_column_expr	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::lower_sort_spec	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::source::ReaderPredicateDecimalScaleError	cross-crate	query-planning source	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it

@@ -18,7 +18,7 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use query_planning::{
     capability::{AggregateExecutionStage, AggregateExecutionStrategy, aggregate_strategy_capability_decision},
-    expr::{SortExpr, SortSpec},
+    expr::{SortExpr, SortSpec, alias_wrapped_column},
 };
 use query_runtime::observability::{
     RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
@@ -43,6 +43,8 @@ use super::{
 mod compiled;
 mod incremental;
 mod partitioned;
+#[cfg(test)]
+mod tests;
 
 pub(in crate::exec::bounded) use compiled::execute_compiled_bounded_final_aggregate_merge;
 pub(in crate::exec::bounded::aggregate) use compiled::{
@@ -251,7 +253,7 @@ pub(super) fn partitioned_final_merge_topk_sort(
     for sort_expr in &sort.spec.expressions {
         let mut column = lower_column_expr(&sort_expr.expr, "query_engine.final_merge.topk_sort")?;
         for stage in bounded.post_aggregate_stages.iter().rev() {
-            let Some(mapped) = project_topk_sort_column_through_stage(stage, column.as_str())? else {
+            let Some(mapped) = project_topk_sort_column_through_stage(stage, column.as_str()) else {
                 return Ok(None);
             };
             column = mapped;
@@ -264,16 +266,14 @@ pub(super) fn partitioned_final_merge_topk_sort(
     Ok(Some(SortNode { input: sort.input, spec: SortSpec::new(expressions) }))
 }
 
-pub(super) fn project_topk_sort_column_through_stage(
-    stage: &BoundedUnaryStage<'_>,
-    column: &str,
-) -> Result<Option<String>> {
+/// The input column that `stage` renames to `column`, or `None` when `column` is absent or computed
+/// by an expression. The projection computes such a key after the merge, and the merged partitions
+/// carry no column to prune on.
+pub(super) fn project_topk_sort_column_through_stage(stage: &BoundedUnaryStage<'_>, column: &str) -> Option<String> {
     match stage {
         BoundedUnaryStage::Projection { node } => {
-            let Some(output) = node.outputs.iter().find(|output| output.field.name() == column) else {
-                return Ok(None);
-            };
-            lower_column_expr(&output.expr, "query_engine.final_merge.topk_projection").map(Some)
+            let output = node.outputs.iter().find(|output| output.field.name() == column)?;
+            alias_wrapped_column(&output.expr).map(|column| column.name().to_string())
         },
     }
 }

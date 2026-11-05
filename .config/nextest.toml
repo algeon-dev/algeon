@@ -285,6 +285,7 @@ binary(/_cpu$/)
     | source_batching_policy
     | facts)::tests
     | aggregate::(final_merge_policy::tests
+    | final_merge::tests
     | source_adjacent::tests
     | tests)
     | chunks::retry::tests
