@@ -721,6 +721,81 @@ fn capability_admission_rejects_a_type_the_backend_does_not_support_with_its_val
 }
 
 #[test]
+fn capability_admission_rejects_regexp_replace_with_an_empty_replacement() {
+    // libcudf's back-reference replacement refuses an empty template.
+    // Deleting matches therefore has no native form in a projection or a
+    // filter.
+    let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
+    let delete_b = || Expr::regexp_replace(Expr::column("s"), "b", "", DataType::Utf8);
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+    let projection = builder.add_projection(source, projection_outputs(vec![delete_b()], Arc::clone(&schema))).unwrap();
+    let projected = builder.finish_with_host_sink(projection).unwrap();
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+    let predicate = Expr::binary(delete_b(), BinaryOp::Eq, Expr::literal(LiteralValue::Utf8("ac".to_string())));
+    let filter = builder.add_filter(source, predicate).unwrap();
+    let filtered = builder.finish_with_host_sink(filter).unwrap();
+
+    for plan in [projected, filtered] {
+        let decision = admit_default(&plan).expect("an unsupported replacement is a decision");
+        let rejection = decision.rejection().expect("an empty REGEXP_REPLACE replacement is rejected");
+        assert_eq!(
+            rejection.facts.get("reason").map(String::as_str),
+            Some("regexp_replace_replacement_must_not_be_empty")
+        );
+        assert_eq!(rejection.facts.get("expression_family").map(String::as_str), Some("regexp_replace"));
+    }
+}
+
+#[test]
+fn capability_admission_rejects_regexp_replace_with_an_empty_replacement_in_a_post_join_residual() {
+    // `IS DISTINCT FROM` has no mixed-join AST form, so the residual runs as a
+    // filter over the matched pairs, which admits REGEXP_REPLACE.
+    let left_schema =
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false), Field::new("s", DataType::Utf8, true)]));
+    let right_schema =
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false), Field::new("t", DataType::Utf8, true)]));
+    let join_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let plan_with_replacement = |replacement: &str| {
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "/tmp/post-join-residual-left.parquet",
+            Arc::clone(&left_schema),
+            vec!["id".to_string(), "s".to_string()],
+        )));
+        let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "/tmp/post-join-residual-right.parquet",
+            Arc::clone(&right_schema),
+            vec!["id".to_string(), "t".to_string()],
+        )));
+        let rewritten = Expr::regexp_replace(Expr::input_column(0, "s", "s"), "b", replacement, DataType::Utf8);
+        let join = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+                )
+                .with_residual_predicate(Expr::is_distinct_from(rewritten, Expr::input_column(1, "t", "t")))
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id")])
+                .with_build_side(JoinSide::Right),
+                Arc::clone(&join_schema),
+            )
+            .unwrap();
+        builder.finish_with_host_sink(join).unwrap()
+    };
+
+    let admitted = admit_default(&plan_with_replacement("c")).expect("a non-empty replacement is a decision");
+    assert!(admitted.rejection().is_none(), "the residual form admits REGEXP_REPLACE");
+    let decision = admit_default(&plan_with_replacement("")).expect("an empty replacement is a decision");
+    let rejection = decision.rejection().expect("an empty REGEXP_REPLACE replacement is rejected in the residual");
+    assert_eq!(rejection.facts.get("reason").map(String::as_str), Some("regexp_replace_replacement_must_not_be_empty"));
+    assert_eq!(rejection.facts.get("expression_family").map(String::as_str), Some("regexp_replace"));
+}
+
+#[test]
 fn capability_admission_reports_a_malformed_node_behind_an_unsupported_one() {
     // The aggregate keys on a timezone-aware timestamp the backend cannot run;
     // the projection above it reads a column the aggregate does not produce.
