@@ -53,7 +53,7 @@ pub use join::KeyedHashJoinStrategyOptions;
 pub use join::{
     JoinForm, KeyedHashJoinStrategyInputFacts, KeylessConditionalJoinKind, keyed_hash_join_build_is_large,
     keyed_hash_join_strategy_input_facts_for_plan,
-    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
+    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness, keyed_join_filters_matched_pairs,
 };
 pub(crate) use join::{choose_join_strategy, classify_join, join_probe_streams_chunks};
 #[doc(hidden)]

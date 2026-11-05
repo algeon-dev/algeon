@@ -593,6 +593,45 @@ async fn sql_join_filter_like_is_computed_on_the_input_it_reads() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// TPC-DS q58 bounds revenues with a chain of casts from `Float64` that can
+/// fail. The executor filters by each conjunct on the pairs the earlier ones
+/// keep, so no conjunct carries a `CASE` guard built from the conjuncts before
+/// it, and the lowered residual grows linearly with the chain.
+#[tokio::test]
+async fn sql_join_filter_checked_cast_chain_lowers_each_conjunct_without_earlier_guards() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-sql-join-filter-checked-cast-chain");
+    let path = dir.join("bench.parquet");
+    write_decimal_filter_parquet_file(&path);
+    let chain = (0..10)
+        .map(|index| {
+            format!(
+                "CAST(l.payload AS DECIMAL(30, 15)) >= CAST(0.{} * CAST(r.payload AS DOUBLE) AS DECIMAL(30, 15))",
+                50 + 5 * index
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let sql = format!("SELECT l.key, r.m00 FROM bench l JOIN bench r ON l.key = r.key AND {chain}");
+
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), &sql).await;
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    let join = rewritten_native_join(&result);
+    assert_eq!(join.spec.join_type, NativeJoinType::Inner);
+    let residual = join.spec.residual_predicate.as_ref().expect("the checked casts run in the residual");
+    let conjuncts = residual.conjuncts();
+    assert_eq!(conjuncts.len(), 10, "{residual}");
+    for conjunct in conjuncts {
+        assert!(
+            conjunct.any(|expr| matches!(expr, Expr::Cast { target_type: DataType::Decimal128(30, 15), .. })),
+            "each conjunct keeps its checked cast: {conjunct}"
+        );
+    }
+    assert!(!residual.any(|expr| matches!(expr, Expr::Case { .. })), "no conjunct is guarded: {residual}");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn hash_join_filter_upper_string_cast_materializes_input_before_residual_predicate() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-hash-join-filter-upper-cast-materialized");

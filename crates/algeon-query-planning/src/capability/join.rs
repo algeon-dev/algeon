@@ -14,6 +14,7 @@ use super::{
     rejection::{Reason, Rejection, RejectionOwner},
 };
 use crate::{
+    datatypes::is_ast_cast_target,
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, Expr},
     plan::{JoinNode, JoinSide, JoinType, NodeId, QueryPlan, estimated_output_bytes, estimated_output_rows},
@@ -264,8 +265,9 @@ pub enum JoinForm {
     /// Equality keys without a residual: an inner join, a left join that
     /// builds its right side, or a full join.
     KeyedEqui,
-    /// An inner join with equality keys whose residual only a filter after
-    /// matching can evaluate.
+    /// An inner join, or a semi join that builds its right side, with equality
+    /// keys and a residual only a filter after matching can evaluate. The
+    /// semi join keeps each left row that has a pair passing the filter.
     KeyedEquiPostFilter,
     /// Equality keys without a residual: a semi, anti, or mark join that
     /// builds its right side and outputs only left columns.
@@ -366,7 +368,9 @@ pub(crate) fn classify_join(node_id: NodeId, join: &JoinNode) -> std::result::Re
             match (mixed, expr_requires_post_join_filter(residual)) {
                 (false, _) => None,
                 (true, false) => Some(JoinForm::KeyedResidual { left_match }),
-                (true, true) if spec.join_type == JoinType::Inner => Some(JoinForm::KeyedEquiPostFilter),
+                (true, true) if keyed_join_filters_matched_pairs(&spec.join_type, spec.build_side) => {
+                    Some(JoinForm::KeyedEquiPostFilter)
+                },
                 (true, true) => return Err(rejection(Reason::PostJoinResidualFilterRequiresOneShotEquiJoin)),
             }
         },
@@ -387,6 +391,16 @@ pub(crate) fn classify_join(node_id: NodeId, join: &JoinNode) -> std::result::Re
         },
     };
     form.ok_or_else(|| rejection(Reason::UnsupportedJoinNodeCapability))
+}
+
+/// Whether a join of `join_type` with equality keys that builds `build_side`
+/// runs a residual the mixed join cannot evaluate as a filter over its
+/// key-matched pairs ([`JoinForm::KeyedEquiPostFilter`]). That holds for an
+/// inner join, and for a semi join in the orientation the one-shot filter
+/// executor runs, building its right side. Native lowering reads it to report
+/// why a residual of any other join cannot run natively.
+pub fn keyed_join_filters_matched_pairs(join_type: &JoinType, build_side: JoinSide) -> bool {
+    *join_type == JoinType::Inner || (*join_type == JoinType::LeftSemi && build_side == JoinSide::Right)
 }
 
 /// Chooses the strategy that executes `join` in `form` from size facts.
@@ -628,7 +642,11 @@ pub(crate) fn join_probe_streams_chunks(join: &JoinNode, form: JoinForm, strateg
                 JoinType::Full | JoinType::Cross => false,
             }
         },
-        JoinForm::KeyedEquiPostFilter => strategy == JoinStrategy::OneShotEqui,
+        // A semi join's filter keeps left rows from the pairs of one probe
+        // pass, so its probe arrives as one frame.
+        JoinForm::KeyedEquiPostFilter => {
+            strategy == JoinStrategy::OneShotEqui && join.spec.join_type == JoinType::Inner
+        },
         JoinForm::KeyedResidual { left_match } => left_match && strategy == JoinStrategy::MixedKeyedResidual,
         JoinForm::KeylessConditional(_) | JoinForm::ProjectedCross => false,
     }
@@ -636,18 +654,17 @@ pub(crate) fn join_probe_streams_chunks(join: &JoinNode, form: JoinForm, strateg
 
 /// Residual forms the cuDF mixed join cannot evaluate while matching: it
 /// evaluates the residual as an AST expression, which has no CASE, no
-/// null-aware comparison, and no Decimal128 division. Such a residual runs as a
-/// filter over the matched rows, which keeps SQL semantics only for an inner
-/// join; for any other join type the set of unmatched rows would change.
+/// null-aware comparison, no Decimal128 division, and no cast to a type other
+/// than its [cast targets](is_ast_cast_target). Such a residual runs as a
+/// filter over the matched rows. That keeps SQL semantics for an inner join,
+/// and for a semi join that keeps each left row with a passing pair once; for
+/// any other join type the set of unmatched rows would change.
 fn expr_requires_post_join_filter(expr: &Expr) -> bool {
-    expr.any(|expr| {
-        matches!(
-            expr,
-            Expr::Case { .. }
-                | Expr::IsDistinctFrom { .. }
-                | Expr::IsNotDistinctFrom { .. }
-                | Expr::Binary { op: BinaryOp::Divide, output_type: Some(DataType::Decimal128(_, _)), .. }
-        )
+    expr.any(|expr| match expr {
+        Expr::Case { .. } | Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => true,
+        Expr::Binary { op: BinaryOp::Divide, output_type: Some(DataType::Decimal128(_, _)), .. } => true,
+        Expr::Cast { target_type, .. } => !is_ast_cast_target(target_type),
+        _ => false,
     })
 }
 
@@ -830,6 +847,56 @@ mod tests {
 
         assert_eq!(form(&join), Some(JoinForm::KeyedEquiPostFilter));
         assert_eq!(selected_strategy(decision), JoinStrategy::OneShotEqui);
+    }
+
+    #[test]
+    fn residual_casts_the_ast_has_no_target_for_filter_matched_pairs_of_inner_and_right_building_semi_joins() {
+        let decimal = DataType::Decimal128(30, 15);
+        let checked = Expr::binary(
+            Expr::cast(Expr::column("left_value"), decimal.clone()),
+            BinaryOp::Gt,
+            Expr::cast(Expr::column("right_value"), decimal),
+        );
+        let with_residual = |join_type: JoinType, build_side: JoinSide, residual: Expr| {
+            let mut join = single_use_join(join_type);
+            join.spec.build_side = build_side;
+            join.spec = join.spec.with_residual_predicate(residual);
+            join
+        };
+
+        let inner = with_residual(JoinType::Inner, JoinSide::Right, checked.clone());
+        assert_eq!(form(&inner), Some(JoinForm::KeyedEquiPostFilter));
+        assert!(join_probe_streams_chunks(&inner, JoinForm::KeyedEquiPostFilter, JoinStrategy::OneShotEqui));
+
+        let semi = with_residual(JoinType::LeftSemi, JoinSide::Right, checked.clone());
+        assert_eq!(form(&semi), Some(JoinForm::KeyedEquiPostFilter));
+        assert!(
+            !join_probe_streams_chunks(&semi, JoinForm::KeyedEquiPostFilter, JoinStrategy::OneShotEqui),
+            "the semi join keeps left rows from the pairs of one probe pass"
+        );
+
+        for join in [
+            with_residual(JoinType::LeftSemi, JoinSide::Left, checked.clone()),
+            with_residual(JoinType::LeftAnti { null_aware: false }, JoinSide::Right, checked.clone()),
+            with_residual(JoinType::Left, JoinSide::Right, checked),
+        ] {
+            let rejection = classify_join(NodeId::from_index_for_test(2), &join).unwrap_err();
+            assert_eq!(
+                rejection.reason,
+                Reason::PostJoinResidualFilterRequiresOneShotEquiJoin,
+                "{} building {}",
+                join.spec.join_type,
+                join.spec.build_side
+            );
+        }
+
+        let ast_cast = Expr::binary(
+            Expr::cast(Expr::column("left_value"), DataType::Float64),
+            BinaryOp::Gt,
+            Expr::column("right_value"),
+        );
+        let semi = with_residual(JoinType::LeftSemi, JoinSide::Right, ast_cast);
+        assert_eq!(form(&semi), Some(JoinForm::KeyedResidual { left_match: false }));
     }
 
     #[test]

@@ -416,13 +416,15 @@ pub(super) fn lower_hash_join_input(
     // key and residual materializations, then orders the inputs for the native spec.
     let canonical = canonical_join(join.join.join_type())?;
     let output_requests = hash_join_output_requests(join, required_output_fields)?;
+    let join_type = canonical.native_join_type(join.join.null_aware, output_requests.mark_column_name.as_deref())?;
+    let build_side = native_join_build_side(canonical, join.join.on().len(), join.join.filter().is_some());
     let residual = join
         .join
         .filter()
         .map(|filter| {
             let left_schema = join.join.left().schema();
             let right_schema = join.join.right().schema();
-            let contract = validate_join_residual(filter, &left_schema, &right_schema)?;
+            let contract = validate_join_residual(filter, &left_schema, &right_schema, Some((&join_type, build_side)))?;
             lower_join_filter(&contract, canonical, None)
         })
         .transpose()?;
@@ -468,7 +470,8 @@ pub(super) fn lower_hash_join_input(
             .map(|filter| {
                 let left_schema = join.join.left().schema();
                 let right_schema = join.join.right().schema();
-                let contract = validate_join_residual(filter, &left_schema, &right_schema)?;
+                let contract =
+                    validate_join_residual(filter, &left_schema, &right_schema, Some((&join_type, build_side)))?;
                 lower_join_filter(
                     &contract,
                     canonical,
@@ -496,9 +499,7 @@ pub(super) fn lower_hash_join_input(
     let keys = lower_prepared_join_keys(&prepared_keys.keys, &left, &right, canonical)?;
     let inferred_lookup_side = unique_lookup_bounded_side(builder, join, canonical, &left, &right, &keys);
     let (native_left, native_right) = canonical.order_inputs(left, right);
-    let build_side = native_join_build_side(canonical, keys.len(), residual.is_some());
     let datafusion_order_preserved_side = datafusion_hash_join_order_preserved_side(join, build_side);
-    let join_type = canonical.native_join_type(join.join.null_aware, output_columns.mark_column_name.as_deref())?;
     let mut spec = NativeJoinSpec::new(join_type, keys)
         .with_output_projection(output_columns.projection)
         .with_null_equality(lower_join_null_equality(join.join.null_equality()))
@@ -599,7 +600,7 @@ pub(super) fn lower_nested_loop_join_input(
         Some(filter) => {
             let left_schema = join.join.left().schema();
             let right_schema = join.join.right().schema();
-            let contract = validate_join_residual(filter, &left_schema, &right_schema)?;
+            let contract = validate_join_residual(filter, &left_schema, &right_schema, None)?;
             Some(lower_join_filter(
                 &contract,
                 canonical,
@@ -762,7 +763,7 @@ fn nested_loop_join_residual(
     if let Some(filter) = join.filter() {
         let left_schema = join.left().schema();
         let right_schema = join.right().schema();
-        let contract = validate_join_residual(filter, &left_schema, &right_schema)?;
+        let contract = validate_join_residual(filter, &left_schema, &right_schema, None)?;
         let residual = lower_join_filter(&contract, canonical, None)?;
         return Ok(Some(residual));
     }

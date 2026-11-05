@@ -480,16 +480,66 @@ const JOIN_RESIDUAL_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
     // The cast fails on a payload above 999. DataFusion casts only key-matched
-    // pairs, and a pre-join column would cast every row.
+    // pairs, and a pre-join column would cast every row, so the residual runs
+    // as the checked filter over matched pairs.
     GpuGapCase {
         id: "join_residual_cast_that_can_fail",
 
         sql: "SELECT b.id FROM bench b JOIN bench s ON b.key = s.key \
               AND CAST(s.payload AS DECIMAL(3, 0)) > CAST(b.id AS DECIMAL(10, 0))",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    // A left join keeps its unmatched rows, so its residual cannot run as the
+    // filter over matched pairs, and the report names the cast.
+    GpuGapCase {
+        id: "join_residual_cast_that_can_fail_left",
+
+        sql: "SELECT b.id, s.id AS sid FROM bench b LEFT JOIN bench s ON b.key = s.key \
+              AND CAST(s.payload AS DECIMAL(3, 0)) > CAST(b.id AS DECIMAL(10, 0))",
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedExpression,
             unsupported_category: "expression",
             blocking: ("cast", "cast from Int64 to Decimal128(3, 0) in `CAST(payload AS Decimal128(3, 0))`"),
+        },
+    },
+    // A join without equality keys runs its residual in the cuDF AST, which
+    // divides decimals without DataFusion's zero-divisor and overflow checks.
+    GpuGapCase {
+        id: "join_residual_decimal_division_keyless",
+
+        sql: "SELECT b.id, s.id AS sid FROM bench b JOIN bench s \
+              ON CAST(b.payload AS DECIMAL(21, 2)) / CAST(s.payload AS DECIMAL(21, 2)) > 1",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedExpression,
+            unsupported_category: "expression",
+            blocking: (
+                "binary_operator",
+                "binary operator `/` over Decimal128(21, 2) and Decimal128(21, 2) in \
+                 `join_proj_push_down_1 / join_proj_push_down_2`",
+            ),
+        },
+    },
+    // TPC-DS q06 and q65 compare against a scalar subquery that DataFusion
+    // decorrelates into this semi join, with a Float64 to Decimal128 cast.
+    GpuGapCase {
+        id: "join_residual_cast_that_can_fail_semi",
+
+        sql: "SELECT b.id FROM bench b WHERE EXISTS (SELECT 1 FROM bench s WHERE s.key = b.key \
+              AND CAST(b.id AS DECIMAL(10, 0)) > CAST(1.2 * s.payload AS DECIMAL(3, 0)))",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    // A cast to BIGINT UNSIGNED fails on a negative payload. The cuDF AST casts
+    // to that type without the check, and nothing else in the residual runs it
+    // as the checked filter.
+    GpuGapCase {
+        id: "join_residual_unchecked_ast_cast_that_can_fail",
+
+        sql: "SELECT b.id FROM bench b JOIN bench s ON b.key = s.key \
+              AND CAST(s.payload AS BIGINT UNSIGNED) > CAST(b.id AS BIGINT UNSIGNED)",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedType,
+            unsupported_category: "type_cast_int64_to_uint64",
+            blocking: ("cast", "cast from Int64 to UInt64 in `CAST(payload AS UInt64)`"),
         },
     },
 ];
@@ -633,6 +683,21 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
                     PlanNode::Limit(limit) if limit.spec.skip == 2 && limit.spec.fetch.is_none()
                 ),
                 "offset_without_limit should lower to an offset-only native Limit"
+            );
+        },
+        "join_residual_cast_that_can_fail_semi" => {
+            let plan = lowering.plan.as_ref().expect("checked semi residual should lower to a native plan");
+            assert!(
+                plan.nodes().iter().any(|node| matches!(
+                    &node.kind,
+                    PlanNode::Join(join)
+                        if join.spec.join_type == NativeJoinType::LeftSemi
+                            && join.spec.residual_predicate.as_ref().is_some_and(|residual| residual.any(|expr| matches!(
+                                expr,
+                                Expr::Cast { target_type: DataType::Decimal128(3, 0), .. }
+                            )))
+                )),
+                "the cast that can fail stays in the semi join residual instead of a pre-join column"
             );
         },
         "literal_only_projection" | "values_table" => {

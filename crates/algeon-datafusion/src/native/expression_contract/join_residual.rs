@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::{
-    common::JoinSide,
+    common::JoinSide as DataFusionJoinSide,
     logical_expr::Operator,
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
@@ -13,7 +13,12 @@ use datafusion::{
     physical_plan::joins::utils::JoinFilter,
 };
 use query_engine::rapids_backend::rapids_backend;
-use query_planning::{datatypes::is_supported_ast_cast, validation::is_integral_type};
+use query_planning::{
+    capability::keyed_join_filters_matched_pairs,
+    datatypes::{is_ast_cast_target, is_supported_ast_cast},
+    plan::{JoinSide as NativeJoinSide, JoinType as NativeJoinType},
+    validation::is_integral_type,
+};
 
 use super::{
     ExpressionCapability, ExpressionRejection, ExpressionRejectionSubject, ValidatedPhysicalExpr,
@@ -28,6 +33,9 @@ use super::{
 /// subexpression that reads one input and cannot fail is a
 /// [`JoinResidualMaterializationSite`]: lowering evaluates it on every row of
 /// that input before the join and the residual reads the result as a column.
+/// A subexpression that reads one input and can fail stays in the residual,
+/// which then runs as the checked filter over key-matched pairs
+/// ([`Self::evaluates_after_matching`]).
 #[derive(Debug)]
 pub(in crate::native) struct ValidatedJoinResidual<'a> {
     filter: &'a JoinFilter,
@@ -35,6 +43,7 @@ pub(in crate::native) struct ValidatedJoinResidual<'a> {
     left_schema: SchemaRef,
     right_schema: SchemaRef,
     materializations: Vec<JoinResidualMaterializationSite>,
+    after_matching: bool,
 }
 
 /// A residual subexpression that lowering evaluates on one join input before
@@ -43,7 +52,7 @@ pub(in crate::native) struct ValidatedJoinResidual<'a> {
 #[derive(Debug)]
 pub(in crate::native) struct JoinResidualMaterializationSite {
     pub(in crate::native) expr: Arc<dyn PhysicalExpr>,
-    pub(in crate::native) side: JoinSide,
+    pub(in crate::native) side: DataFusionJoinSide,
 }
 
 impl<'a> ValidatedJoinResidual<'a> {
@@ -63,8 +72,14 @@ impl<'a> ValidatedJoinResidual<'a> {
         &self.right_schema
     }
 
-    pub(in crate::native) fn contains_decimal_division(&self) -> bool {
-        contains_decimal_division(self.filter.expression(), self.filter.schema())
+    /// Whether lowering runs the residual as the checked filter over
+    /// key-matched pairs instead of the cuDF join AST. It does for a decimal
+    /// `/` and for a cast to a type the AST does not cast to, whose checks
+    /// only that filter applies, in a join that filters its matched pairs.
+    /// Query planning classifies such a residual `KeyedEquiPostFilter` from
+    /// the same operations.
+    pub(in crate::native) fn evaluates_after_matching(&self) -> bool {
+        self.after_matching
     }
 
     pub(in crate::native) fn materializations(&self) -> &[JoinResidualMaterializationSite] {
@@ -72,19 +87,45 @@ impl<'a> ValidatedJoinResidual<'a> {
     }
 }
 
+/// Validates `filter`, the residual of a join whose native type and build side
+/// are `keyed_join` when it has equality keys and `None` when it has none.
+///
+/// A kept single-input operation that can fail runs only in the checked filter
+/// over key-matched pairs, which query planning gives a keyed inner join and a
+/// semi join that builds its right side
+/// ([`keyed_join_filters_matched_pairs`]). For any other join the residual is
+/// rejected with that operation's reason, which names it, and so is a decimal
+/// `/` over both inputs, which only that filter checks.
 pub(in crate::native) fn validate_join_residual<'a>(
     filter: &'a JoinFilter,
     left_schema: &SchemaRef,
     right_schema: &SchemaRef,
+    keyed_join: Option<(&NativeJoinType, NativeJoinSide)>,
 ) -> Result<ValidatedJoinResidual<'a>, ExpressionRejection> {
     let expression = validate_physical_expr_contract(filter.expression(), filter.schema())?;
     let residual = filter.expression();
     let mut shape = ResidualShape {
         filter,
-        post_join: contains_decimal_division(residual, filter.schema()),
         materializations: Vec::new(),
+        first_checked_operation: None,
+        checked_cast_after_matching: false,
     };
     shape.visit(residual)?;
+    let decimal_division = first_decimal_division(residual, filter.schema());
+    let filters_matched_pairs =
+        keyed_join.is_some_and(|(join_type, build_side)| keyed_join_filters_matched_pairs(join_type, build_side));
+    let after_matching = filters_matched_pairs && (decimal_division.is_some() || shape.checked_cast_after_matching);
+    if !after_matching {
+        if let Some(rejection) = shape.first_checked_operation {
+            return Err(rejection);
+        }
+        // The residual keeps a decimal `/` over both inputs only because the
+        // filter over matched pairs checks it. The cuDF AST divides without
+        // DataFusion's zero-divisor and overflow checks.
+        if let Some(division) = decimal_division {
+            return Err(fallible_operation_rejection(division, filter.schema()));
+        }
+    }
     validate_join_residual_side_indices(residual, filter, left_schema, right_schema)
         .map_err(|rejection| rejection.at_expression(residual))?;
 
@@ -101,24 +142,33 @@ pub(in crate::native) fn validate_join_residual<'a>(
         left_schema: Arc::clone(left_schema),
         right_schema: Arc::clone(right_schema),
         materializations: shape.materializations,
+        after_matching,
     })
 }
 
-fn contains_decimal_division(expr: &Arc<dyn PhysicalExpr>, schema: &SchemaRef) -> bool {
-    expr.downcast_ref::<BinaryExpr>().is_some_and(|binary| is_decimal_division(binary, schema))
-        || expr.children().into_iter().any(|child| contains_decimal_division(child, schema))
+fn first_decimal_division<'e>(
+    expr: &'e Arc<dyn PhysicalExpr>,
+    schema: &SchemaRef,
+) -> Option<&'e Arc<dyn PhysicalExpr>> {
+    if expr.downcast_ref::<BinaryExpr>().is_some_and(|binary| is_decimal_division(binary, schema)) {
+        return Some(expr);
+    }
+    expr.children().into_iter().find_map(|child| first_decimal_division(child, schema))
 }
 
-/// Walk of a residual that admits its shape and records its materialization
-/// sites.
+/// Walk of a residual that admits its shape, records its materialization
+/// sites, and records the single-input operations that can fail.
 struct ResidualShape<'f> {
     filter: &'f JoinFilter,
-    /// Whether lowering runs the residual as the checked filter over
-    /// key-matched rows, which it does for a decimal `/`. That filter
-    /// evaluates a fallible operation only on matched pairs, as DataFusion
-    /// does, and the operation stays in the residual.
-    post_join: bool,
     materializations: Vec<JoinResidualMaterializationSite>,
+    /// The rejection of the first single-input subexpression that can fail
+    /// and stays in the residual. Only the checked filter over key-matched
+    /// pairs evaluates it on the rows DataFusion evaluates, so the residual is
+    /// rejected unless it runs as that filter.
+    first_checked_operation: Option<ExpressionRejection>,
+    /// Whether a kept single-input subexpression is a cast to a type the cuDF
+    /// AST does not cast to, which runs the residual as that filter.
+    checked_cast_after_matching: bool,
 }
 
 impl ResidualShape<'_> {
@@ -150,10 +200,15 @@ impl ResidualShape<'_> {
             }
             return Ok(());
         }
-        if self.post_join && !is_unchecked_ast_arithmetic(expr, schema) {
-            return self.visit_children(expr);
+        if is_unchecked_ast_arithmetic(expr, schema) {
+            return Err(fallible_operation_rejection(expr, schema));
         }
-        Err(fallible_operation_rejection(expr, schema))
+        if self.first_checked_operation.is_none() {
+            self.first_checked_operation = Some(fallible_operation_rejection(expr, schema));
+        }
+        self.checked_cast_after_matching |=
+            expr.downcast_ref::<CastExpr>().is_some_and(|cast| !is_ast_cast_target(cast.cast_type()));
+        self.visit_children(expr)
     }
 
     /// Admits an expression over both inputs that the AST does not evaluate.
@@ -287,9 +342,9 @@ fn validate_join_residual_side_indices(
             .get(column.index())
             .ok_or_else(|| ExpressionRejection::unsupported_expression(ExpressionCapability::JoinResidualSideSchema))?;
         let side_schema = match column_index.side {
-            JoinSide::Left => left_schema,
-            JoinSide::Right => right_schema,
-            JoinSide::None => {
+            DataFusionJoinSide::Left => left_schema,
+            DataFusionJoinSide::Right => right_schema,
+            DataFusionJoinSide::None => {
                 return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::JoinResidualSideSchema));
             },
         };
@@ -314,9 +369,9 @@ fn join_filter_expr_sides(
 ) -> Result<(bool, bool), ExpressionRejection> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         return match filter.column_indices().get(column.index()).map(|column_index| column_index.side) {
-            Some(JoinSide::Left) => Ok((true, false)),
-            Some(JoinSide::Right) => Ok((false, true)),
-            Some(JoinSide::None) | None => {
+            Some(DataFusionJoinSide::Left) => Ok((true, false)),
+            Some(DataFusionJoinSide::Right) => Ok((false, true)),
+            Some(DataFusionJoinSide::None) | None => {
                 Err(ExpressionRejection::unsupported_expression(ExpressionCapability::JoinResidualShape))
             },
         };
@@ -328,10 +383,10 @@ fn join_filter_expr_sides(
 }
 
 /// The one input `expr` reads, or `None` when it reads both or neither.
-fn join_filter_expr_single_side(expr: &Arc<dyn PhysicalExpr>, filter: &JoinFilter) -> Option<JoinSide> {
+fn join_filter_expr_single_side(expr: &Arc<dyn PhysicalExpr>, filter: &JoinFilter) -> Option<DataFusionJoinSide> {
     match join_filter_expr_sides(expr, filter) {
-        Ok((true, false)) => Some(JoinSide::Left),
-        Ok((false, true)) => Some(JoinSide::Right),
+        Ok((true, false)) => Some(DataFusionJoinSide::Left),
+        Ok((false, true)) => Some(DataFusionJoinSide::Right),
         _ => None,
     }
 }

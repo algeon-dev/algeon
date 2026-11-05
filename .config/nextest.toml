@@ -255,6 +255,7 @@ binary(/_cpu$/)
     | dimension_pruning::dimension_derived_row_group_pruning_uses_filtered_dimension_key_range
     | projection_validation::residual_validation::native_query_rejects_non_boolean_residual_predicate_before_source_read
     | projection_validation::residual_validation::native_query_rejects_unsupported_join_residual_cast_before_source_read
+    | projection_validation::residual_validation::native_query_rejects_post_join_residual_cast_without_native_support_before_source_read
     | projection_validation::residual_validation::native_query_rejects_join_residual_in_list_with_non_literal_values_before_source_read
     | projection_validation::residual_validation::native_query_rejects_unsupported_residual_expression_families_before_source_read
     | projection_validation::scalar_expressions::native_query_rejects_date64_temporal_scalars_before_source_read

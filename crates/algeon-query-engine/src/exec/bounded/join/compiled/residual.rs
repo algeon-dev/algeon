@@ -1,35 +1,43 @@
 //! Residual filtering for one-shot equi joins whose predicate cannot run inside the mixed kernel.
 //!
-//! An inner join with equality keys and a residual containing CASE, IS DISTINCT FROM, IS NOT
-//! DISTINCT FROM or a decimal division is classified `KeyedEquiPostFilter` and always runs as
+//! An inner join, or a semi join that builds its right side, with equality keys and a residual
+//! containing CASE, IS DISTINCT FROM, IS NOT DISTINCT FROM, a decimal division or a cast to a type
+//! the cuDF AST does not cast to is classified `KeyedEquiPostFilter` and always runs as
 //! `OneShotEqui`. The equality gather maps pair every key match, and the residual removes pairs
-//! afterwards. This module gathers a candidate frame that holds the output columns plus every
-//! column the residual reads, under generated `__algeon_native_one_shot_residual_*` names. It
-//! then filters the candidate with the residual rewritten to those names
-//! (`rewrite_join_residual_for_candidate`) and selects the final output columns.
+//! afterwards, so it is evaluated on the matched pairs only, as DataFusion evaluates a join filter.
+//! This module gathers a candidate frame that holds every column the residual reads, under
+//! generated `__algeon_native_one_shot_residual_*` names, and filters it by each top-level conjunct
+//! of the residual rewritten to those names (`rewrite_join_residual_for_candidate`), in order, each
+//! on the pairs the earlier ones keep. For an inner join the candidate also holds the output
+//! columns, which the filtered frame keeps. For a semi join it holds the left gather map instead:
+//! the distinct left rows of the passing pairs are gathered from the left input, so each left row
+//! appears once.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Instant,
 };
 
+use cudf::DataFrameJoinIndices;
 use query_planning::expr::CaseWhen;
 
 use super::{
-    BoundedExecutionAttempt, BoundedJoinSideFrame, ColumnQualifier, ColumnRef, CompiledJoinIndices, Expr, GpuDataFrame,
-    JoinMaterializationTxn, JoinNode, JoinOutputColumn, JoinSide, NodeId, OneShotJoinChunkMetrics, QueryError,
-    QueryErrorCode, ResidentGpuFrame, Result, attach_budget_token_failure_facts, cudf_query_error,
-    datafusion_order_columns, execution_budget_token_for_boundary, lower_expr, observe_device_memory_bytes, probe_side,
-    residual_input_columns, side_metric,
+    BoundedExecutionAttempt, BoundedJoinSideFrame, ColumnQualifier, ColumnRef, CompiledJoinIndices, DataFrame, Expr,
+    GpuDataFrame, JoinMaterializationTxn, JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId,
+    OneShotJoinChunkMetrics, QueryError, QueryErrorCode, ResidentGpuFrame, Result, attach_budget_token_failure_facts,
+    bounded_invariant_violation, cudf_query_error, datafusion_order_columns, execution_budget_token_for_boundary,
+    lower_expr, observe_device_memory_bytes, probe_side, residual_input_columns, side_metric,
 };
 
-/// Gathers the key-matched candidate rows, filters them with the residual, and returns the final
-/// output with its chunk metrics.
+/// Gathers the key-matched candidate rows, filters them by the residual's conjuncts, and returns
+/// the final output with its chunk metrics.
 ///
 /// Takes both side frames and the equality gather maps into a `JoinMaterializationTxn`. Every
 /// failure path calls `rollback` and success calls `commit_frame`. The gather maps are released
-/// with `drop_indices` once the candidate frame exists, before the filter allocates; the side
-/// frames stay until commit because the metrics read their row counts. `candidate_rows` and
+/// with `drop_indices` once the candidate frame exists, before the filter allocates, except the
+/// left map of a semi join, which the candidate holds as a column; the side frames stay until
+/// commit because the metrics read their row counts and a semi join gathers its output from the
+/// left frame. `candidate_rows` and
 /// `expected_index_bytes` come from the preflight, and the gathered values are compared with them
 /// in debug builds only. The filter runs under a budget token for `join_residual_filter_output`,
 /// which shares the stream's allocator member and does not change the grant. Its failures carry the
@@ -84,12 +92,14 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         },
     };
     let (left, right) = txn.sides();
+    // The candidate holds every key-matched pair, for a semi join too, so it
+    // is gathered with an inner join's order-column layout.
     let candidate = match txn.indices().materialize_output(
         &left.frame,
         &right.frame,
         overrides,
         &residual_candidate.projection,
-        node.spec.join_type.clone(),
+        JoinType::Inner,
         node.spec.datafusion_order_preserved_side,
     ) {
         Ok(candidate) => candidate,
@@ -97,6 +107,16 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             txn.rollback();
             return Err(error);
         },
+    };
+    let candidate = match &residual_candidate.left_row_name {
+        Some(left_row_name) => match with_left_gather_map(candidate, left_row_name, txn.indices(), node) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                txn.rollback();
+                return Err(error);
+            },
+        },
+        None => candidate,
     };
     let candidate_output_rows = candidate.num_rows() as u64;
     debug_assert_eq!(candidate_output_rows, candidate_rows);
@@ -123,43 +143,88 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             return Err(error);
         },
     };
-    let predicate = match lower_expr(&residual_candidate.predicate) {
-        Ok(predicate) => predicate,
-        Err(error) => {
-            txn.rollback();
-            return Err(error);
-        },
-    };
     let filter_overrides = token.exec();
-    let filtered = match candidate.on(filter_overrides).filter_expr(predicate) {
-        Ok(filtered) => filtered,
-        Err(error) => {
-            txn.rollback();
-            return Err(attach_budget_token_failure_facts(
-                cudf_query_error(
-                    "query_engine.bounded.join.one_shot_residual_filter",
-                    "failed to filter compiled one-shot residual join candidates",
-                    error,
+    // Each conjunct filters only the pairs the earlier ones keep, so a checked
+    // operation never evaluates a pair that an earlier conjunct rejects.
+    // `JoinSpec::residual_predicate` states this order, and lowering leaves
+    // conjuncts unguarded because of it.
+    let mut filtered = candidate;
+    for conjunct in residual_candidate.predicate.conjuncts() {
+        if filtered.num_rows() == 0 {
+            break;
+        }
+        let predicate = match lower_expr(conjunct) {
+            Ok(predicate) => predicate,
+            Err(error) => {
+                txn.rollback();
+                return Err(error);
+            },
+        };
+        filtered = match filtered.on(filter_overrides).filter_expr(predicate) {
+            Ok(filtered) => filtered,
+            Err(error) => {
+                txn.rollback();
+                return Err(attach_budget_token_failure_facts(
+                    cudf_query_error(
+                        "query_engine.bounded.join.one_shot_residual_filter",
+                        "failed to filter compiled one-shot residual join candidates",
+                        error,
+                    )
+                    .with_fact("join_type", &node.spec.join_type)
+                    .with_fact("key_count", node.spec.keys.len())
+                    .with_fact("build_side", node.spec.build_side),
+                    &token,
+                ));
+            },
+        };
+    }
+    let output = if let Some(left_row_name) = &residual_candidate.left_row_name {
+        let (left, right) = txn.sides();
+        let matched_left_rows = filtered
+            .series(left_row_name)
+            .and_then(|rows| rows.on(filter_overrides).unique())
+            .map_err(|error| {
+                attach_budget_token_failure_facts(
+                    cudf_query_error(
+                        "query_engine.bounded.join.one_shot_residual_semi_rows",
+                        "failed to collect the left rows of passing compiled one-shot residual semi join pairs",
+                        error,
+                    )
+                    .with_fact("join_type", &node.spec.join_type),
+                    &token,
                 )
-                .with_fact("join_type", &node.spec.join_type)
-                .with_fact("key_count", node.spec.keys.len())
-                .with_fact("build_side", node.spec.build_side),
-                &token,
-            ));
-        },
-    };
-    let mut final_output_names = residual_candidate.final_output_names;
-    final_output_names.extend(datafusion_order_columns(&filtered));
-    let output = match filtered.select(final_output_names.iter().map(String::as_str)) {
-        Ok(output) => output,
-        Err(error) => {
-            txn.rollback();
-            return Err(cudf_query_error(
-                "query_engine.bounded.join.one_shot_residual_output_projection",
-                "failed to project compiled one-shot residual join output columns",
-                error,
-            ));
-        },
+            })
+            .and_then(|rows| {
+                CompiledJoinIndices::LeftOnly(DataFrameJoinIndices::from_series(rows)).materialize_output(
+                    &left.frame,
+                    &right.frame,
+                    filter_overrides,
+                    &node.spec.output_projection,
+                    node.spec.join_type.clone(),
+                    node.spec.datafusion_order_preserved_side,
+                )
+            });
+        match matched_left_rows {
+            Ok(output) => output,
+            Err(error) => {
+                txn.rollback();
+                return Err(error);
+            },
+        }
+    } else {
+        let mut final_output_names = residual_candidate.final_output_names;
+        final_output_names.extend(datafusion_order_columns(&filtered));
+        match filtered.select(final_output_names.iter().map(String::as_str)) {
+            Ok(output) => output,
+            Err(error) => {
+                txn.rollback();
+                return Err(cudf_query_error(
+                    "query_engine.bounded.join.one_shot_residual_output_projection",
+                    "failed to project compiled one-shot residual join output columns",
+                    error,
+                ));
+            },
+        }
     };
     execution.metrics().add_operator_time(timer.elapsed());
     let output_rows = output.num_rows() as u64;
@@ -193,16 +258,23 @@ pub(super) struct OneShotResidualCandidateProjection {
     projection: Vec<JoinOutputColumn>,
     predicate: Expr,
     final_output_names: Vec<String>,
+    /// The generated column of a semi join's candidate that holds each pair's left row index.
+    left_row_name: Option<String>,
 }
 
-/// Plans the candidate frame: the node's output projection followed by one generated column for
-/// each input column the residual reads, the residual rewritten onto those generated names, and the
-/// output names to keep after filtering. Fails with `UnsupportedExpression` when the residual
-/// references a column that is not input-qualified.
+/// Plans the candidate frame, the residual rewritten onto its generated column names, and the
+/// output names to keep after filtering. An inner join's candidate is its output projection
+/// followed by one generated column for each input column the residual reads. A semi join's
+/// candidate holds the residual columns and names a column for the left gather map, and keeps no
+/// output names: its output is gathered from the left input. Fails with `UnsupportedExpression`
+/// when the residual references a column that is not input-qualified.
 pub(super) fn one_shot_residual_candidate_projection(node: &JoinNode) -> Result<OneShotResidualCandidateProjection> {
     let residual_columns = residual_input_columns(node)?;
-    let mut projection = node.spec.output_projection.clone();
-    let final_output_names = node.spec.output_projection.iter().map(|column| column.output_name.clone()).collect();
+    // `validate_one_shot_equi_join` admits a semi join here only when it
+    // builds its right side and has a residual.
+    let semi = node.spec.join_type == JoinType::LeftSemi;
+    let mut projection = if semi { Vec::new() } else { node.spec.output_projection.clone() };
+    let final_output_names = projection.iter().map(|column| column.output_name.clone()).collect();
     let mut used_names = projection.iter().map(|column| column.output_name.clone()).collect::<BTreeSet<_>>();
     let mut residual_output_names = BTreeMap::new();
 
@@ -233,7 +305,34 @@ pub(super) fn one_shot_residual_candidate_projection(node: &JoinNode) -> Result<
         &residual_output_names,
     )?;
 
-    Ok(OneShotResidualCandidateProjection { projection, predicate, final_output_names })
+    let left_row_name =
+        semi.then(|| unique_candidate_name("__algeon_native_one_shot_residual_left_row".to_string(), &mut used_names));
+    Ok(OneShotResidualCandidateProjection { projection, predicate, final_output_names, left_row_name })
+}
+
+/// Appends the left gather map to a semi join's candidate frame as `name`, so that filtering the
+/// candidate keeps each passing pair's left row index.
+fn with_left_gather_map(
+    candidate: DataFrame,
+    name: &str,
+    indices: &CompiledJoinIndices,
+    node: &JoinNode,
+) -> Result<DataFrame> {
+    let CompiledJoinIndices::Pair { left, .. } = indices else {
+        return Err(bounded_invariant_violation(
+            "compiled one-shot residual semi join requires equality pair gather maps",
+            "compiled_join_strategy_unsupported",
+        )
+        .with_fact("join_type", &node.spec.join_type));
+    };
+    candidate.with_column(name, left.indices().clone()).map_err(|error| {
+        cudf_query_error(
+            "query_engine.bounded.join.one_shot_residual_semi_rows",
+            "failed to attach the left gather map to compiled one-shot residual semi join candidates",
+            error,
+        )
+        .with_fact("join_type", &node.spec.join_type)
+    })
 }
 
 /// Returns a generated candidate column name that is unique within `used_names`, which records it.
@@ -252,7 +351,12 @@ pub(super) fn residual_candidate_column_name(
     if sanitized.is_empty() {
         sanitized.push_str("column");
     }
-    let base = format!("__algeon_native_one_shot_residual_{side_label}_{index}_{sanitized}");
+    unique_candidate_name(format!("__algeon_native_one_shot_residual_{side_label}_{index}_{sanitized}"), used_names)
+}
+
+/// `base`, or `base` with the first numeric suffix that keeps it unique within `used_names`, which
+/// records the returned name.
+fn unique_candidate_name(base: String, used_names: &mut BTreeSet<String>) -> String {
     let mut candidate = base.clone();
     let mut suffix = 0_usize;
     while !used_names.insert(candidate.clone()) {

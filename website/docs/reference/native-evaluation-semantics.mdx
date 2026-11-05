@@ -57,7 +57,9 @@ WHERE n >= 0 AND total / n > 1          -- fails on a row with n = 0, as on Data
 - A nested `CASE` applies the restrictions of every enclosing branch.
 - Each `WHEN` condition, or `AND`/`OR` branch, that performs division, type
   casting, or timestamp arithmetic doubles the constraints applied to subsequent
-  expressions. A chain of about eight such conditions stays on DataFusion.
+  expressions. A chain of about eight such conditions stays on DataFusion. In
+  a join condition evaluated after matching (see below), the limit applies
+  within each top-level `AND` operand.
 - Native evaluation is more permissive in one case: DataFusion skips the right
   operand only on some batches, and when it evaluates a decided row that fails,
   DataFusion fails the query while native evaluation returns the result.
@@ -75,12 +77,20 @@ fail, and the extra rows change no result. Integer `/` and `%` by a literal
 other than `0` and `-1`, and floating-point `%`, can move this way.
 
 A part that reads one input and contains a checked operation stays in the
-condition. When the condition belongs to an inner join with equality keys and
-contains a decimal `/`, it is evaluated after matching, on the matched pairs
-only, with the guards described above. Any other condition with a checked
-operation keeps the join on DataFusion. Integer `/` or `%` with a column
-divisor, `%` over both inputs, and timestamp `+` or `-` keep it there in every
-join.
+condition. The condition is evaluated after matching, on the matched pairs
+only, with the guards described above, when it contains a decimal `/` or a
+cast to a type other than `BIGINT`, `BIGINT UNSIGNED` and `DOUBLE`, and
+belongs to an inner join or a semi join with equality keys. Its top-level
+`AND` operands are evaluated in order, each on the pairs the earlier ones
+keep, so an operand needs no guard built from the operands before it.
+`EXISTS`, `IN` and a correlated scalar subquery comparison plan to a semi
+join, which keeps each left row with at least one passing pair. Any other
+condition with a checked operation keeps the join on DataFusion. That includes
+a checked cast to `BIGINT` or `BIGINT UNSIGNED` without a decimal `/` or
+another such cast, and these conditions in an anti, outer or mark join or in
+a join without equality keys. Integer `/` or `%` with a
+column divisor, `%` over both inputs, and timestamp `+` or `-` keep it there
+in every join.
 
 <div className="fineprint">
 

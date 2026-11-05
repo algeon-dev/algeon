@@ -2,9 +2,10 @@
 //!
 //! `choose_join_strategy` in query-planning picks this strategy for a keyed join that is small on
 //! both sides but has key types the reusable table cannot prebuild (nested types), for a left join
-//! with a small preserved probe and unique build keys, and for an inner join whose residual cannot
-//! run inside the mixed kernel (see `residual.rs`). Inner joins accept a residual. Left joins
-//! (build side right) and full joins do not, as `validate_one_shot_equi_join` enforces.
+//! with a small preserved probe and unique build keys, and for an inner join or a right-building
+//! semi join whose residual cannot run inside the mixed kernel (see `residual.rs`). Those two accept
+//! a residual. Left joins (build side right) and full joins do not, as `validate_one_shot_equi_join`
+//! enforces.
 //!
 //! The cuDF sequence, in `materialize_compiled_keyed_equality_join_indices_with_preflight`, builds
 //! a hash table over the build keys, counts the output rows with a probe-size call, and probes
@@ -16,6 +17,8 @@
 //! table across chunks.
 
 use std::time::Instant;
+
+use query_planning::capability::keyed_join_filters_matched_pairs;
 
 use super::{
     BoundedCompiledJoinProbeState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
@@ -46,15 +49,20 @@ pub(in crate::exec::bounded) struct OneShotEquiJoinFrameStreamProbeState {
 /// failure here is an invariant violation (`compiled_join_strategy_unsupported`).
 pub(super) fn validate_one_shot_equi_join(node: &JoinNode) -> Result<()> {
     validate_executable_join_subset(node)?;
-    if matches!(node.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
-        && !node.spec.keys.is_empty()
-        && (node.spec.residual_predicate.is_none() || node.spec.join_type == JoinType::Inner)
-        && (node.spec.join_type != JoinType::Left || node.spec.build_side == JoinSide::Right)
-    {
+    // A residual runs as the filter over key-matched pairs (`residual.rs`), so
+    // the probe-size, probe and candidate steps can treat a semi join here as
+    // a right-building semi join with a residual.
+    let supported = if node.spec.residual_predicate.is_some() {
+        keyed_join_filters_matched_pairs(&node.spec.join_type, node.spec.build_side)
+    } else {
+        matches!(node.spec.join_type, JoinType::Inner | JoinType::Full)
+            || (node.spec.join_type == JoinType::Left && node.spec.build_side == JoinSide::Right)
+    };
+    if !node.spec.keys.is_empty() && supported {
         return Ok(());
     }
     Err(bounded_invariant_violation(
-        "compiled one-shot equi join execution supports keyed inner joins with optional residual predicates and keyed left/full joins without residual predicates",
+        "compiled one-shot equi join execution supports keyed inner joins with optional residual predicates, keyed left/full joins without residual predicates and keyed right-building semi joins with residual predicates",
         "compiled_join_strategy_unsupported",
     )
     .with_fact("join_type", &node.spec.join_type)

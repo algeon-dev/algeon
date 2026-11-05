@@ -81,6 +81,7 @@ query_planning::capability::join::KeyedHashJoinStrategyInputFacts.reusable_prebu
 query_planning::capability::keyed_hash_join_build_is_large	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::keyed_hash_join_strategy_input_facts_for_plan	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::capability::keyed_join_filters_matched_pairs	cross-crate	query-planning capability	prod: algeon-datafusion, algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::chunk::assembly	cross-crate	query-planning chunk	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::chunk::assembly::append_row_group_chunks	cross-crate	query-planning chunk::assembly	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::chunk::assembly::planned_row_groups	cross-crate	query-planning chunk::assembly	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it

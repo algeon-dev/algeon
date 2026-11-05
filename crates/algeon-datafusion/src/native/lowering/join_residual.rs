@@ -12,6 +12,7 @@ use datafusion::{
         expressions::{
             BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal, NotExpr,
         },
+        split_conjunction,
     },
     physical_plan::joins::utils::JoinFilter,
 };
@@ -133,8 +134,8 @@ pub(super) fn lower_join_filter(
             Ok((Arc::clone(&site.expr), column))
         })
         .collect::<Result<Vec<_>, LoweringFailure>>()?;
-    let predicate = if contract.contains_decimal_division() {
-        // Evaluate checked arithmetic after matching keys. Pre-join
+    let predicate = if contract.evaluates_after_matching() {
+        // Evaluate checked operations after matching keys. Pre-join
         // materialization would also evaluate rows with no matching key.
         let mut required = BTreeSet::new();
         collect_required_field_indices(filter.expression(), filter.schema(), &mut required)?;
@@ -152,7 +153,22 @@ pub(super) fn lower_join_filter(
                 Ok((index, column))
             })
             .collect::<Result<_, LoweringFailure>>()?;
-        lower_validated_join_residual_expr(contract.expression(), &columns, &substitutions)?
+        // The executor filters the matched pairs by each top-level conjunct in
+        // turn, on the pairs the earlier ones keep (`JoinSpec::residual_predicate`).
+        // A conjunct therefore lowers on its own, and only the guards inside
+        // it restrict its checked operations. Guarding each one by the
+        // conjuncts before it would double the lowered size per conjunct.
+        let conjuncts = split_conjunction(filter.expression())
+            .into_iter()
+            .map(|conjunct| {
+                let conjunct = contract.expression().trusted_descendant(conjunct);
+                lower_validated_join_residual_expr(&conjunct, &columns, &substitutions)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        conjuncts
+            .into_iter()
+            .reduce(|left, right| NativeExpr::binary(left, NativeBinaryOp::And, right))
+            .expect("a predicate has at least one conjunct")
     } else {
         lower_join_filter_expr(filter.expression(), context, &substitutions, &mut left_required, &mut right_required)?
     };
@@ -389,7 +405,7 @@ fn side_native_name<'a>(
 mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::{
-        common::{JoinSide, ScalarValue},
+        common::{JoinSide as DataFusionJoinSide, ScalarValue},
         config::ConfigOptions,
         functions::{string, unicode},
         logical_expr::{Operator, ScalarUDF},
@@ -401,6 +417,7 @@ mod tests {
         },
         physical_plan::joins::utils::{ColumnIndex, JoinFilter},
     };
+    use query_planning::plan::{JoinSide as NativeJoinSide, JoinType as NativeJoinType};
 
     use super::*;
     use crate::native::{expression_contract::validate_join_residual, lowering::join::CanonicalJoinKind};
@@ -440,11 +457,19 @@ mod tests {
     ) -> LoweredJoinResidual {
         let filter = JoinFilter::new(
             expr,
-            vec![ColumnIndex { index: 0, side: JoinSide::Left }, ColumnIndex { index: 0, side: JoinSide::Right }],
+            vec![
+                ColumnIndex { index: 0, side: DataFusionJoinSide::Left },
+                ColumnIndex { index: 0, side: DataFusionJoinSide::Right },
+            ],
             Arc::clone(filter_schema),
         );
-        let validated = validate_join_residual(&filter, left_schema, right_schema)
-            .unwrap_or_else(|error| panic!("{label} must validate: {error:?}"));
+        let validated = validate_join_residual(
+            &filter,
+            left_schema,
+            right_schema,
+            Some((&NativeJoinType::Inner, NativeJoinSide::Right)),
+        )
+        .unwrap_or_else(|error| panic!("{label} must validate: {error:?}"));
         let lowered = lower_join_filter(&validated, CanonicalJoin::new(CanonicalJoinKind::Inner, false), None)
             .unwrap_or_else(|error| panic!("{label} must lower: {error:?}"));
         assert!(!lowered.left_required.is_empty(), "{label} must retain a left input dependency");

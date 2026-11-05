@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, IntervalMonthDayNanoType, Schema, TimeUnit};
 use datafusion::{
-    common::{JoinSide, Result as DataFusionResult, ScalarValue},
+    common::{JoinSide as DataFusionJoinSide, Result as DataFusionResult, ScalarValue},
     config::ConfigOptions,
     functions::{core, datetime, math, regex, string, unicode},
     functions_aggregate::median::Median,
@@ -19,9 +19,12 @@ use datafusion::{
     },
     physical_plan::joins::utils::{ColumnIndex, JoinFilter},
 };
-use query_planning::expr::{
-    AggregateFunction as NativeAggregateFunction, DatePart as NativeDatePart, Expr as NativeExpr,
-    LiteralValue as NativeLiteralValue, StringLengthUnit, UnaryMathOp,
+use query_planning::{
+    expr::{
+        AggregateFunction as NativeAggregateFunction, DatePart as NativeDatePart, Expr as NativeExpr,
+        LiteralValue as NativeLiteralValue, StringLengthUnit, UnaryMathOp,
+    },
+    plan::{JoinSide as NativeJoinSide, JoinType as NativeJoinType},
 };
 
 use super::{
@@ -29,6 +32,10 @@ use super::{
     native_aggregate_function_kind, validate_join_residual, validate_physical_expr_contract,
 };
 use crate::{capability::CapabilityReason, native::lowering::lower_physical_expr_for_test};
+
+/// A keyed inner join that builds its right side, which can filter its matched pairs.
+const KEYED_INNER_JOIN: Option<(&NativeJoinType, NativeJoinSide)> =
+    Some((&NativeJoinType::Inner, NativeJoinSide::Right));
 
 fn scalar_function(
     name: &str,
@@ -83,11 +90,11 @@ fn join_residual_filter(expr: Arc<dyn PhysicalExpr>, filter_schema: &Arc<Schema>
     JoinFilter::new(
         expr,
         vec![
-            ColumnIndex { index: 0, side: JoinSide::Left },
-            ColumnIndex { index: 1, side: JoinSide::Left },
-            ColumnIndex { index: 2, side: JoinSide::Left },
-            ColumnIndex { index: 0, side: JoinSide::Right },
-            ColumnIndex { index: 1, side: JoinSide::Right },
+            ColumnIndex { index: 0, side: DataFusionJoinSide::Left },
+            ColumnIndex { index: 1, side: DataFusionJoinSide::Left },
+            ColumnIndex { index: 2, side: DataFusionJoinSide::Left },
+            ColumnIndex { index: 0, side: DataFusionJoinSide::Right },
+            ColumnIndex { index: 1, side: DataFusionJoinSide::Right },
         ],
         Arc::clone(filter_schema),
     )
@@ -158,12 +165,12 @@ fn join_residual_moves_single_input_expressions_outside_the_ast_before_the_join(
     ];
     for (label, (site, residual)) in cases {
         let filter = join_residual_filter(residual, &schema);
-        let validated = validate_join_residual(&filter, &left_schema, &right_schema)
+        let validated = validate_join_residual(&filter, &left_schema, &right_schema, KEYED_INNER_JOIN)
             .unwrap_or_else(|error| panic!("{label} must validate: {error:?}"));
         let sites = validated.materializations();
         assert_eq!(sites.len(), 1, "{label}: {sites:?}");
         assert!(Arc::ptr_eq(&sites[0].expr, &site), "{label} materializes {:?}", sites[0].expr);
-        assert_eq!(sites[0].side, JoinSide::Left, "{label}");
+        assert_eq!(sites[0].side, DataFusionJoinSide::Left, "{label}");
     }
 
     let ast_only = binary(
@@ -175,7 +182,7 @@ fn join_residual_moves_single_input_expressions_outside_the_ast_before_the_join(
     )
     .unwrap();
     let filter = join_residual_filter(ast_only, &schema);
-    let validated = validate_join_residual(&filter, &left_schema, &right_schema).unwrap();
+    let validated = validate_join_residual(&filter, &left_schema, &right_schema, KEYED_INNER_JOIN).unwrap();
     assert!(validated.materializations().is_empty(), "the AST evaluates arithmetic, comparison and NOT");
 }
 
@@ -186,17 +193,41 @@ fn join_residual_keeps_operations_that_can_fail_out_of_pre_join_columns() {
     let to_decimal = |name: &str, precision: u8| -> Arc<dyn PhysicalExpr> {
         Arc::new(CastExpr::new(column(name), DataType::Decimal128(precision, 0), None))
     };
-    let narrowing_subject =
-        ExpressionRejectionSubject::Cast { source: DataType::Int32, target: DataType::Decimal128(4, 0) };
+    let to_unsigned =
+        |name: &str| -> Arc<dyn PhysicalExpr> { Arc::new(CastExpr::new(column(name), DataType::UInt64, None)) };
+    let validate = |residual: Arc<dyn PhysicalExpr>| {
+        let filter = join_residual_filter(residual, &schema);
+        validate_join_residual(&filter, &left_schema, &right_schema, KEYED_INNER_JOIN)
+            .map(|validated| (validated.evaluates_after_matching(), validated.materializations().len()))
+    };
 
     // An Int32 does not always fit four digits, and a pre-join column would
-    // also cast rows that match no key.
+    // also cast rows that match no key. The cast stays in the residual, which
+    // runs as the checked filter over matched pairs; the cast that always
+    // fits still moves before the join.
     let narrowing = binary(to_decimal("n", 4), Operator::Eq, to_decimal("r", 10), &schema).unwrap();
-    let rejection =
-        validate_join_residual(&join_residual_filter(narrowing, &schema), &left_schema, &right_schema).unwrap_err();
-    assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualCastTarget);
-    assert_eq!(rejection.subject(), &narrowing_subject);
-    assert_eq!(rejection.sql(), Some("CAST(n AS Decimal128(4, 0))"));
+    assert_eq!(validate(Arc::clone(&narrowing)).unwrap(), (true, 1));
+
+    // Query planning filters the matched pairs of a keyed inner join and of a
+    // semi join that builds its right side only. Any other join reports the
+    // cast that keeps it on DataFusion.
+    let filter = join_residual_filter(narrowing, &schema);
+    let semi = Some((&NativeJoinType::LeftSemi, NativeJoinSide::Right));
+    assert!(validate_join_residual(&filter, &left_schema, &right_schema, semi).unwrap().evaluates_after_matching());
+    for join in [
+        Some((&NativeJoinType::Left, NativeJoinSide::Right)),
+        Some((&NativeJoinType::LEFT_ANTI, NativeJoinSide::Right)),
+        Some((&NativeJoinType::LeftSemi, NativeJoinSide::Left)),
+        None,
+    ] {
+        let rejection = validate_join_residual(&filter, &left_schema, &right_schema, join).unwrap_err();
+        assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualCastTarget, "{join:?}");
+        assert_eq!(
+            rejection.subject(),
+            &ExpressionRejectionSubject::Cast { source: DataType::Int32, target: DataType::Decimal128(4, 0) },
+            "{join:?}"
+        );
+    }
 
     let guarded: Arc<dyn PhysicalExpr> = Arc::new(
         CaseExpr::try_new(
@@ -210,21 +241,42 @@ fn join_residual_keeps_operations_that_can_fail_out_of_pre_join_columns() {
         .unwrap(),
     );
     let guarded = binary(guarded, Operator::Eq, to_decimal("r", 10), &schema).unwrap();
-    let rejection =
-        validate_join_residual(&join_residual_filter(guarded, &schema), &left_schema, &right_schema).unwrap_err();
-    assert_eq!(rejection.subject(), &narrowing_subject, "the rejection names the cast inside the CASE");
+    assert_eq!(validate(guarded).unwrap(), (true, 1), "the CASE around the narrowing cast stays in the residual");
 
-    // The checked post-join filter of a decimal division evaluates matched
-    // pairs only, so the narrowing cast stays in the residual there.
     let left_cast = to_decimal("n", 4);
     let right_cast = to_decimal("r", 10);
     let quotient = binary(Arc::clone(&left_cast), Operator::Divide, Arc::clone(&right_cast), &schema).unwrap();
     let post_join = binary(quotient, Operator::Gt, lit(ScalarValue::Decimal128(Some(1), 10, 0)), &schema).unwrap();
     let filter = join_residual_filter(post_join, &schema);
-    let validated = validate_join_residual(&filter, &left_schema, &right_schema).unwrap();
+    let validated = validate_join_residual(&filter, &left_schema, &right_schema, KEYED_INNER_JOIN).unwrap();
+    assert!(validated.evaluates_after_matching());
     let sites = validated.materializations();
     assert_eq!(sites.len(), 1, "{sites:?}");
     assert!(Arc::ptr_eq(&sites[0].expr, &right_cast), "only the cast that always fits moves before the join");
+
+    // The cuDF AST casts to BIGINT UNSIGNED without the range check, so a
+    // negative `n` would not fail. Nothing else in this residual runs it as
+    // the checked filter.
+    let unsigned = binary(to_unsigned("n"), Operator::Eq, to_unsigned("r"), &schema).unwrap();
+    let rejection = validate(Arc::clone(&unsigned)).unwrap_err();
+    assert_eq!(rejection.capability(), ExpressionCapability::CastPair);
+    assert_eq!(
+        rejection.subject(),
+        &ExpressionRejectionSubject::Cast { source: DataType::Int32, target: DataType::UInt64 }
+    );
+    assert_eq!(rejection.sql(), Some("CAST(n AS UInt64)"));
+
+    let beside_narrowing = binary(
+        unsigned,
+        Operator::And,
+        binary(to_decimal("n", 4), Operator::Eq, to_decimal("r", 10), &schema).unwrap(),
+        &schema,
+    )
+    .unwrap();
+    assert!(
+        validate(beside_narrowing).unwrap().0,
+        "the checked filter of the narrowing cast also checks the unsigned cast"
+    );
 }
 
 #[test]
@@ -232,7 +284,8 @@ fn join_residual_rejects_cross_input_expressions_neither_evaluator_runs() {
     let (left_schema, right_schema, schema) = join_residual_schemas();
     let column = |name: &str| col(name, &schema).unwrap();
     let validate = |expr: Arc<dyn PhysicalExpr>| {
-        validate_join_residual(&join_residual_filter(expr, &schema), &left_schema, &right_schema).map(|_| ())
+        validate_join_residual(&join_residual_filter(expr, &schema), &left_schema, &right_schema, KEYED_INNER_JOIN)
+            .map(|_| ())
     };
 
     let concatenation = binary(
@@ -298,11 +351,14 @@ fn join_residual_rejects_a_column_index_missing_from_its_declared_side_schema() 
     .unwrap();
     let filter = JoinFilter::new(
         expr,
-        vec![ColumnIndex { index: 1, side: JoinSide::Left }, ColumnIndex { index: 0, side: JoinSide::Right }],
+        vec![
+            ColumnIndex { index: 1, side: DataFusionJoinSide::Left },
+            ColumnIndex { index: 0, side: DataFusionJoinSide::Right },
+        ],
         filter_schema,
     );
 
-    let rejection = validate_join_residual(&filter, &left_schema, &right_schema).unwrap_err();
+    let rejection = validate_join_residual(&filter, &left_schema, &right_schema, KEYED_INNER_JOIN).unwrap_err();
 
     assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualSideSchema);
     assert_eq!(rejection.capability_reason(), CapabilityReason::UnsupportedExpression);
@@ -819,7 +875,10 @@ fn join_residual_admits_decimal_division_for_checked_post_join_evaluation() {
     let filter = |expr: Arc<dyn PhysicalExpr>| {
         JoinFilter::new(
             expr,
-            vec![ColumnIndex { index: 0, side: JoinSide::Left }, ColumnIndex { index: 0, side: JoinSide::Right }],
+            vec![
+                ColumnIndex { index: 0, side: DataFusionJoinSide::Left },
+                ColumnIndex { index: 0, side: DataFusionJoinSide::Right },
+            ],
             Arc::clone(&filter_schema),
         )
     };
@@ -830,7 +889,24 @@ fn join_residual_admits_decimal_division_for_checked_post_join_evaluation() {
         binary(quotient, Operator::Gt, lit(ScalarValue::Decimal128(Some(100), 10, 2)), &filter_schema).unwrap();
 
     let filter = filter(comparison);
-    validate_join_residual(&filter, &left_schema, &right_schema).expect("decimal residual uses checked GPU evaluation");
+    let validated = validate_join_residual(&filter, &left_schema, &right_schema, KEYED_INNER_JOIN)
+        .expect("decimal residual uses checked GPU evaluation");
+    assert!(validated.evaluates_after_matching());
+
+    // Only the filter over matched pairs checks the division. A join without
+    // keys, or one that keeps unmatched rows, would run it in the cuDF AST.
+    for join in [None, Some((&NativeJoinType::Left, NativeJoinSide::Right))] {
+        let rejection = validate_join_residual(&filter, &left_schema, &right_schema, join).unwrap_err();
+        assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualShape, "{join:?}");
+        assert!(
+            matches!(
+                rejection.subject(),
+                ExpressionRejectionSubject::BinaryOperator { operator: Operator::Divide, .. }
+            ),
+            "{join:?}: {:?}",
+            rejection.subject()
+        );
+    }
 }
 
 #[test]
@@ -851,15 +927,16 @@ fn join_residual_ast_rejects_integer_division_and_casts_it_cannot_evaluate_or_ch
         JoinFilter::new(
             expr,
             vec![
-                ColumnIndex { index: 0, side: JoinSide::Left },
-                ColumnIndex { index: 0, side: JoinSide::Right },
-                ColumnIndex { index: 1, side: JoinSide::Left },
+                ColumnIndex { index: 0, side: DataFusionJoinSide::Left },
+                ColumnIndex { index: 0, side: DataFusionJoinSide::Right },
+                ColumnIndex { index: 1, side: DataFusionJoinSide::Left },
             ],
             Arc::clone(&filter_schema),
         )
     };
-    let validate =
-        |expr: Arc<dyn PhysicalExpr>| validate_join_residual(&filter(expr), &left_schema, &right_schema).map(|_| ());
+    let validate = |expr: Arc<dyn PhysicalExpr>| {
+        validate_join_residual(&filter(expr), &left_schema, &right_schema, KEYED_INNER_JOIN).map(|_| ())
+    };
 
     // The AST wraps timestamp arithmetic where Arrow fails the query.
     let elapsed =
