@@ -56,7 +56,7 @@ pub(crate) fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
                 )
                 .with_fact("target_type", format!("{target_type:?}"))
             })?;
-            Ok(cast_to_arrow_type(lower_expr_with_expected_type(expr, Some(target_type))?, target_type, target_dtype))
+            Ok(cast_to_arrow_type(lower_expr(expr)?, target_type, target_dtype))
         },
         Expr::TryCast { expr, target_type } => lower_try_cast_expr(expr, target_type),
         Expr::Binary { left, op, right, output_type } => lower_binary_expr(left, *op, right, output_type.as_ref()),
@@ -148,7 +148,7 @@ fn lower_expr_with_expected_type(expr: &Expr, expected_type: Option<&ArrowDataTy
                 )
                 .with_fact("target_type", format!("{target_type:?}"))
             })?;
-            Ok(cast_to_arrow_type(lower_expr_with_expected_type(expr, Some(target_type))?, target_type, target_dtype))
+            Ok(cast_to_arrow_type(lower_expr(expr)?, target_type, target_dtype))
         },
         Expr::TryCast { expr, target_type } => lower_try_cast_expr(expr, target_type),
         Expr::Binary { left, op, right, output_type } => {
@@ -749,6 +749,8 @@ fn lower_date_trunc(field: DatePart, expr: &Expr, output_type: &ArrowDataType) -
 
 #[cfg(test)]
 mod tests {
+    use arrow::datatypes::Field;
+
     use super::*;
 
     fn int64_literals(count: usize) -> Vec<Expr> {
@@ -783,6 +785,25 @@ mod tests {
             matches!(lowered, CudfExpr::BinaryOp { .. }),
             "small filter IN list should still lower to a row-predicate-friendly tree"
         );
+    }
+
+    #[test]
+    fn cast_to_decimal_keeps_an_undeclared_division_in_its_operand_type() {
+        let decimal = ArrowDataType::Decimal128(5, 1);
+        let quotient = Expr::binary(Expr::column("x"), BinaryOp::Divide, Expr::column("y"));
+        let cast = Expr::cast(quotient, decimal.clone());
+        let output = ProjectionOutput::new(cast.clone(), Field::new("r", decimal, true));
+
+        for lowered in [lower_projection_output_expr(&output).unwrap(), lower_expr(&cast).unwrap()] {
+            let CudfExpr::Cast { input, .. } = lowered else {
+                panic!("decimal cast should stay a cast: {}", expr_kind(&lowered));
+            };
+            assert!(
+                matches!(*input, CudfExpr::BinaryOp { op: BinaryOperator::Div, .. }),
+                "the cast target must not type the division it casts: {}",
+                expr_kind(&input)
+            );
+        }
     }
 
     fn expr_kind(expr: &CudfExpr) -> &'static str {

@@ -206,8 +206,10 @@ fn is_string_arrow_type(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
 }
 
-/// The cast target doubles as the expected type of a nested decimal division,
-/// so `CAST(a / b AS DECIMAL(p, s))` declares the division's result scale.
+/// The operand is validated without an expected type, so a cast target never
+/// declares the result type of the expression it casts. `CAST(x / y AS
+/// DECIMAL(p, s))` over `Float64` operands divides in `Float64`, and a decimal
+/// division under a cast must declare its own output type.
 fn validate_cast_expr(
     expr: &Expr,
     target_type: &ArrowDataType,
@@ -215,7 +217,7 @@ fn validate_cast_expr(
     available_columns: &BTreeSet<String>,
     ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
-    let source_type = validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns, ctx)?;
+    let source_type = validate_expr(expr, input_schema, available_columns, ctx)?;
     if !is_supported_arrow_cast(&source_type, target_type, ctx.backend()) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
@@ -237,10 +239,10 @@ pub(crate) fn validate_projection_output_expr(
     validate_expr_with_expected_type(&output.expr, Some(output.field.data_type()), input_schema, available_columns, ctx)
 }
 
-/// [`validate_expr`] with the type a projection field or enclosing cast
-/// declares for the expression. Only decimal division consumes the hint,
-/// because its result scale is a frontend contract the backend cannot infer;
-/// the hint passes through aliases and casts and is dropped everywhere else.
+/// [`validate_expr`] with the type a projection field declares for the
+/// expression. Only decimal division consumes the hint, because its result
+/// scale is a frontend contract the backend cannot infer; the hint passes
+/// through aliases and is dropped everywhere else, including at a cast.
 fn validate_expr_with_expected_type(
     expr: &Expr,
     expected_type: Option<&ArrowDataType>,

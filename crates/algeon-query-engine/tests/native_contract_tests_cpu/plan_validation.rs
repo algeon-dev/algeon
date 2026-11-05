@@ -152,6 +152,26 @@ fn validate_local_parquet_source_uses_output_schema_override_for_available_colum
         .expect("logical output alias should be available downstream");
 }
 
+#[test]
+fn validate_rejects_a_decimal_division_whose_output_type_only_a_cast_declares() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", ArrowDataType::Decimal128(10, 2), false),
+        Field::new("b", ArrowDataType::Decimal128(10, 2), false),
+    ]));
+    let decimal = ArrowDataType::Decimal128(5, 1);
+    let quotient = Expr::cast(Expr::binary(Expr::column("a"), BinaryOp::Divide, Expr::column("b")), decimal.clone());
+    let output_schema = Arc::new(Schema::new(vec![Field::new("r", decimal, true)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(schema)));
+    let projection = builder.add_projection(source, projection_outputs(vec![quotient], output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+
+    let error = validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
+        .expect_err("the cast target is not the result type of the decimal division it casts");
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.message(), "native decimal division requires a declared decimal output type");
+}
+
 fn left_deep_zip_range_disjunction(count: usize) -> Expr {
     let mut ranges = (0..count).map(zip_range_predicate);
     let first = ranges.next().expect("test predicate needs at least one range");

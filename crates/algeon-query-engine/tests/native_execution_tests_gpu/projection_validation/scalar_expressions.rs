@@ -1270,12 +1270,62 @@ fn native_query_decimal_casts_fail_the_query_outside_the_target_precision() {
     }
 }
 
+fn native_query_casts_a_float_quotient_to_decimal_rounding_half_away_from_zero() {
+    let input = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, true), Field::new("y", DataType::Float64, true)])),
+        vec![
+            Arc::new(Float64Array::from(vec![
+                Some(7.0),
+                Some(1.0),
+                Some(2.0),
+                Some(-1.0),
+                Some(1.0),
+                Some(-1.0),
+                None,
+                Some(5.0),
+            ])),
+            Arc::new(Float64Array::from(vec![
+                Some(2.0),
+                Some(3.0),
+                Some(3.0),
+                Some(8.0),
+                Some(4.0),
+                Some(4.0),
+                Some(2.0),
+                None,
+            ])),
+        ],
+    )
+    .unwrap();
+    let target = DataType::Decimal128(5, 1);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("out", target.clone(), true)]));
+    let quotient = Expr::binary(Expr::column("x"), BinaryOp::Divide, Expr::column("y"));
+
+    let batch = project_over_parquet(
+        "query-engine-native-decimal-cast-of-float-quotient",
+        input,
+        vec![Expr::cast(quotient, target.clone())],
+        output_schema,
+    )
+    .unwrap();
+
+    // The quotients 3.5, 1/3, 2/3, -1/8, 1/4, -1/4 round at one fractional
+    // digit as DataFusion's CAST does, with ties away from zero.
+    let out = decimal128_array(&batch, 0);
+    assert_eq!(out.data_type(), &target);
+    assert_eq!(out.iter().collect::<Vec<_>>(), [Some(35), Some(3), Some(7), Some(-1), Some(3), Some(-3), None, None]);
+}
+
 #[test]
 fn scalar_expressions_cases_1() {
     run_named_cases(&[
         (
             "projection_validation::scalar_expressions::native_query_decimal_casts_fail_the_query_outside_the_target_precision",
             native_query_decimal_casts_fail_the_query_outside_the_target_precision,
+        ),
+        (
+            "projection_validation::scalar_expressions::native_query_casts_a_float_quotient_to_decimal_rounding_half_away_from_zero",
+            native_query_casts_a_float_quotient_to_decimal_rounding_half_away_from_zero,
         ),
         (
             "projection_validation::scalar_expressions::native_query_floor_and_ceil_match_ieee_rounding",
