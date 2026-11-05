@@ -4,6 +4,7 @@ use super::{
     scalar_derivation::optimize_scalar_aggregate_from_grouped_aggregate,
 };
 use crate::{
+    backend::AnalysisContext,
     error::QueryError,
     optimizer::NativeOptimizerChange,
     plan::{QueryPlan, RewrittenNodes},
@@ -64,6 +65,7 @@ pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
 pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     plan: QueryPlan,
     options: &SharedSubplanMaterializationOptions,
+    ctx: AnalysisContext<'_>,
 ) -> Result<SharedSubplanMaterializationResult, QueryError> {
     if !options.enabled {
         return Ok(SharedSubplanMaterializationResult {
@@ -81,7 +83,7 @@ pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
         change: NativeOptimizerChange::Unchanged,
         diagnostics: SharedSubplanMaterializationDiagnostics::default(),
     };
-    let discovery = discover_shared_subplan_materialization_candidates(&scalar_derivation.plan);
+    let discovery = discover_shared_subplan_materialization_candidates(&scalar_derivation.plan, ctx);
     if discovery.families.is_empty() {
         if scalar_derivation.change.changed() || !scalar_derivation.diagnostics.is_empty() {
             return Ok(scalar_derivation);

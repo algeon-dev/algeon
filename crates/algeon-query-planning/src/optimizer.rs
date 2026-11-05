@@ -31,6 +31,7 @@ mod lineage;
 mod local_parquet_source_reuse;
 mod outer_join_null_rejection;
 mod outer_join_null_rejection_policy;
+mod predicate_factoring;
 mod projection_simplification;
 mod rewrite;
 mod shared_resident_extraction;
@@ -488,6 +489,7 @@ fn run_pass(
                 shared_subplan_materialization::optimize_shared_subplan_materialization_without_scalar_derivation(
                     plan,
                     &options.shared_subplan_materialization,
+                    ctx,
                 )?;
             diagnostics.shared_subplan_materialization.merge(result.diagnostics);
             (result.plan, result.change)

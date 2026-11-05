@@ -438,6 +438,23 @@ impl LocalParquetSource {
         self
     }
 
+    /// Whether a rewrite may replace this source's selection with a wider one
+    /// and re-apply each reader's own selection above the result. A scan limit
+    /// keeps the first rows of whatever the selection admits, so a wider
+    /// selection changes which rows a narrower reader sees, and a count-star
+    /// probe emits row-count weights in place of rows.
+    pub(crate) fn selection_can_widen(&self) -> bool {
+        self.scan_limit.is_none() && !self.count_star_probe
+    }
+
+    /// Replaces the reader predicate. `max_rows` is a bound proven from the
+    /// previous predicate, so it is cleared; diagnostics are rebuilt.
+    pub(crate) fn replace_reader_predicate(&mut self, predicate: Option<Expr>) {
+        self.reader_predicate = predicate;
+        self.max_rows = None;
+        self.refresh_diagnostics();
+    }
+
     /// Sets a reader-level Parquet predicate.
     ///
     /// Callers should only set predicates for expressions accepted by

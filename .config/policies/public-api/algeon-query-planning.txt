@@ -1346,15 +1346,19 @@ pub query_planning::optimizer::SharedResidentExtractionDecision::Skipped
 pub enum query_planning::optimizer::SharedResidentExtractionReason
 pub query_planning::optimizer::SharedResidentExtractionReason::ContainsGpuResidentSource
 pub query_planning::optimizer::SharedResidentExtractionReason::Extracted
+pub query_planning::optimizer::SharedResidentExtractionReason::ExtractedUnderResidualFilter
 pub query_planning::optimizer::SharedResidentExtractionReason::NestedUnderSelectedSubplan
 pub query_planning::optimizer::SharedResidentExtractionReason::NotRepeated
 pub query_planning::optimizer::SharedResidentExtractionReason::ResidentPlanNotAdmitted
+pub query_planning::optimizer::SharedResidentExtractionReason::ResidualNotMappedToOutput
 pub query_planning::optimizer::SharedResidentExtractionReason::RootDoesNotReduceRows
 pub query_planning::optimizer::SharedResidentExtractionReason::SubplanNotClosed
+pub query_planning::optimizer::SharedResidentExtractionReason::WidenedScanNotCovered
 pub enum query_planning::optimizer::SharedSubplanMaterializationRejectedReason
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape
+pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::WidenedReaderPredicateUnsupported
 pub enum query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::DistinctArgumentIsGroupKey
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::FilteredDistinctAggregate

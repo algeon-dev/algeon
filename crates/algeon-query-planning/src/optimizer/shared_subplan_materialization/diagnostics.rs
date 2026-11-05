@@ -84,4 +84,8 @@ pub enum SharedSubplanMaterializationRejectedReason {
     UnsupportedScalarAggregateShape,
     /// Branch predicate columns could not be carried to the shared aggregate input.
     PredicateColumnPropagationUnsupported,
+    /// A shared source cannot read the widened reader predicate: the cuDF
+    /// reader contract does not accept the expression, or the source has a
+    /// scan limit or is a count-star probe.
+    WidenedReaderPredicateUnsupported,
 }

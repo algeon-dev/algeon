@@ -52,6 +52,55 @@ fn native_optimizer_discovers_repeated_grouped_aggregate_materialization_family(
 }
 
 #[test]
+fn native_optimizer_rejects_grouped_materialization_when_sources_cannot_read_the_widened_predicate() {
+    // A scan limit keeps the first rows each quarter's reader predicate
+    // admits, so one scan under `quarter = 1 OR quarter = 2` would not.
+    let mut builder = QueryPlanBuilder::new();
+    let aggregate_schema = schema(&["county", "quarter", "year", "store_sales"]);
+    let mut aggregates = Vec::new();
+    for quarter in 1..=2 {
+        let SourceNode::LocalParquet(source) =
+            estimated_sales_source_with_quarter_predicate(quarter, 512 * 1024 * 1024)
+        else {
+            unreachable!("the sales source is a local Parquet scan");
+        };
+        let source = builder.add_source(SourceNode::LocalParquet(source.with_scan_limit(Some(100))));
+        aggregates.push(
+            builder
+                .add_aggregate(
+                    source,
+                    AggregateSpec::new(
+                        vec![Expr::column("county"), Expr::column("quarter"), Expr::column("year")],
+                        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
+                    ),
+                    Arc::clone(&aggregate_schema),
+                )
+                .unwrap(),
+        );
+    }
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    let plan = builder.finish_gpu_resident(union).unwrap();
+
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    let [candidate] = result.diagnostics.shared_subplan_materialization.candidates.as_slice() else {
+        panic!("one grouped family");
+    };
+    assert!(!candidate.applied);
+    assert_eq!(
+        candidate.rejected_reason,
+        Some(SharedSubplanMaterializationRejectedReason::WidenedReaderPredicateUnsupported)
+    );
+    assert_eq!(result.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Aggregate(_))).count(), 2);
+}
+
+#[test]
 fn native_optimizer_reports_shared_subplan_families_in_plan_order() {
     // Each family key hashes the family's source location. Swapping which
     // file the plan reads first must swap the report order, whatever the keys.

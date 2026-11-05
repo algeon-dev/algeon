@@ -123,6 +123,52 @@ chunk by chunk for each reader. In `EXPLAIN` output, the extracted producer
 reports `shared_consumers`, and `shared_resident_extraction` diagnostics record
 per-candidate decisions.
 
+Copies of one aggregate can also differ in what their Parquet sources select.
+DataFusion pushes each reader's `WHERE` clause into its copy of a CTE, and
+row-group pruning then selects different row groups for each copy. A source's
+selection predicate is its reader predicate together with the filter directly
+above it. When the copies agree everywhere else, they share one producer under
+two conditions:
+
+- For every source, one copy's selected row groups contain those of every
+  other copy, file by file, and that copy's reader predicate holds only
+  conjuncts every copy shares or implies. The producer reads that copy's scan
+  unchanged, so the attempt reads no row group it would not have read without
+  sharing. Its result stays resident until the last copy has read it, and
+  admission of the producer still bounds that memory. A source with a scan
+  limit, which keeps the first rows of whatever the selection admits, or a
+  count-star probe, which emits row-count weights, takes part only when every
+  copy selects the same rows from it.
+- Each conjunct a copy does not share can be restated over the aggregate's
+  group outputs: a predicate over group columns emitted unchanged, an integer
+  comparison on a group column defined as a widening integer cast, or a
+  boolean group column defined as that comparison (read as `k`) or its
+  negation (`NOT k`). Filtering groups by their keys keeps the groups that
+  filtering the input rows first would produce, for `DISTINCT` and for grouped
+  aggregates. The restatement covers one read of the source, so every node
+  from a source whose selection differs up to the aggregate must have a
+  single reader; a selection that both inputs of a self-join read keeps the
+  copies separate.
+
+A conjunct counts as shared when a copy holds a comparison of the same column
+with a literal of the column's type whose admitted range lies inside the
+conjunct's. Floating-point columns take no part in this comparison or in
+negation, because NaN breaks `NOT (x >= t) = x < t`. The widened predicate is
+the shared conjuncts and the `OR` of the copies' remaining conjuncts. It
+replaces the selection filter above the producer's scan, and every column it
+reads must reach that filter. When the widened predicate is empty because a
+copy selects every row, the producer drops that filter. When no copy has a
+filter above a source, the covering copy's reader predicate must itself
+select the widened rows. Copies that select by reader predicate alone
+therefore stay separate unless one copy's reader predicate holds only shared
+conjuncts. The producer's scan keeps its reader predicate and its proven row
+bound as lowering set them.
+
+Each copy reads the producer through a `Filter` over its restated conjuncts,
+which `EXPLAIN` shows above the copy's `GpuResidentSource`. Diagnostics report
+such a copy as `ExtractedUnderResidualFilter`, and they report copies that
+stay separate as `WidenedScanNotCovered` or `ResidualNotMappedToOutput`.
+
 ## Partitions and result semantics
 
 Native execution replaces DataFusion CPU partition streams with chunk-based

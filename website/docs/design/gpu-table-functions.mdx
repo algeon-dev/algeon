@@ -179,8 +179,11 @@ governs device buffer leases, column-level identity tracking and ledger charges.
 Shared relational subplans across GPU function inputs and query roots
 (including inlined CTEs) follow
 [Shared resident subplans](./native-lowering.mdx#shared-resident-subplans).
-Separate graph invocations that read an identical edge relation build separate
-graph instances.
+Edge inputs that filter one `DISTINCT` CTE by period, and a root aggregate
+over all of that CTE, read one producer when the root's copy scans the row
+groups both periods select; each reader filters the producer's output by its
+own period. Separate graph invocations that read an identical edge relation
+build separate graph instances.
 
 ### One evaluation for each call site {/* #one-evaluation-per-invocation */}
 

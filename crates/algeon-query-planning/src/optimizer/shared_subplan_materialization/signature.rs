@@ -27,7 +27,11 @@ use super::{
 };
 use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, ColumnQualifier, Expr},
-    plan::{JoinNode, JoinSide, JoinSpec, NodeId, PlanNode, ProjectionNode, QueryPlan},
+    optimizer::{
+        access::projection_only_selects_columns,
+        predicate_factoring::{GroupKeyDefinition, GroupKeyOutput},
+    },
+    plan::{JoinNode, JoinSide, JoinSpec, NodeId, PlanNode, QueryPlan},
     source::{
         LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ParquetSourceLocation, ResolvedParquetSource,
         SourceColumnRef, SourceNode,
@@ -39,10 +43,10 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(super) struct AggregateMaterializationSignature {
     pub(super) aggregate_node_id: NodeId,
-    /// Group output columns, by source fingerprint, that the source emits
-    /// unchanged under the same name. A grouped branch predicate may be
-    /// re-applied after the aggregate only over these.
-    pub(super) post_aggregate_filter_columns_by_source: BTreeMap<String, BTreeSet<String>>,
+    /// Group outputs, by source fingerprint, that are a column the source
+    /// emits unchanged under the same name. A grouped branch predicate is
+    /// restated after the aggregate over these.
+    pub(super) post_aggregate_group_keys_by_source: BTreeMap<String, Vec<GroupKeyOutput>>,
     /// Hash of the family signature: group keys, aggregate expressions, input
     /// operators and predicate-wildcarded sources (grouped), or input shape
     /// and rowsets (scalar). Equal keys mean the aggregates differ at most in
@@ -111,12 +115,8 @@ pub(super) fn aggregate_materialization_signature(
     let group_exprs = spec.group_exprs.iter().map(ToString::to_string).collect::<Vec<_>>();
     let aggregate_exprs =
         spec.aggr_exprs.iter().map(|expr| aggregate_expr_signature(plan, input, expr)).collect::<Vec<_>>();
-    let post_aggregate_filter_columns_by_source = post_aggregate_filterable_group_columns_by_source(
-        plan,
-        input,
-        plan.node(aggregate_node_id)?.output_schema(),
-        spec,
-    );
+    let post_aggregate_group_keys_by_source =
+        post_aggregate_group_keys_by_source(plan, input, plan.node(aggregate_node_id)?.output_schema(), spec);
     let source_predicates = sources
         .iter()
         .map(|source| SourcePredicateSignature {
@@ -185,7 +185,7 @@ pub(super) fn aggregate_materialization_signature(
 
     Some(AggregateMaterializationSignature {
         aggregate_node_id,
-        post_aggregate_filter_columns_by_source,
+        post_aggregate_group_keys_by_source,
         family_key,
         group_exprs,
         aggregate_exprs,
@@ -319,28 +319,16 @@ fn exact_input_shape(plan: &QueryPlan, node_id: NodeId) -> Option<String> {
     Some(format!("{}({})", node.kind.detached_fingerprint(), inputs.join(",")))
 }
 
-/// Whether every output of `projection` is an unqualified input column under
-/// its own name, possibly behind aliases.
-fn projection_only_selects_columns(projection: &ProjectionNode) -> bool {
-    projection.outputs.iter().all(|output| {
-        let mut expr = &output.expr;
-        while let Expr::Alias { expr: inner, .. } = expr {
-            expr = inner;
-        }
-        matches!(expr, Expr::Column(column) if column.qualifier().is_none() && column.name() == output.field.name())
-    })
-}
-
-/// Group output columns that are a source column under the same name, keyed
-/// by that source's abstract fingerprint. A predicate over such a column
-/// selects the same groups before or after the aggregate.
-fn post_aggregate_filterable_group_columns_by_source(
+/// Group outputs that are a source column under the same name, keyed by that
+/// source's abstract fingerprint. A predicate over such a column selects the
+/// same groups before or after the aggregate.
+fn post_aggregate_group_keys_by_source(
     plan: &QueryPlan,
     input: NodeId,
     output_schema: &Arc<Schema>,
     spec: &AggregateSpec,
-) -> BTreeMap<String, BTreeSet<String>> {
-    let mut columns = BTreeMap::<String, BTreeSet<String>>::new();
+) -> BTreeMap<String, Vec<GroupKeyOutput>> {
+    let mut outputs = BTreeMap::<String, Vec<GroupKeyOutput>>::new();
     for (expr, field) in spec.group_exprs.iter().zip(output_schema.fields().iter()) {
         let Some(column) = simple_group_column_name(expr) else {
             continue;
@@ -352,10 +340,13 @@ fn post_aggregate_filterable_group_columns_by_source(
             continue;
         };
         if lineage.source_column == column {
-            columns.entry(lineage.source_fingerprint).or_default().insert(column.to_string());
+            outputs.entry(lineage.source_fingerprint).or_default().push(GroupKeyOutput {
+                output: column.to_string(),
+                definition: GroupKeyDefinition::Column(column.to_string()),
+            });
         }
     }
-    columns
+    outputs
 }
 
 fn simple_group_column_name(expr: &Expr) -> Option<&str> {
