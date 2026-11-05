@@ -125,6 +125,24 @@ pub(crate) fn validate_column_expr_capability(expr: &Expr) -> std::result::Resul
     }
 }
 
+/// Whether a native projection evaluates `expr` as one output. The general
+/// rule applies, and every `REGEXP_REPLACE` must sit where the projection
+/// sizes it from an input column; `QueryPlanBuilder::add_projection` moves
+/// other placements into earlier projections.
+pub(crate) fn validate_projection_output_expr_capability(
+    expr: &Expr,
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
+    validate_general_expr_capability(expr)?;
+    if expr.projection_evaluates_regexp_replace() {
+        Ok(())
+    } else {
+        Err(ExpressionCapabilityRejection {
+            reason: "projection_regexp_replace_requires_column_output",
+            expression_family: "regexp_replace",
+        })
+    }
+}
+
 /// Whether the general expression evaluator (filters, projections, aggregate
 /// filters) runs `expr`. An interval literal is admitted only as one operand of
 /// a datetime `+`/`-`; `IN` lists must be non-empty, literal, and null-free

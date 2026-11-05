@@ -1,4 +1,9 @@
-use query_planning::plan::{ShiftDirection, WindowFunction};
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
+    admission::admit,
+    plan::{ShiftDirection, WindowFunction},
+    policy::PlanningPolicy,
+};
 
 use super::*;
 use crate::native::ParquetReadStrategyConfig;
@@ -395,6 +400,14 @@ const EXISTING_COVERAGE_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
     GpuGapCase {
+        id: "regexp_replace_nested",
+
+        sql: "SELECT id, lower(regexp_replace(name, '^a(.*)$', '\\1')) AS lowered, \
+              CASE WHEN name LIKE '%a%' THEN regexp_replace(name, '^a(.*)$', '\\1') END AS picked, \
+              regexp_replace(upper(name), '^A', 'b') AS upper_rewritten FROM bench",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
         id: "order_limit_offset",
 
         sql: "SELECT id, payload FROM bench ORDER BY payload ASC NULLS LAST LIMIT 2 OFFSET 1",
@@ -699,6 +712,17 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
                 )),
                 "the cast that can fail stays in the semi join residual instead of a pre-join column"
             );
+        },
+        "regexp_replace_nested" => {
+            let plan = lowering.plan.as_ref().expect("nested REGEXP_REPLACE case should lower to a native plan");
+            let decision = admit(
+                plan,
+                Default::default(),
+                PlanningPolicy::default(),
+                rapids_analysis_context(PlanningPolicy::default()),
+            )
+            .expect("nested REGEXP_REPLACE plan admission should not fail");
+            assert!(decision.admission().is_some(), "the lowered nested REGEXP_REPLACE plan should be admitted");
         },
         "literal_only_projection" | "values_table" => {
             let plan = lowering.plan.as_ref().expect("literal source case should lower to a native plan");

@@ -359,25 +359,12 @@ enum RegexpReplacePreflightClass<'a> {
 }
 
 fn classify_regexp_replace_preflight_expr(expr: &Expr) -> RegexpReplacePreflightClass<'_> {
-    match expr {
-        Expr::Alias { expr, .. } => classify_regexp_replace_preflight_expr(expr),
-        Expr::RegexpReplace { expr, pattern, replacement, .. } => match strip_expr_aliases(expr.as_ref()) {
-            Expr::Column(column) => RegexpReplacePreflightClass::DirectColumn {
-                column_name: column.name(),
-                pattern: pattern.as_str(),
-                replacement: replacement.as_str(),
-            },
-            _ => RegexpReplacePreflightClass::Unsupported,
-        },
-        other if other.contains_regexp_replace() => RegexpReplacePreflightClass::Unsupported,
-        _ => RegexpReplacePreflightClass::Absent,
-    }
-}
-
-fn strip_expr_aliases(expr: &Expr) -> &Expr {
-    match expr {
-        Expr::Alias { expr, .. } => strip_expr_aliases(expr),
-        other => other,
+    if let Some((column, pattern, replacement)) = expr.regexp_replace_over_column() {
+        RegexpReplacePreflightClass::DirectColumn { column_name: column.name(), pattern, replacement }
+    } else if expr.contains_regexp_replace() {
+        RegexpReplacePreflightClass::Unsupported
+    } else {
+        RegexpReplacePreflightClass::Absent
     }
 }
 

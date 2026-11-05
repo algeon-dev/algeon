@@ -16,6 +16,8 @@ use super::{
 };
 use crate::error::{QueryError, QueryErrorCode, Result};
 
+mod regexp_staging;
+
 const OPERATION: &str = "query_engine.plan.builder";
 
 /// Builder for native query plans.
@@ -91,8 +93,21 @@ impl QueryPlanBuilder {
     }
 
     /// Adds a projection node from explicit typed outputs.
+    ///
+    /// A native projection evaluates `REGEXP_REPLACE` only as a whole output
+    /// over an input column. When an output uses it anywhere else, such as
+    /// inside `LOWER`, a `CASE` branch or over a computed input, earlier
+    /// projections compute each replacement input and each replacement as a
+    /// named column. The returned id names the last projection, whose outputs
+    /// are `outputs` reading those columns.
     pub fn add_projection(&mut self, input: NodeId, outputs: Vec<ProjectionOutput>) -> Result<NodeId> {
-        self.push(PlanNode::Projection(ProjectionNode::new(input, outputs)), None, Vec::new())
+        let input_schema = Arc::clone(self.node_output_schema(input).ok_or_else(|| missing_input(input))?);
+        let staged = regexp_staging::stage_regexp_replace(&input_schema, outputs);
+        let mut node = input;
+        for stage in staged.stages {
+            node = self.push(PlanNode::Projection(ProjectionNode::new(node, stage)), None, Vec::new())?;
+        }
+        self.push(PlanNode::Projection(ProjectionNode::new(node, staged.outputs)), None, Vec::new())
     }
 
     /// Adds an aggregate node with its declared output schema.

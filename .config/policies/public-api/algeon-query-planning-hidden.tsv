@@ -118,6 +118,7 @@ query_planning::error::QueryError::with_cleanup_deadline_elapsed	cross-crate	que
 query_planning::error::QueryError::with_fact_if_absent	cross-crate	query-planning error	prod: algeon-query-engine, algeon-query-runtime	narrow to pub(crate) once no other workspace crate names it
 query_planning::error::QueryError::with_graph_cache_scope_peak_bytes	cross-crate	query-planning error	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::error::quote	cross-crate	query-planning error	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
+query_planning::expr::Expr::regexp_replace_over_column	cross-crate	query-planning expr	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::expr::alias_wrapped_column	cross-crate	query-planning expr	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::expr::interval_month_day_nano	cross-crate	query-planning expr	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::expr::representation_cast_column	cross-crate	query-planning expr	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
@@ -140,7 +141,7 @@ query_planning::pipeline::physical::JoinPlan::refine	cross-crate	query-planning 
 query_planning::plan::DeferredGraphExecutionScopeIdentity	cross-crate	query-planning plan	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
 query_planning::plan::core::NodeId::from_index_for_test	test-hooks	query-planning plan::core	tests: algeon-query-engine, algeon-query-runtime	only other crates' tests build ids without a plan
 query_planning::plan::core::QueryPlan::with_dynamic_filter_routes_for_test	test-hooks	query-planning plan::core	tests: algeon-query-engine	delete once no test or tool names it
-query_planning::plan::core::QueryPlan::with_nodes_for_test	test-hooks	query-planning plan::core	tests: algeon-datafusion	delete once no test or tool names it
+query_planning::plan::core::QueryPlan::with_nodes_for_test	test-hooks	query-planning plan::core	tests: algeon-datafusion, algeon-query-engine	delete once no test or tool names it
 query_planning::plan::estimated_output_bytes	cross-crate	query-planning plan	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::plan::join::JoinSpec.advisory_output_statistics	cross-crate	query-planning plan::join	tests: algeon-datafusion, algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::plan::join::JoinSpec::with_advisory_output_statistics	cross-crate	query-planning plan::join	prod: algeon-datafusion; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it

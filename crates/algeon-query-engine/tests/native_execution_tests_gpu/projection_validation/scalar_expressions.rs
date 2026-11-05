@@ -447,6 +447,71 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+fn native_query_executes_regexp_replace_nested_in_projection_expressions() {
+    let dir = unique_temp_dir("query-engine-native-execution-regexp-replace-nested");
+    let path = dir.join("referers.parquet");
+    let context = backend_context();
+    let input_schema = Arc::new(Schema::new(vec![Field::new("referer", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![Arc::new(StringArray::from(vec![
+            Some("https://www.Example.com/path"),
+            Some("http://rapids.ai/docs"),
+            Some("mailto:plain"),
+            None,
+        ]))],
+    )
+    .unwrap();
+    let file = File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&input_schema), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let domain =
+        || Expr::regexp_replace(Expr::column("referer"), r"^https?://(?:www\.)?([^/]+)/.*$", "\\1", DataType::Utf8);
+    let null_utf8 = || Expr::literal(LiteralValue::Null(DataType::Utf8));
+    let projection = vec![
+        Expr::lower(domain()),
+        Expr::case(vec![CaseWhen::new(Expr::like(Expr::column("referer"), "http://%"), domain())], null_utf8()),
+        Expr::case(
+            vec![CaseWhen::new(Expr::binary(domain(), BinaryOp::Eq, Expr::column("referer")), null_utf8())],
+            domain(),
+        ),
+        Expr::regexp_replace(Expr::upper(Expr::column("referer")), "^MAILTO:(.*)$", "\\1", DataType::Utf8),
+    ];
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("lower_domain", DataType::Utf8, true),
+        Field::new("http_domain", DataType::Utf8, true),
+        Field::new("changed_domain", DataType::Utf8, true),
+        Field::new("upper_stripped", DataType::Utf8, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["referer".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let column = |index: usize| {
+        let values = string_array(batch, index);
+        (0..values.len()).map(|row| values.is_valid(row).then(|| values.value(row))).collect::<Vec<_>>()
+    };
+    assert_eq!(column(0), [Some("example.com"), Some("rapids.ai"), Some("mailto:plain"), None]);
+    assert_eq!(column(1), [None, Some("rapids.ai"), None, None]);
+    assert_eq!(column(2), [Some("Example.com"), Some("rapids.ai"), None, None]);
+    assert_eq!(column(3), [Some("HTTPS://WWW.EXAMPLE.COM/PATH"), Some("HTTP://RAPIDS.AI/DOCS"), Some("PLAIN"), None]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
     let path = Path::new("/missing/scalar-validation.parquet");
@@ -763,6 +828,10 @@ fn scalar_expressions_cases_2() {
         (
             "projection_validation::scalar_expressions::native_query_executes_regexp_replace_projection_with_backrefs",
             native_query_executes_regexp_replace_projection_with_backrefs,
+        ),
+        (
+            "projection_validation::scalar_expressions::native_query_executes_regexp_replace_nested_in_projection_expressions",
+            native_query_executes_regexp_replace_nested_in_projection_expressions,
         ),
         (
             "projection_validation::scalar_expressions::native_query_executes_bitwise_scalar_expressions",
