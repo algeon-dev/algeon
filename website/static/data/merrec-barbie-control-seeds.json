@@ -4,63 +4,63 @@
   "name": "32_barbie_control_hot_wheels",
   "sql_file": "fixture/demo/merrec/scripts/scale/32_barbie_control_hot_wheels.sql",
   "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 9877 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 9877 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 9877\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
-  "binary_sha256": "f11352d8a2bb6873bf466b15698bbfb67d797a55d1a1dccbfb6713ca0e422969",
+  "binary_sha256": "1000e59ac31bfc690f4dfb5b62359effd3d43bf476b923807b313c547cd7db5b",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "32_barbie_control_hot_wheels_r1",
-    "query_id": "8a70411c-c6fc-4c26-9f22-d3363462b7ee",
-    "elapsed_s": 3.037062813062221,
-    "native_fragments": 11,
+    "query_id": "af5730de-39ad-41a1-a75a-2d4e2a2447c0",
+    "elapsed_s": 1.8444752860013978,
+    "native_fragments": 12,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 31893263234,
+    "allocator_peak_bytes": 31760760920,
     "query_limit_bytes": 96636764160,
     "source_cache_resident": {
-     "items.parquet": 0.2463,
-     "events.parquet": 0.3012
+     "items.parquet": 1.0,
+     "events.parquet": 1.0
     }
    },
    {
     "name": "32_barbie_control_hot_wheels_r2",
-    "query_id": "38e68e7e-b3b0-4db6-a42d-4fd0cd756fc5",
-    "elapsed_s": 3.034447445999831,
-    "native_fragments": 11,
+    "query_id": "3adfc028-f754-49cb-9fa1-1cafe949a358",
+    "elapsed_s": 1.8546043369933614,
+    "native_fragments": 12,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 31893263234,
+    "allocator_peak_bytes": 31760760920,
     "query_limit_bytes": 96636764160,
     "source_cache_resident": {
-     "items.parquet": 0.2463,
-     "events.parquet": 0.3012
+     "items.parquet": 1.0,
+     "events.parquet": 1.0
     }
    },
    {
     "name": "32_barbie_control_hot_wheels_r3",
-    "query_id": "047ca7a0-a27a-4201-bf5a-cccf46732833",
-    "elapsed_s": 3.030378615949303,
-    "native_fragments": 11,
+    "query_id": "e023f7e8-cbee-47b9-afdb-21309e0ba15e",
+    "elapsed_s": 1.837785317999078,
+    "native_fragments": 12,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 31893263234,
+    "allocator_peak_bytes": 31760760920,
     "query_limit_bytes": 96636764160,
     "source_cache_resident": {
-     "items.parquet": 0.2463,
-     "events.parquet": 0.3012
+     "items.parquet": 1.0,
+     "events.parquet": 1.0
     }
    },
    {
     "name": "32_barbie_control_hot_wheels_r4",
-    "query_id": "fd03383e-3733-46e1-98b3-ec6ee6972cb0",
-    "elapsed_s": 3.0621379690710455,
-    "native_fragments": 11,
+    "query_id": "5fe239b1-c0de-4f0e-9be0-e72c48072507",
+    "elapsed_s": 1.8367738730012206,
+    "native_fragments": 12,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 31893263234,
+    "allocator_peak_bytes": 31760760920,
     "query_limit_bytes": 96636764160,
     "source_cache_resident": {
-     "items.parquet": 0.2463,
-     "events.parquet": 0.3012
+     "items.parquet": 1.0,
+     "events.parquet": 1.0
     }
    }
   ],
-  "median_elapsed_s_after_first": 3.034447445999831,
+  "median_elapsed_s_after_first": 1.837785317999078,
   "rows": 25,
   "identical_results_across_runs": true,
   "schema": [
@@ -278,63 +278,63 @@
   "name": "33_barbie_control_nike",
   "sql_file": "fixture/demo/merrec/scripts/scale/33_barbie_control_nike.sql",
   "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 15987 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 15987 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 15987\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
-  "binary_sha256": "f11352d8a2bb6873bf466b15698bbfb67d797a55d1a1dccbfb6713ca0e422969",
+  "binary_sha256": "1000e59ac31bfc690f4dfb5b62359effd3d43bf476b923807b313c547cd7db5b",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "33_barbie_control_nike_r1",
-    "query_id": "5146ca15-b45a-4cc1-b404-e51e7ede92c5",
-    "elapsed_s": 3.0140178790315986,
-    "native_fragments": 11,
+    "query_id": "a8fec184-5234-4478-a869-96f67617e082",
+    "elapsed_s": 1.8343212619947735,
+    "native_fragments": 12,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 31865095755,
+    "allocator_peak_bytes": 31760760920,
     "query_limit_bytes": 96636764160,
     "source_cache_resident": {
-     "items.parquet": 0.2463,
-     "events.parquet": 0.3012
+     "items.parquet": 1.0,
+     "events.parquet": 1.0
     }
    },
    {
     "name": "33_barbie_control_nike_r2",
-    "query_id": "60a7f190-b3c8-43f0-98fd-6c452f055dd7",
-    "elapsed_s": 3.020123217953369,
-    "native_fragments": 11,
+    "query_id": "8fc93ac9-9a72-48e6-a2d4-22cfed452d65",
+    "elapsed_s": 1.835947166000551,
+    "native_fragments": 12,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 31865095755,
+    "allocator_peak_bytes": 31760760920,
     "query_limit_bytes": 96636764160,
     "source_cache_resident": {
-     "items.parquet": 0.2463,
-     "events.parquet": 0.3012
+     "items.parquet": 1.0,
+     "events.parquet": 1.0
     }
    },
    {
     "name": "33_barbie_control_nike_r3",
-    "query_id": "71145e6e-9f8f-40ee-bc86-c57b77d22986",
-    "elapsed_s": 3.019565985072404,
-    "native_fragments": 11,
+    "query_id": "94082923-5185-496c-ad02-73ba36b926a8",
+    "elapsed_s": 1.8351581450042431,
+    "native_fragments": 12,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 31865095755,
+    "allocator_peak_bytes": 31760760920,
     "query_limit_bytes": 96636764160,
     "source_cache_resident": {
-     "items.parquet": 0.2463,
-     "events.parquet": 0.3012
+     "items.parquet": 1.0,
+     "events.parquet": 1.0
     }
    },
    {
     "name": "33_barbie_control_nike_r4",
-    "query_id": "88f6361b-6acd-4f16-bcbb-e63bf0e042ea",
-    "elapsed_s": 3.014173634117469,
-    "native_fragments": 11,
+    "query_id": "c9189032-fe91-4cbc-93e8-0ba727529953",
+    "elapsed_s": 1.8383716020034626,
+    "native_fragments": 12,
     "host_boundaries": 0,
-    "allocator_peak_bytes": 31865095755,
+    "allocator_peak_bytes": 31760760920,
     "query_limit_bytes": 96636764160,
     "source_cache_resident": {
-     "items.parquet": 0.2463,
-     "events.parquet": 0.3012
+     "items.parquet": 1.0,
+     "events.parquet": 1.0
     }
    }
   ],
-  "median_elapsed_s_after_first": 3.019565985072404,
+  "median_elapsed_s_after_first": 1.835947166000551,
   "rows": 25,
   "identical_results_across_runs": true,
   "schema": [

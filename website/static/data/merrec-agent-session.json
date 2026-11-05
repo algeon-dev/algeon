@@ -1,12 +1,12 @@
 {
  "license": "CC-BY-NC-4.0; derived from the MerRec dataset, Copyright Mercari, Inc.; see LICENSE-MERREC.md in this directory",
  "name": "merrec-agent-session",
- "recorded_at_utc": "2026-10-15T15:01:09Z",
- "method": "Statements written in order by an AI agent (Claude, in Claude Code) on 2026-10-12 against a freshly started MerRec scale server over Arrow Flight SQL, each written after reading the previous response, following the GPU UDTF discovery guide. On 2026-10-15 the same statements were replayed in the same order against a freshly started server built from commit d4b48c569, with both source Parquet files in the operating-system page cache; elapsed times, query ids, execution details and rows are from that replay. Result rows of steps 1, 3, 4 and 5 are identical to the 2026-10-12 session; step 2 returns the descriptor in its current shape. The probes were sent after the session to record the planning-time errors for two wrong column names.",
+ "recorded_at_utc": "2026-11-05T03:38:02Z",
+ "method": "Statements written in order by an AI agent (Claude, in Claude Code) on 2026-10-12 against a freshly started MerRec scale server over Arrow Flight SQL, each written after reading the previous response, following the GPU UDTF discovery guide. On 2026-11-05 the same statements were replayed in the same order against a freshly started server built from commit 6932478ae, with both source Parquet files in the operating-system page cache; elapsed times, query ids, execution details and rows are from that replay. Result rows of steps 1, 3 and 5 and the step 4 candidate rows are identical to the 2026-10-12 session; the step 4 summary row counts one more GPU fragment than that session, and step 2 returns the descriptor in its current shape. The probes were sent after the session to record the planning-time errors for two wrong column names.",
  "server": {
   "config": "fixture/demo/merrec/scripts/scale/server.toml",
   "execution_mode": "native_required",
-  "binary_sha256": "f11352d8a2bb6873bf466b15698bbfb67d797a55d1a1dccbfb6713ca0e422969"
+  "binary_sha256": "1000e59ac31bfc690f4dfb5b62359effd3d43bf476b923807b313c547cd7db5b"
  },
  "dataset": "MerRec, 1,268,092,738 events, May through October 2023",
  "steps": [
@@ -15,12 +15,12 @@
    "intent": "Which graph functions can rank brands around a seed?",
    "sql": "SELECT function_name, summary\nFROM gpu_list_functions()\nWHERE provider = 'cugraph' AND (function_name LIKE '%pagerank%' OR function_name LIKE '%jaccard%')\nORDER BY function_name",
    "status": "ok",
-   "elapsed_s": 0.0041826339438557625,
+   "elapsed_s": 0.0038002990040695295,
    "source_cache_resident_before": {
     "items.parquet": 1.0,
     "events.parquet": 1.0
    },
-   "query_id": "ba9821ca-b67b-4254-8140-2ec28403e297",
+   "query_id": "2c43ce39-d28e-40ab-9823-a893206bcb3a",
    "rows": [
     {
      "function_name": "cugraph_jaccard",
@@ -41,12 +41,12 @@
    "intent": "What does personalized PageRank take, and what does it return?",
    "sql": "SELECT signature, relation_roles_json, result_schemas_json\nFROM gpu_describe_function('cugraph_personalized_pagerank')",
    "status": "ok",
-   "elapsed_s": 0.0027022899594157934,
+   "elapsed_s": 0.003210681999917142,
    "source_cache_resident_before": {
     "items.parquet": 1.0,
     "events.parquet": 1.0
    },
-   "query_id": "21a19e2a-2b3b-4143-b71d-bc023511c27f",
+   "query_id": "b5d29fcc-47db-4485-a880-4523407e77f1",
    "rows": [
     {
      "signature": "cugraph_personalized_pagerank(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, personalization => (relation subquery), alpha => value, epsilon => value, max_iterations => value)",
@@ -60,12 +60,12 @@
    "intent": "Which vertex is Barbie? Look up the brand id to seed from",
    "sql": "SELECT brand_id, COUNT(*) AS items\nFROM merrec_items\nWHERE brand_name = 'Barbie'\nGROUP BY brand_id\nORDER BY items DESC",
    "status": "ok",
-   "elapsed_s": 0.5186802430544049,
+   "elapsed_s": 0.4958393009947031,
    "source_cache_resident_before": {
     "items.parquet": 1.0,
     "events.parquet": 1.0
    },
-   "query_id": "4addcf9e-6958-44f0-8785-ba682b563b8e",
+   "query_id": "0f6eff37-026b-4633-a5c4-c3c0c8f16915",
    "rows": [
     {
      "brand_id": 2595,
@@ -78,15 +78,15 @@
    "intent": "Before spending GPU time: will the whole query run on the GPU?",
    "sql": "EXPLAIN GPU\nWITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 2595\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25",
    "status": "ok",
-   "elapsed_s": 0.08838822110556066,
+   "elapsed_s": 0.10176385600061622,
    "source_cache_resident_before": {
     "items.parquet": 1.0,
     "events.parquet": 1.0
    },
-   "query_id": "ca241ffd-f4db-4e1f-bdc5-0974272abf1d",
+   "query_id": "919299ce-29fd-4f1e-acae-a26e7c38cfc3",
    "summary": {
     "gpu_path": "native",
-    "gpu_fragments": 15,
+    "gpu_fragments": 16,
     "cpu_boundaries": 0,
     "outcome": "accepted_replaced"
    },
@@ -126,17 +126,17 @@
    "intent": "Run it: which brands moved toward Barbie's audience after the July release?",
    "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 2595\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;",
    "status": "ok",
-   "elapsed_s": 3.3178140989039093,
+   "elapsed_s": 2.080654632001824,
    "source_cache_resident_before": {
     "items.parquet": 1.0,
     "events.parquet": 1.0
    },
-   "query_id": "4c00f57a-0cc8-44a3-b57a-0312dd4fbfa7",
+   "query_id": "4776f684-af20-4421-8a7e-4cb3102e5b08",
    "execution": {
     "post_native_execution_path": "native",
-    "native_plan_fragment_count": "11",
+    "native_plan_fragment_count": "12",
     "host_datafusion_boundary_count": "0",
-    "peak_gib": 29.7
+    "peak_gib": 29.6
    },
    "rows": [
     {
@@ -347,14 +347,14 @@
    "label": "personalization columns named after the source table",
    "sql": "SELECT vertex, value\nFROM cugraph_personalized_pagerank(\n  edges => (SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n            FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n            WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n              AND e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'),\n  personalization => (SELECT 2595 AS brand_id, 1.0 AS weight),\n  directed => false)\nORDER BY value DESC LIMIT 5",
    "status": "error",
-   "elapsed_s": 0.0024795071221888065,
+   "elapsed_s": 0.0016468589965370484,
    "error": "Flight returned invalid argument error, with message: cuGraph side-input child is missing canonical column 'vertex'"
   },
   {
    "label": "output column named by guess",
    "sql": "SELECT vertex, score\nFROM cugraph_personalized_pagerank(\n  edges => (SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n            FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n            WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n              AND e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'),\n  personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n  directed => false)\nORDER BY score DESC LIMIT 5",
    "status": "error",
-   "elapsed_s": 0.002592553850263357,
+   "elapsed_s": 0.0017268919982598163,
    "error": "Flight returned invalid argument error, with message: No field named score. Valid fields are vertex, value."
   }
  ]
