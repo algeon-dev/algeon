@@ -10,7 +10,7 @@
 //! divides integers without DataFusion's zero and overflow checks
 //! (`validate_join_residual_expr`). When the form is `KeyedEquiPostFilter`,
 //! the residual instead runs as a column-wise filter over the matched rows of
-//! an inner join, and `validate_post_join_residual_expr` admits the wider
+//! an inner or semi join, and `validate_post_join_residual_expr` admits the wider
 //! column-wise set. Execution reads the same classification, so the set
 //! validated here is the set that runs.
 
@@ -30,7 +30,7 @@ use super::{
 use crate::{
     backend::AnalysisContext,
     capability::{JoinForm, classify_join},
-    datatypes::is_supported_ast_cast,
+    datatypes::{is_supported_arrow_cast, is_supported_ast_cast},
     expr::{BinaryOp, ColumnQualifier, ColumnRef, DatePart, LiteralValue, UnaryMathOp},
     plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId},
 };
@@ -642,7 +642,7 @@ fn validate_join_residual_expr(
 }
 
 /// Type check of a residual that runs as a column-wise filter over the matched
-/// rows of an inner join (`JoinForm::KeyedEquiPostFilter`). The admitted set is
+/// rows of an inner or semi join (`JoinForm::KeyedEquiPostFilter`). The admitted set is
 /// the single-input expression set with both inputs' columns in scope; the
 /// declared output type of a binary arithmetic node is kept, since it carries
 /// the decimal division scale.
@@ -696,7 +696,23 @@ fn validate_post_join_residual_expr(
             Ok(ArrowDataType::Boolean)
         },
         Expr::Cast { expr, target_type } => {
-            validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)?;
+            let source_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
+            if !is_supported_arrow_cast(&source_type, target_type, ctx.backend()) {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    "query_engine.join.validate_residual",
+                    "native post-join residual cast source and target types are not supported",
+                )
+                .with_fact("source_type", format!("{source_type:?}"))
+                .with_fact("target_type", format!("{target_type:?}")));
+            }
             Ok(target_type.clone())
         },
         Expr::Lower(expr) | Expr::Upper(expr) => validate_post_join_string_unary_expr(

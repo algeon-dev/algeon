@@ -576,6 +576,7 @@ pub fn query_planning::datatypes::arrow_fixed_width_byte_size(&arrow_schema::dat
 pub fn query_planning::datatypes::cast_can_fail_at_runtime(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
 pub fn query_planning::datatypes::diagnostic_arrow_type(&arrow_schema::datatype::DataType) -> alloc::string::String
 pub fn query_planning::datatypes::is_arrow_fixed_width(&arrow_schema::datatype::DataType) -> bool
+pub fn query_planning::datatypes::is_ast_cast_target(&arrow_schema::datatype::DataType) -> bool
 pub fn query_planning::datatypes::is_narrow_decimal_carry_type(&arrow_schema::datatype::DataType) -> bool
 pub fn query_planning::datatypes::is_supported_arrow_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, &dyn query_planning::backend::BackendCapabilities) -> bool
 pub fn query_planning::datatypes::is_supported_arrow_implicit_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, &dyn query_planning::backend::BackendCapabilities) -> bool
@@ -1038,6 +1039,7 @@ pub fn query_planning::expr::Expr::children(&self) -> impl core::iter::traits::i
 pub fn query_planning::expr::Expr::column(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::expr::Expr::columns(&self) -> impl core::iter::traits::iterator::Iterator<Item = &query_planning::expr::ColumnRef>
 pub fn query_planning::expr::Expr::concat(alloc::vec::Vec<Self>) -> Self
+pub fn query_planning::expr::Expr::conjuncts(&self) -> alloc::vec::Vec<&query_planning::expr::Expr>
 pub fn query_planning::expr::Expr::contains_regexp_replace(&self) -> bool
 pub fn query_planning::expr::Expr::date_trunc(query_planning::expr::DatePart, Self, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::ends_with(Self, impl core::convert::Into<alloc::string::String>) -> Self

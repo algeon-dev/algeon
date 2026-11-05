@@ -41,7 +41,7 @@ pub(super) struct JoinOutputRequests {
     /// Mark column name for LeftMark joins. When set, the mark column is not
     /// in `outputs` (it is executor-constructed); the name is forwarded to
     /// `JoinOutputColumns::mark_column_name`.
-    mark_column_name: Option<String>,
+    pub(super) mark_column_name: Option<String>,
     /// Index into `bindings` corresponding to the mark column. Used to skip
     /// the mark binding when zipping outputs with bindings.
     mark_binding_index: Option<usize>,

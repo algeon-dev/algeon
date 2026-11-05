@@ -1467,11 +1467,14 @@ fn compiled_hash_join_probe_size(
     probe_keys: &[String],
     overrides: Exec<'_>,
 ) -> Result<usize> {
+    // A semi join reaches here only with a residual and a right build side
+    // (`validate_one_shot_equi_join`). It pairs every key match, as an inner
+    // join does, and the residual then keeps the left rows with a passing pair.
     match node.spec.join_type {
-        JoinType::Inner => hash_join.inner_probe_size(probe, probe_keys, overrides),
+        JoinType::Inner | JoinType::LeftSemi => hash_join.inner_probe_size(probe, probe_keys, overrides),
         JoinType::Left => hash_join.left_probe_size(probe, probe_keys, overrides),
         JoinType::Full => hash_join.full_probe_size(probe, probe_keys, overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
+        JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
     }
@@ -1487,10 +1490,12 @@ fn compiled_hash_join_probe_with_output_size(
     overrides: Exec<'_>,
 ) -> Result<cudf::DataFrameHashJoinPairIndices> {
     match node.spec.join_type {
-        JoinType::Inner => hash_join.inner_probe_with_output_size(probe, probe_keys, output_size, overrides),
+        JoinType::Inner | JoinType::LeftSemi => {
+            hash_join.inner_probe_with_output_size(probe, probe_keys, output_size, overrides)
+        },
         JoinType::Left => hash_join.left_probe_with_output_size(probe, probe_keys, output_size, overrides),
         JoinType::Full => hash_join.full_probe_with_output_size(probe, probe_keys, output_size, overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
+        JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
     }

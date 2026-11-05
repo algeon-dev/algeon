@@ -70,8 +70,11 @@ fn native_query_rejects_join_residual_in_list_with_non_literal_values_before_sou
 
 #[test]
 fn native_query_rejects_unsupported_join_residual_cast_before_source_read() {
+    // An inner join would run this cast in its filter over matched pairs. A
+    // left join keeps unmatched rows, so only the AST could run it, and the
+    // AST casts only to Int64, UInt64 and Float64.
     let error = residual_validation_error(
-        JoinType::Inner,
+        JoinType::Left,
         vec![id_join_key()],
         Expr::binary(
             Expr::cast(Expr::input_column(0, "id", "left_id"), DataType::Int32),
@@ -83,6 +86,24 @@ fn native_query_rejects_unsupported_join_residual_cast_before_source_read() {
     assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
     assert_eq!(error.operation(), "query_engine.join.validate_residual");
     assert_eq!(error.fact_value("target_type"), Some("Int32"));
+    assert!(error.fact_value("path").is_none());
+}
+
+#[test]
+fn native_query_rejects_post_join_residual_cast_without_native_support_before_source_read() {
+    // A cast to Binary runs the inner join's residual as the filter over
+    // matched pairs, which casts only the pairs native casting supports.
+    let to_binary = |side: usize, alias: &str| Expr::cast(Expr::input_column(side, "id", alias), DataType::Binary);
+    let error = residual_validation_error(
+        JoinType::Inner,
+        vec![id_join_key()],
+        Expr::binary(to_binary(0, "left_id"), BinaryOp::Eq, to_binary(1, "right_id")),
+    );
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "query_engine.join.validate_residual");
+    assert_eq!(error.fact_value("source_type"), Some("Int32"));
+    assert_eq!(error.fact_value("target_type"), Some("Binary"));
     assert!(error.fact_value("path").is_none());
 }
 

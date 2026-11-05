@@ -122,3 +122,6 @@ rapids-build-support = { workspace = true }
 
 [[test]]
 name = "clickbench_workload_tests_cpu"
+
+[[test]]
+name = "tpcds_planning_tests_cpu"

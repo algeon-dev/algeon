@@ -371,6 +371,23 @@ impl Expr {
         false
     }
 
+    /// The operands of this expression's top-level `AND` chain, left to right.
+    /// An expression that is not an `AND` is its own single conjunct.
+    pub fn conjuncts(&self) -> Vec<&Expr> {
+        let mut conjuncts = Vec::new();
+        let mut pending = vec![self];
+        while let Some(expr) = pending.pop() {
+            match expr {
+                Self::Binary { left, op: BinaryOp::And, right, .. } => {
+                    pending.push(right);
+                    pending.push(left);
+                },
+                _ => conjuncts.push(expr),
+            }
+        }
+        conjuncts
+    }
+
     /// Every column this expression references, in depth-first order.
     pub fn columns(&self) -> impl Iterator<Item = &ColumnRef> {
         let mut pending = vec![self];

@@ -240,19 +240,26 @@ pub fn is_supported_arrow_cast(
             || is_supported_float64_to_float32_cast(source_type, target_type))
 }
 
+/// Returns whether the cuDF AST has a cast to `target_type`: `Int64`,
+/// `UInt64` and `Float64` are its only cast targets. A join residual that
+/// casts to any other type cannot run in the mixed join while matching.
+pub fn is_ast_cast_target(target_type: &ArrowDataType) -> bool {
+    matches!(target_type, ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64)
+}
+
 /// Returns whether the cuDF AST evaluates an explicit cast.
 ///
-/// The AST casts integer, floating-point, and decimal values to `Int64`,
-/// `UInt64`, and `Float64` without the range, `NaN`, and precision checks
-/// DataFusion applies, and it has no cast over temporal values. A cast is
-/// therefore AST-safe only when it is supported, takes a numeric or decimal
+/// The AST casts integer, floating-point, and decimal values to its
+/// [cast targets](is_ast_cast_target) without the range, `NaN`, and precision
+/// checks DataFusion applies, and it has no cast over temporal values. A cast
+/// is therefore AST-safe only when it is supported, takes a numeric or decimal
 /// source, and cannot fail at runtime.
 pub fn is_supported_ast_cast(
     source_type: &ArrowDataType,
     target_type: &ArrowDataType,
     backend: &dyn BackendCapabilities,
 ) -> bool {
-    matches!(target_type, ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64)
+    is_ast_cast_target(target_type)
         && (source_type.is_integer()
             || matches!(source_type, ArrowDataType::Float32 | ArrowDataType::Float64 | ArrowDataType::Decimal128(_, _)))
         && is_supported_arrow_cast(source_type, target_type, backend)

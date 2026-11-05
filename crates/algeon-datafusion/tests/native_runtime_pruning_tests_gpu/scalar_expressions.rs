@@ -1294,6 +1294,13 @@ fn scalar_expressions_cases_3() {
                 .expect("case runtime")
                 .block_on(native_runtime_join_filters_with_single_input_expressions_match_cpu())
         }),
+        ("native_runtime_join_residual_casts_that_can_fail_run_on_matched_pairs_like_cpu", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_join_residual_casts_that_can_fail_run_on_matched_pairs_like_cpu())
+        }),
     ]);
 }
 
@@ -1657,6 +1664,160 @@ async fn native_runtime_join_filters_with_single_input_expressions_match_cpu() {
         let native = collect(optimization.plan, Arc::new(TaskContext::default())).await.unwrap();
         assert_batches_equal(&cpu, &native);
     }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn write_join_residual_cast_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
+        Field::new("key", DataType::Int32, false),
+        Field::new("grp", DataType::Int32, false),
+        Field::new("amount", DataType::Decimal128(7, 2), true),
+        Field::new("price", DataType::Float64, true),
+    ]));
+    // Group 0 holds keys 1 to 3; key 1 has two group-0 rows and key 2 three
+    // group-1 partners. Key 4 exists only in group 1, and its price of 1e20
+    // does not fit DECIMAL(10, 2): only a cast on rows with no group-0 key
+    // match fails. Row 5 has no price.
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10])),
+            Arc::new(Int32Array::from(vec![1, 1, 2, 3, 2, 2, 2, 3, 1, 4])),
+            Arc::new(Int32Array::from(vec![0, 0, 0, 0, 1, 1, 1, 1, 1, 1])),
+            Arc::new(
+                Decimal128Array::from(vec![
+                    Some(1_000),
+                    Some(5_050),
+                    Some(2_000),
+                    None,
+                    Some(100),
+                    Some(900),
+                    Some(3_000),
+                    Some(4_000),
+                    Some(1_500),
+                    Some(1),
+                ])
+                .with_precision_and_scale(7, 2)
+                .unwrap(),
+            ),
+            Arc::new(Float64Array::from(vec![
+                Some(9.0),
+                Some(40.5),
+                Some(25.0),
+                Some(1.0),
+                None,
+                Some(7.25),
+                Some(12.0),
+                Some(30.0),
+                Some(8.0),
+                Some(1e20),
+            ])),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+/// A join filter cast that can fail runs on the key-matched pairs only, as
+/// DataFusion evaluates it, so a value that only an unmatched row holds never
+/// fails the query. The semi joins are the shapes of TPC-DS q06 and q65, and
+/// each left row appears once however many pairs pass. As in q06, the product
+/// with the subquery sits outside it, which keeps the cast in the join filter;
+/// `(SELECT 1.2 * AVG(...))` would project the cast below the join, where
+/// DataFusion casts every aggregate row.
+async fn native_runtime_join_residual_casts_that_can_fail_run_on_matched_pairs_like_cpu() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-join-residual-casts");
+    let path = dir.join("input.parquet");
+    write_join_residual_cast_input_parquet(&path);
+
+    // TPC-DS q58 bounds revenues with a chain of such casts. Guarding each
+    // conjunct's casts by every conjunct before it would exceed the lowering
+    // size bound at ten conjuncts.
+    let checked_cast_chain = (0..10)
+        .map(|index| {
+            format!(
+                "CAST(l.amount AS DECIMAL(30, 15)) >= CAST(0.{} * CAST(r.amount AS DOUBLE) AS DECIMAL(30, 15))",
+                50 + 5 * index
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let checked_cast_chain = format!(
+        "SELECT l.row_id, r.row_id AS r_id FROM bench l JOIN bench r ON l.key = r.key AND {checked_cast_chain} \
+         ORDER BY l.row_id, r_id"
+    );
+    for (name, sql) in [
+        ("inner-checked-cast-chain", checked_cast_chain.as_str()),
+        (
+            "semi-decorrelated-scalar-subquery",
+            "SELECT row_id FROM bench l WHERE l.grp = 0 \
+             AND l.amount > 1.2 * (SELECT AVG(r.price) FROM bench r WHERE r.key = l.key) ORDER BY row_id",
+        ),
+        (
+            "semi-with-several-passing-pairs",
+            "SELECT row_id FROM bench l WHERE l.grp = 0 AND EXISTS (SELECT 1 FROM bench r WHERE r.key = l.key \
+             AND r.row_id <> l.row_id AND CAST(r.price * 2 AS DECIMAL(10, 2)) > l.amount) ORDER BY row_id",
+        ),
+        (
+            "inner",
+            "SELECT l.row_id, r.row_id AS r_id FROM bench l JOIN bench r ON l.key = r.key AND l.grp = 0 \
+             AND CAST(r.price AS DECIMAL(10, 2)) < l.amount ORDER BY l.row_id, r_id",
+        ),
+    ] {
+        let cpu_plan = sql_plan(&path, direct_friendly_sql_session_config(), sql).await;
+        let cpu = collect(cpu_plan, Arc::new(TaskContext::default())).await.unwrap();
+        assert!(cpu.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "{name} must exercise output rows");
+        let plan = sql_plan(&path, direct_friendly_sql_session_config(), sql).await;
+        let optimization = optimize_with_pruning_template_requiring_native(plan);
+        assert_algeon_native_exec(&optimization.plan, name);
+        let native = collect(optimization.plan, Arc::new(TaskContext::default())).await.unwrap();
+        assert_batches_equal(&cpu, &native);
+    }
+
+    // Key 4 now has a group-1 left row, so the pair holding 1e20 is matched.
+    let failing = "SELECT row_id FROM bench l WHERE EXISTS (SELECT 1 FROM bench r WHERE r.key = l.key \
+                   AND CAST(r.price AS DECIMAL(10, 2)) > l.amount)";
+    let cpu_plan = sql_plan(&path, direct_friendly_sql_session_config(), failing).await;
+    let cpu_error = collect(cpu_plan, Arc::new(TaskContext::default())).await.expect_err("matched overflow");
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), failing).await;
+    let optimization = optimize_with_pruning_template_requiring_native(plan);
+    let native_error =
+        collect(optimization.plan, Arc::new(TaskContext::default())).await.expect_err("matched overflow");
+    let algeon_error = native_error.find_algeon_error().expect("native failure keeps its typed Algeon error");
+    assert_eq!(algeon_error.code(), ErrorCode::RapidsInvalidInput, "native error {native_error} (cpu: {cpu_error})");
+
+    // The only key-4 pair holds 1e20. A conjunct before the cast that rejects
+    // the pair keeps the cast from evaluating it, and one that accepts it
+    // fails the query.
+    let after_conjunct = |comparison: &str| {
+        format!(
+            "SELECT l.row_id FROM bench l JOIN bench r ON l.key = r.key AND l.key = 4 \
+             AND l.amount {comparison} r.amount AND CAST(r.price AS DECIMAL(10, 2)) > l.amount"
+        )
+    };
+    let rejected = after_conjunct(">");
+    let cpu_plan = sql_plan(&path, direct_friendly_sql_session_config(), &rejected).await;
+    let cpu = collect(cpu_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cpu.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), &rejected).await;
+    let optimization = optimize_with_pruning_template_requiring_native(plan);
+    assert_algeon_native_exec(&optimization.plan, "overflow after a rejecting conjunct");
+    let native = collect(optimization.plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(native.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+
+    let accepted = after_conjunct(">=");
+    let cpu_plan = sql_plan(&path, direct_friendly_sql_session_config(), &accepted).await;
+    let cpu_error = collect(cpu_plan, Arc::new(TaskContext::default())).await.expect_err("accepted overflow");
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), &accepted).await;
+    let optimization = optimize_with_pruning_template_requiring_native(plan);
+    let native_error =
+        collect(optimization.plan, Arc::new(TaskContext::default())).await.expect_err("accepted overflow");
+    let algeon_error = native_error.find_algeon_error().expect("native failure keeps its typed Algeon error");
+    assert_eq!(algeon_error.code(), ErrorCode::RapidsInvalidInput, "native error {native_error} (cpu: {cpu_error})");
 
     fs::remove_dir_all(dir).unwrap();
 }

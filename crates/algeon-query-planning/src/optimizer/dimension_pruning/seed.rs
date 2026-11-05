@@ -35,7 +35,7 @@ pub(super) fn seed_reader_predicates_from_group_key_filters(
         let PlanNode::Filter(filter) = &node.kind else {
             continue;
         };
-        for conjunct in predicate_conjuncts(&filter.predicate) {
+        for conjunct in filter.predicate.conjuncts() {
             changed |= push_filter_conjunct_to_reader_source(
                 &plan,
                 &parent_counts,
@@ -65,17 +65,6 @@ pub(super) fn seed_reader_predicates_from_group_key_filters(
 /// still needed to derive a key range.
 pub fn seed_dimension_derived_reader_predicates(plan: QueryPlan, ctx: AnalysisContext<'_>) -> Result<QueryPlan> {
     Ok(seed_reader_predicates_from_group_key_filters(plan, ctx)?.0)
-}
-
-fn predicate_conjuncts(expr: &Expr) -> Vec<&Expr> {
-    match expr {
-        Expr::Binary { left, op: BinaryOp::And, right, .. } => {
-            let mut conjuncts = predicate_conjuncts(left);
-            conjuncts.extend(predicate_conjuncts(right));
-            conjuncts
-        },
-        _ => vec![expr],
-    }
 }
 
 #[expect(

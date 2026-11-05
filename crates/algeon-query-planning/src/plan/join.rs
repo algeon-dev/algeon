@@ -36,6 +36,13 @@ pub struct JoinSpec {
     ///
     /// Carries non-equality join conditions, separating hash-join equality keys
     /// from post-join filter predicates during planning and optimization.
+    ///
+    /// When the join's form is `KeyedEquiPostFilter`, the executor
+    /// evaluates the [top-level conjuncts](Expr::conjuncts) left to right, each
+    /// on the key-matched pairs the earlier ones keep. A conjunct is therefore
+    /// never evaluated on a pair that an earlier conjunct rejects, and lowering
+    /// relies on that instead of guarding a checked operation in one conjunct
+    /// by the conjuncts before it.
     pub residual_predicate: Option<Expr>,
     /// Explicit output projection in result schema order.
     ///
