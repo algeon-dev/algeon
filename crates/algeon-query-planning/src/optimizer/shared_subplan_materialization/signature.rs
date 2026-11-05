@@ -7,7 +7,8 @@
 //! twin that includes it. A grouped family keys on abstract fingerprints, so
 //! members must read the same columns, and on the operators between the
 //! aggregate and its sources, so a filter, join or computed projection that
-//! differs between members keeps them apart; a scalar filtered family keys on rowset
+//! differs between members keeps them apart while the names projections give
+//! values that other projections read do not; a scalar filtered family keys on rowset
 //! fingerprints, because its rewrite re-reads the source with the union of the
 //! branches' columns. Signature strings are compared for equality only and are
 //! never shown in reports except through `family_key`.
@@ -29,9 +30,10 @@ use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, ColumnQualifier, Expr},
     optimizer::{
         access::projection_only_selects_columns,
+        lineage::{peel_outer_alias, substitute_columns_through_projection},
         predicate_factoring::{GroupKeyDefinition, GroupKeyOutput},
     },
-    plan::{JoinNode, JoinSide, JoinSpec, NodeId, PlanNode, QueryPlan},
+    plan::{JoinNode, JoinSide, JoinSpec, NodeId, PlanNode, ProjectionNode, ProjectionOutput, QueryPlan},
     source::{
         LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ParquetSourceLocation, ResolvedParquetSource,
         SourceColumnRef, SourceNode,
@@ -230,12 +232,18 @@ fn aggregate_read_columns(spec: &AggregateSpec) -> ReadColumns {
 /// describes those columns and nothing else: sorts and projections that only
 /// select columns are left out, a join keeps its type, keys, residual
 /// predicate and null equality plus the output columns read above it (with
-/// the side and input column each comes from), and a filter or computed
-/// projection adds the columns it reads. Branches over the same rows differ in
-/// column pruning and in physical join choices that order the output (TPC-DS
-/// q27's rollup branches); neither reaches a read column. Below an operator
-/// that depends on order or positions (a limit, window or union), and below
-/// anything else, the shape is exact operator for operator.
+/// the side and input column each comes from), a filter adds the columns it
+/// reads, and a computed projection keeps the outputs read above it, each
+/// restated through the projections and sorts below it over the columns of
+/// the first other operator (`read_outputs_below_projections`). Branches over
+/// the same rows differ in column pruning, in physical join choices that order
+/// the output (TPC-DS q27's rollup branches), and in the names projections give
+/// intermediate values (the `__common_expr_N` aliases DataFusion numbers per
+/// inlined CTE copy); none of these reaches a read column. A filter or join
+/// that reads such a name still keys on the name, so copies that differ there
+/// stay apart. Below an operator that depends on order or positions (a limit,
+/// window or union), and below anything else, the shape is exact operator for
+/// operator.
 fn grouped_input_shape(plan: &QueryPlan, node_id: NodeId, read: &ReadColumns) -> Option<String> {
     let ReadColumns::Named(read) = read else {
         return exact_input_shape(plan, node_id);
@@ -248,8 +256,16 @@ fn grouped_input_shape(plan: &QueryPlan, node_id: NodeId, read: &ReadColumns) ->
             return grouped_input_shape(plan, projection.input, &ReadColumns::Named(read.clone()));
         },
         PlanNode::Projection(projection) => {
-            let input_read = projection.expressions().flat_map(Expr::columns).map(|column| column.name().to_string());
-            (node.kind.detached_fingerprint(), vec![(projection.input, ReadColumns::Named(input_read.collect()))])
+            let (below, outputs) = read_outputs_below_projections(plan, projection, read)?;
+            let input_read = outputs
+                .iter()
+                .flat_map(|output| output.expr.columns())
+                .map(|column| column.name().to_string())
+                .collect();
+            (
+                PlanNode::Projection(ProjectionNode::new(below, outputs)).detached_fingerprint(),
+                vec![(below, ReadColumns::Named(input_read))],
+            )
         },
         PlanNode::Filter(filter) => {
             let mut input_read = read.clone();
@@ -303,6 +319,55 @@ fn grouped_input_shape(plan: &QueryPlan, node_id: NodeId, read: &ReadColumns) ->
         .map(|(input, input_read)| grouped_input_shape(plan, *input, input_read))
         .collect::<Option<Vec<_>>>()?;
     Some(format!("{fingerprint}({})", inputs.join(",")))
+}
+
+/// The outputs of `projection` named in `read`, sorted by name and without
+/// outer aliases, each restated over the columns of the first node below the
+/// projections and sorts under `projection`, which is returned with them.
+/// Projections and sorts keep the row set, so the restated outputs compute
+/// the same values from that node. The restatement ends at a projection whose
+/// outputs repeat a name, and before any projection while an output reads a
+/// qualified column, which substitution leaves untouched; the shape then
+/// describes that projection on its own.
+fn read_outputs_below_projections(
+    plan: &QueryPlan,
+    projection: &ProjectionNode,
+    read: &BTreeSet<String>,
+) -> Option<(NodeId, Vec<ProjectionOutput>)> {
+    let mut outputs = projection
+        .outputs
+        .iter()
+        .filter(|output| read.contains(output.field.name()))
+        .map(|output| ProjectionOutput::new(peel_outer_alias(output.expr.clone()), output.field.clone()))
+        .collect::<Vec<_>>();
+    outputs.sort_by(|left, right| left.field.name().cmp(right.field.name()));
+    let mut below = projection.input;
+    loop {
+        match &plan.node(below)?.kind {
+            PlanNode::Sort(sort) => below = sort.input,
+            PlanNode::Projection(_)
+                if outputs.iter().any(|output| output.expr.columns().any(|column| column.qualifier().is_some())) =>
+            {
+                break;
+            },
+            PlanNode::Projection(inner) => {
+                let Some(restated) = outputs
+                    .iter()
+                    .map(|output| {
+                        substitute_columns_through_projection(output.expr.clone(), inner)
+                            .map(|expr| ProjectionOutput::new(expr, output.field.clone()))
+                    })
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    break;
+                };
+                outputs = restated;
+                below = inner.input;
+            },
+            _ => break,
+        }
+    }
+    Some((below, outputs))
 }
 
 /// Operator-for-operator shape of the subtree at `node_id`, with each local

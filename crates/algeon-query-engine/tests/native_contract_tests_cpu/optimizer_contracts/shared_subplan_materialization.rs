@@ -1,4 +1,5 @@
 use cudf::testing::run_named_cases;
+use query_planning::optimizer::extract_shared_resident_fragments;
 
 use super::*;
 
@@ -889,6 +890,56 @@ fn native_optimizer_combines_grouped_join_branches_that_differ_only_in_column_pr
     assert_eq!(result.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Aggregate(_))).count(), 1);
 }
 
+/// DataFusion inlines a CTE once per reference and numbers each copy's common
+/// subexpressions on its own, so the two seed copies of MerRec's audience
+/// funnel name one `event_type` comparison `__common_expr_3` and
+/// `__common_expr_5`. The names stay inside each copy, so the copies become one
+/// aggregate over a clone of their join. Nothing outside that aggregate reads
+/// the clone, so it becomes one resident producer while the original join
+/// still feeds the viewer aggregate, and a seed copy in a vector-input unit
+/// reads the same producer.
+#[test]
+fn native_optimizer_combines_grouped_join_branches_that_differ_only_in_intermediate_projection_names() {
+    let (plan, seeds) = funnel_seed_copies_plan(["__common_expr_3", "__common_expr_5"]);
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(
+        plan,
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    assert_eq!(diagnostics.candidates[0].aggregate_node_ids, seeds);
+    let [producer] = result.shared_resident_producers.as_slice() else {
+        panic!("the combined seed aggregate is one producer: {:?}", result.diagnostics.shared_resident_extraction)
+    };
+    assert!(matches!(producer.plan.root_node().kind, PlanNode::Aggregate(_)));
+    assert_eq!(
+        result.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Aggregate(_))).count(),
+        1,
+        "the viewer aggregate stays in the consumer over the original join:\n{}",
+        result.plan
+    );
+
+    let mut unit = QueryPlanBuilder::new();
+    let join = funnel_events_join(&mut unit);
+    let seed = funnel_seed_copy(&mut unit, join, "__common_expr_6");
+    let unit = unit.finish_gpu_resident(seed).unwrap();
+    let shared = extract_shared_resident_fragments(vec![result.plan, producer.plan.clone(), unit]).unwrap();
+    let [producer] = shared.producers.as_slice() else {
+        panic!("one producer across the units: {:?}", shared.diagnostics)
+    };
+    assert_eq!(producer.consumer_fragments, [1, 2]);
+}
+
 fn native_optimizer_rejects_grouped_materialization_when_source_predicate_collides_with_aggregate_alias() {
     let plan = repeated_grouped_aggregate_predicate_alias_collision_plan();
     let options = NativeOptimizerOptions {
@@ -1710,6 +1761,203 @@ fn repeated_grouped_join_aggregate_with_different_column_pruning_plan() -> Query
     }
     let union = builder.add_union(aggregates, aggregate_schema).unwrap();
     builder.finish_gpu_resident(union).unwrap()
+}
+
+/// `items` filtered to one brand, joined with `events` on `item_id`, as the
+/// MerRec audience funnel's `pokemon` CTE reads them.
+fn funnel_events_join(builder: &mut QueryPlanBuilder) -> NodeId {
+    let items = builder.add_source(estimated_local_source_with_stable_id(
+        "funnel_items",
+        "funnel_items",
+        &["item_id", "brand_id"],
+        1024 * 1024,
+        10_000,
+    ));
+    let brand = builder
+        .add_filter(items, Expr::binary(Expr::column("brand_id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7))))
+        .unwrap();
+    let item_ids = builder
+        .add_projection(
+            brand,
+            vec![ProjectionOutput::new(Expr::column("item_id"), Field::new("item_id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let events = builder.add_source(estimated_local_source_with_stable_id(
+        "funnel_events",
+        "funnel_events",
+        &["event_time", "user_id", "item_id", "event_type"],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    builder
+        .add_join(
+            item_ids,
+            events,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "item_id", "item_id"),
+                    ColumnRef::input(1, "item_id", "item_id"),
+                )],
+            )
+            .with_build_side(JoinSide::Left)
+            .with_output_projection(
+                ["event_type", "event_time", "user_id"]
+                    .into_iter()
+                    .map(|name| JoinOutputColumn::right(ColumnRef::input(1, name, name), name))
+                    .collect(),
+            ),
+            schema(&["event_type", "event_time", "user_id"]),
+        )
+        .unwrap()
+}
+
+/// `MAX(CASE WHEN event_type = 4 AND event_time >= 10 AND event_time < 20
+/// THEN 1 ELSE 0 END) AS seed GROUP BY user_id` over `join`, with the
+/// `event_type` comparison computed by a first projection under the name
+/// `common` that a second projection reads, as DataFusion plans the funnel's
+/// seed column.
+fn funnel_seed_copy(builder: &mut QueryPlanBuilder, join: NodeId, common: &str) -> NodeId {
+    let named = builder
+        .add_projection(
+            join,
+            vec![
+                ProjectionOutput::new(
+                    Expr::binary(Expr::column("event_type"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(4)))
+                        .alias(common),
+                    Field::new(common, DataType::Boolean, false),
+                ),
+                ProjectionOutput::new(Expr::column("event_time"), Field::new("event_time", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("user_id"), Field::new("user_id", DataType::Int32, false)),
+            ],
+        )
+        .unwrap();
+    let in_window = Expr::binary(
+        Expr::binary(
+            Expr::column(common),
+            BinaryOp::And,
+            Expr::binary(Expr::column("event_time"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(10))),
+        ),
+        BinaryOp::And,
+        Expr::binary(Expr::column("event_time"), BinaryOp::Lt, Expr::literal(LiteralValue::Int32(20))),
+    );
+    let argument = builder
+        .add_projection(
+            named,
+            vec![
+                ProjectionOutput::new(Expr::column("user_id"), Field::new("user_id", DataType::Int32, false)),
+                ProjectionOutput::new(
+                    Expr::case(
+                        vec![CaseWhen { when: in_window, then: Expr::literal(LiteralValue::Int32(1)) }],
+                        Expr::literal(LiteralValue::Int32(0)),
+                    )
+                    .alias("__algeon_native_aggregate_arg_0"),
+                    Field::new("__algeon_native_aggregate_arg_0", DataType::Int32, false),
+                ),
+            ],
+        )
+        .unwrap();
+    builder
+        .add_aggregate(
+            argument,
+            AggregateSpec::new(
+                vec![Expr::column("user_id")],
+                vec![AggregateExpr::new(
+                    AggregateFunction::Max,
+                    Expr::column("__algeon_native_aggregate_arg_0"),
+                    "seed",
+                )],
+            ),
+            schema(&["user_id", "seed"]),
+        )
+        .unwrap()
+}
+
+/// The funnel's root-unit use of its `pokemon` CTE: two seed copies, whose
+/// comparisons are named `commons`, and a viewer aggregate over the same join,
+/// joined with a resident result as the root unit joins its GPU function
+/// outputs. Returns the plan and the seed aggregates.
+fn funnel_seed_copies_plan(commons: [&str; 2]) -> (QueryPlan, Vec<NodeId>) {
+    let mut builder = QueryPlanBuilder::new();
+    let join = funnel_events_join(&mut builder);
+    let seeds = commons.map(|common| funnel_seed_copy(&mut builder, join, common));
+    let viewer_argument = builder
+        .add_projection(
+            join,
+            vec![
+                ProjectionOutput::new(Expr::column("user_id"), Field::new("user_id", DataType::Int32, false)),
+                ProjectionOutput::new(
+                    Expr::case(
+                        vec![CaseWhen {
+                            when: Expr::binary(
+                                Expr::column("event_type"),
+                                BinaryOp::Eq,
+                                Expr::literal(LiteralValue::Int32(2)),
+                            ),
+                            then: Expr::literal(LiteralValue::Int32(1)),
+                        }],
+                        Expr::literal(LiteralValue::Int32(0)),
+                    )
+                    .alias("__algeon_native_aggregate_arg_0"),
+                    Field::new("__algeon_native_aggregate_arg_0", DataType::Int32, false),
+                ),
+            ],
+        )
+        .unwrap();
+    let viewer = builder
+        .add_aggregate(
+            viewer_argument,
+            AggregateSpec::new(
+                vec![Expr::column("user_id")],
+                vec![AggregateExpr::new(
+                    AggregateFunction::Max,
+                    Expr::column("__algeon_native_aggregate_arg_0"),
+                    "viewer",
+                )],
+            ),
+            schema(&["user_id", "viewer"]),
+        )
+        .unwrap();
+    let user_key =
+        || JoinKey::new(ColumnRef::input(0, "user_id", "user_id"), ColumnRef::input(1, "user_id", "user_id"));
+    let seeded = builder
+        .add_join(
+            seeds[0],
+            seeds[1],
+            JoinSpec::new(JoinType::LeftSemi, vec![user_key()]).with_output_projection(vec![JoinOutputColumn::left(
+                ColumnRef::input(0, "user_id", "user_id"),
+                "user_id",
+            )]),
+            schema(&["user_id"]),
+        )
+        .unwrap();
+    let viewers = builder
+        .add_join(
+            seeded,
+            viewer,
+            JoinSpec::new(JoinType::Left, vec![user_key()]).with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "user_id", "user_id"), "user_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "viewer", "viewer"), "viewer"),
+            ]),
+            schema(&["user_id", "viewer"]),
+        )
+        .unwrap();
+    let scores = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("funnel_scores", schema(&["user_id", "score"])).with_row_count_upper_bound(10_000),
+    ));
+    let root = builder
+        .add_join(
+            viewers,
+            scores,
+            JoinSpec::new(JoinType::Left, vec![user_key()]).with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "user_id", "user_id"), "user_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "viewer", "viewer"), "viewer"),
+                JoinOutputColumn::right(ColumnRef::input(1, "score", "score"), "score"),
+            ]),
+            schema(&["user_id", "viewer", "score"]),
+        )
+        .unwrap();
+    (builder.finish_gpu_resident(root).unwrap(), seeds.to_vec())
 }
 
 fn repeated_grouped_aggregate_predicate_alias_collision_plan() -> QueryPlan {

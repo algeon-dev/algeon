@@ -116,6 +116,14 @@ more native units of one attempt contain an identical closed subplan whose root
 reduces rows (such as an aggregate or a limit with a fetch), native optimization
 extracts a single GPU-resident producer.
 
+Copies still count as identical when they differ only in the names that
+projections give values other projections read, such as the `__common_expr_N`
+aliases that DataFusion numbers separately in every inlined copy. Two copies
+of an aggregate inside one unit are not closed when another operator of that
+unit reads the join below them. Shared-subplan materialization first combines
+such copies into one aggregate over its own clone of the join. That aggregate
+is closed and becomes the producer that copies in the other units read as well.
+
 The first reading unit computes the result, which remains resident on the
 device under the attempt's grant until all registered units have read it.
 Streaming chains of scans, filters, projections and joins continue to execute

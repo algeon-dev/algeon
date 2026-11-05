@@ -12,9 +12,11 @@
 //! unions over local Parquet sources, because the keyset it proves is applied
 //! by a Parquet reader.
 
+use std::collections::BTreeMap;
+
 use crate::{
     expr::{CaseWhen, Expr},
-    plan::{AggregateNode, JoinSide, NodeId, PlanNode, QueryPlan},
+    plan::{AggregateNode, JoinSide, NodeId, PlanNode, ProjectionNode, QueryPlan},
     source::SourceNode,
 };
 
@@ -441,6 +443,29 @@ pub(super) fn simple_lineages_for_column(
     column_name: &str,
 ) -> Vec<SourceColumnLineage> {
     local_parquet_lineages_for_column(plan, parent_counts, node_id, column_name, LocalParquetSortLineage::Cross)
+}
+
+/// Restates `expr`, stated over the outputs of `projection`, over the
+/// projection's input columns. `None` when two outputs share a name, because
+/// a reference to that name has no single definition.
+pub(super) fn substitute_columns_through_projection(expr: Expr, projection: &ProjectionNode) -> Option<Expr> {
+    let mut definitions = BTreeMap::<&str, &Expr>::new();
+    for output in &projection.outputs {
+        if definitions.insert(output.field.name(), &output.expr).is_some() {
+            return None;
+        }
+    }
+    Some(substitute_unqualified_columns(expr, &|name| {
+        definitions.get(name).map(|definition| peel_outer_alias((*definition).clone()))
+    }))
+}
+
+/// `expr` without the aliases wrapped around it.
+pub(super) fn peel_outer_alias(expr: Expr) -> Expr {
+    match expr {
+        Expr::Alias { expr, .. } => peel_outer_alias(*expr),
+        other => other,
+    }
 }
 
 /// Replaces unqualified column references while preserving expression structure.
