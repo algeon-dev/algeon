@@ -36,7 +36,7 @@ query.
 </Table>
 
 The two prior-view rows partition the lookalike audience. They are not
-additional shoppers beyond the 19,124 in the first row.
+additional shoppers beyond the {capture.records.find(record => record.audience === 'lookalikes').shoppers.toLocaleString('en-US')} in the first row.
 
 Of the 132 later buyers in the lookalike list, 130 had already viewed Pokemon.
 The never-viewed group's 0.034% purchase rate is close to the 0.033% eligible

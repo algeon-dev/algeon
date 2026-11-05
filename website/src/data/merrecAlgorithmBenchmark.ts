@@ -1,4 +1,4 @@
-// GPU runs: target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json, one server binary.
+// GPU runs: target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json, one server binary.
 // CPU pipeline totals: docs/research/barbie_cpu_comparison/results (2026-10-12, same host).
 // FAISS runs and kNN validation: target/merrec-reuse-review.
 
@@ -97,15 +97,18 @@ export function cpuMedianSeconds(capture: CpuKnnCapture, field: 'elapsedSeconds'
 
 export const merrecAlgorithmBenchmark = {
   "environment": {
-    "sourceRevision": "d4b48c56957d680436aa53b7bdbfb891bbaed754",
+    "sourceRevision": "6932478ae12927439cbd8788978c36dfad9792dc",
     "worktreeChanges": false,
-    "serverBinarySha256": "f11352d8a2bb6873bf466b15698bbfb67d797a55d1a1dccbfb6713ca0e422969",
+    "serverBinarySha256": "1000e59ac31bfc690f4dfb5b62359effd3d43bf476b923807b313c547cd7db5b",
     "nativeCuvsRevision": "ce00140ce1e4b715fd6433145a9a22804a4de592",
     "rustBinaryRebuiltForNativeFix": true,
-    "nativeBuildPolicy": "Canonical cuVS install rebuilt from corrected fork; cuDF, cuGraph and cuML native installs retained",
+    "nativeBuildPolicy": "cuDF, cuVS, cuGraph and cuML native installs dated 2026-10-25, built from the pinned submodule revisions",
     "installedLibrarySha256": [
-      "42d7677d07c5df966de801a1772bb0fc71f10097cf374d4481a7f89b14dc6f33  target/native/cuvs-install/lib/libcuvs.so",
-      "00f2fb8806e40c168fa9a3f2279e142b62764ed6e6fa38b3089bfecb76bd542f  target/native/cuvs-install/lib/libcuvs_c.so"
+      "87007fe8df859ad76732c544abd178c40f9f976926e8f33af11c6aabec26f886  target/native/cudf-install/lib/libcudf.so",
+      "5def52caddb0edd9558d91f154560f2a56bf3180d7367586f028328a6bb2da09  target/native/cuvs-install/lib/libcuvs.so",
+      "00f2fb8806e40c168fa9a3f2279e142b62764ed6e6fa38b3089bfecb76bd542f  target/native/cuvs-install/lib/libcuvs_c.so",
+      "7af0cba8f990a0b7648c0fc701ebe585b089fedf6d372c4d559fdf0cd852fb30  target/native/cugraph-install/lib/libcugraph.so",
+      "3cd2febdb511715ea86411bc96a25ce8814ffb30f8eff9b08e598033a15fe78c  target/native/cuml-install/lib/libcuml.so"
     ],
     "cpu": "Intel Xeon Platinum 8559C",
     "cpuCores": 16,
@@ -113,12 +116,12 @@ export const merrecAlgorithmBenchmark = {
     "memoryGiB": 256,
     "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     "gpuMemoryGB": 96,
-    "gpuDriver": "595.91.07",
+    "gpuDriver": "595.99.02",
     "cudaToolkit": "13.2",
     "buildProfile": "release",
     "cpuTarget": "x86-64-v3",
     "gpuMeasuredDates": [
-      "2026-10-15"
+      "2026-11-05"
     ]
   },
   "dataset": {
@@ -138,43 +141,43 @@ export const merrecAlgorithmBenchmark = {
       "algorithms": "cuGraph personalized PageRank ×2, PageRank ×2",
       "gpu": {
         "case": "10_barbie_tie_ins",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 3.068580257007852,
+            "elapsedSeconds": 1.874006197998824,
             "rows": 25,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.311424686
+              "graph_task": 0.31162096
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 3.045375581132248,
+            "elapsedSeconds": 1.8412767030022223,
             "rows": 25,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.307352959
+              "graph_task": 0.30723733599999997
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 3.024031835142523,
+            "elapsedSeconds": 1.8291190679956344,
             "rows": 25,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.307351796
+              "graph_task": 0.30720103
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 3.065467721084133,
+            "elapsedSeconds": 1.8601474709939794,
             "rows": 25,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.307687508
+              "graph_task": 0.307726763
             }
           }
         ]
@@ -196,43 +199,43 @@ export const merrecAlgorithmBenchmark = {
       "algorithms": "cuGraph weakly connected components",
       "gpu": {
         "case": "12_session_audit",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 1.7903370440471917,
+            "elapsedSeconds": 1.632105082993803,
             "rows": 3,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.150536073
+              "graph_task": 0.148748068
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 1.5753274988383055,
+            "elapsedSeconds": 1.6036082339996938,
             "rows": 3,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.147104109
+              "graph_task": 0.14672769
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 1.58779611508362,
+            "elapsedSeconds": 1.6125424110068707,
             "rows": 3,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.149231941
+              "graph_task": 0.148438253
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 1.5682383561506867,
+            "elapsedSeconds": 1.6126022890020977,
             "rows": 3,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.147347169
+              "graph_task": 0.149416762
             }
           }
         ]
@@ -254,59 +257,59 @@ export const merrecAlgorithmBenchmark = {
       "algorithms": "cuGraph personalized PageRank, cuVS brute-force kNN, cuML forest inference",
       "gpu": {
         "case": "30_audience_funnel",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 8.22790525201708,
+            "elapsedSeconds": 8.306908780003141,
             "rows": 8,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.121433223,
-              "ml_native:forest_import": 0.028663146,
-              "ml_native": 0.012339957,
-              "vector_native:build_index": 2.3338e-05,
-              "vector_native:search": 0.031382253
+              "graph_task": 0.124157362,
+              "ml_native:forest_import": 0.028921586,
+              "ml_native": 0.012454178,
+              "vector_native:build_index": 2.3631e-05,
+              "vector_native:search": 0.032285039
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 8.148752809967846,
+            "elapsedSeconds": 8.307545623996702,
             "rows": 8,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.122780519,
-              "ml_native:forest_import": 0.028488016,
-              "ml_native": 0.012467751,
-              "vector_native:build_index": 2.3128e-05,
-              "vector_native:search": 0.031333036
+              "graph_task": 0.124139185,
+              "ml_native:forest_import": 0.028844452,
+              "ml_native": 0.012515171,
+              "vector_native:build_index": 2.3791e-05,
+              "vector_native:search": 0.032249281
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 8.144426103914157,
+            "elapsedSeconds": 8.31900627700088,
             "rows": 8,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.122534747,
-              "ml_native:forest_import": 0.028440324,
-              "ml_native": 0.012440421,
-              "vector_native:build_index": 2.6104e-05,
-              "vector_native:search": 0.03188094
+              "graph_task": 0.124201074,
+              "ml_native:forest_import": 0.029000148,
+              "ml_native": 0.012406965,
+              "vector_native:build_index": 2.5133e-05,
+              "vector_native:search": 0.032214825
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 8.154728200985119,
+            "elapsedSeconds": 8.355034890002571,
             "rows": 8,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 0.122664776,
-              "ml_native:forest_import": 0.028307148,
-              "ml_native": 0.012414283,
-              "vector_native:build_index": 2.3481e-05,
-              "vector_native:search": 0.031906428
+              "graph_task": 0.124127627,
+              "ml_native:forest_import": 0.029470784,
+              "ml_native": 0.012505091,
+              "vector_native:build_index": 2.6034e-05,
+              "vector_native:search": 0.032228195
             }
           }
         ]
@@ -328,47 +331,47 @@ export const merrecAlgorithmBenchmark = {
       "algorithms": "cuML forest inference",
       "gpu": {
         "case": "27_propensity_xgboost",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 6.837735884124413,
+            "elapsedSeconds": 6.603431386000011,
             "rows": 1,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "ml_native:forest_import": 0.033958439,
-              "ml_native": 0.006097071
+              "ml_native:forest_import": 0.034270185,
+              "ml_native": 0.006301813
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 6.535526184132323,
+            "elapsedSeconds": 6.613174490994425,
             "rows": 1,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "ml_native:forest_import": 0.028479053,
-              "ml_native": 0.006130408
+              "ml_native:forest_import": 0.029251263,
+              "ml_native": 0.006104457
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 6.549479904118925,
+            "elapsedSeconds": 6.601224353005819,
             "rows": 1,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "ml_native:forest_import": 0.028257994,
-              "ml_native": 0.006107697
+              "ml_native:forest_import": 0.028955464,
+              "ml_native": 0.006075471
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 6.537845919840038,
+            "elapsedSeconds": 6.568203460999939,
             "rows": 1,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "ml_native:forest_import": 0.028467284,
-              "ml_native": 0.006126901
+              "ml_native:forest_import": 0.028965067,
+              "ml_native": 0.006107388
             }
           }
         ]
@@ -390,43 +393,43 @@ export const merrecAlgorithmBenchmark = {
       "algorithms": "cuGraph Jaccard",
       "gpu": {
         "case": "08_brand_twins",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 5.801798358093947,
+            "elapsedSeconds": 4.017254557998967,
             "rows": 30,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 1.724277488
+              "graph_task": 1.723001216
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 3.350910510867834,
+            "elapsedSeconds": 3.3618656670005294,
             "rows": 30,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 1.614587893
+              "graph_task": 1.620944843
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 3.312452474143356,
+            "elapsedSeconds": 3.3354673979993095,
             "rows": 30,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 1.623121244
+              "graph_task": 1.617313842
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 3.3379725131671876,
+            "elapsedSeconds": 3.3348588310036575,
             "rows": 30,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 1.621042161
+              "graph_task": 1.613143548
             }
           }
         ]
@@ -448,47 +451,47 @@ export const merrecAlgorithmBenchmark = {
       "algorithms": "cuVS brute-force kNN",
       "gpu": {
         "case": "13_pokemon_lookalikes",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 14.369043423095718,
+            "elapsedSeconds": 14.062701383998501,
             "rows": 3,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 0.016719711,
-              "vector_native:search": 0.032535203
+              "vector_native:build_index": 0.016998327,
+              "vector_native:search": 0.032938269
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 13.683401948073879,
+            "elapsedSeconds": 14.041790818999289,
             "rows": 3,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.3326e-05,
-              "vector_native:search": 0.031854825
+              "vector_native:build_index": 2.5026e-05,
+              "vector_native:search": 0.032289172
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 13.682849484030157,
+            "elapsedSeconds": 14.010648636998667,
             "rows": 3,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.9819e-05,
-              "vector_native:search": 0.032151323
+              "vector_native:build_index": 2.406e-05,
+              "vector_native:search": 0.032295887
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 13.667832427890971,
+            "elapsedSeconds": 13.900986604996433,
             "rows": 3,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.3794e-05,
-              "vector_native:search": 0.03205765
+              "vector_native:build_index": 2.5043e-05,
+              "vector_native:search": 0.032298831
             }
           }
         ]
@@ -510,43 +513,43 @@ export const merrecAlgorithmBenchmark = {
       "algorithms": "cuGraph Jaccard, Leiden",
       "gpu": {
         "case": "09_shopping_worlds",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 5.899011808913201,
+            "elapsedSeconds": 5.918540616003156,
             "rows": 190,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 4.1490991909999995
+              "graph_task": 4.147970460000001
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 5.8450705169234425,
+            "elapsedSeconds": 5.859863457997562,
             "rows": 190,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 4.098324814
+              "graph_task": 4.093116577
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 5.889211053028703,
+            "elapsedSeconds": 5.843041975000233,
             "rows": 190,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 4.0863236039999995
+              "graph_task": 4.084363292
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 5.848331538029015,
+            "elapsedSeconds": 5.861257476994069,
             "rows": 190,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 4.073335526999999
+              "graph_task": 4.102620636
             }
           }
         ]
@@ -568,43 +571,43 @@ export const merrecAlgorithmBenchmark = {
       "algorithms": "cuGraph Jaccard, Leiden, betweenness",
       "gpu": {
         "case": "31_world_bridges",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 8.167177663184702,
+            "elapsedSeconds": 6.8422784299982595,
             "rows": 15,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 4.909186268
+              "graph_task": 4.973669956
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 8.132186880102381,
+            "elapsedSeconds": 6.81131578500208,
             "rows": 15,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 4.873563487
+              "graph_task": 4.948821244
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 8.148503092117608,
+            "elapsedSeconds": 6.834193849004805,
             "rows": 15,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 4.89087561
+              "graph_task": 4.942973615
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 8.157137939007953,
+            "elapsedSeconds": 6.790444335005304,
             "rows": 15,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "graph_task": 4.9010223360000005
+              "graph_task": 4.946415619
             }
           }
         ]
@@ -626,47 +629,47 @@ export const merrecAlgorithmBenchmark = {
       "queryRows": 100,
       "gpu": {
         "case": "knn_exact_100",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 0.11639638594351709,
+            "elapsedSeconds": 0.11066377800307237,
             "rows": 1000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.272e-05,
-              "vector_native:search": 0.003526261
+              "vector_native:build_index": 2.2785e-05,
+              "vector_native:search": 0.003508967
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 0.10963521199300885,
+            "elapsedSeconds": 0.10867299199890113,
             "rows": 1000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.3079e-05,
-              "vector_native:search": 0.003464039
+              "vector_native:build_index": 2.3465e-05,
+              "vector_native:search": 0.003459689
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 0.10751542495563626,
+            "elapsedSeconds": 0.10810049200517824,
             "rows": 1000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.2365e-05,
-              "vector_native:search": 0.003459355
+              "vector_native:build_index": 2.257e-05,
+              "vector_native:search": 0.003448112
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 0.10608437284827232,
+            "elapsedSeconds": 0.10740173499652883,
             "rows": 1000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.0714e-05,
-              "vector_native:search": 0.003442399
+              "vector_native:build_index": 2.331e-05,
+              "vector_native:search": 0.003442472
             }
           }
         ]
@@ -739,7 +742,7 @@ export const merrecAlgorithmBenchmark = {
           "reportedDistanceMatches": true,
           "maxReportedDistanceError": 7.032270316204015e-07,
           "maxCandidateDistanceError": 0.0,
-          "idRecallAtK": 0.998,
+          "idRecallAtK": 0.996,
           "withinReferenceKthFraction": 1.0,
           "validOutput": true
         },
@@ -759,7 +762,7 @@ export const merrecAlgorithmBenchmark = {
           "reportedDistanceMatches": true,
           "maxReportedDistanceError": 7.032270316204015e-07,
           "maxCandidateDistanceError": 0.0,
-          "idRecallAtK": 0.997,
+          "idRecallAtK": 0.996,
           "withinReferenceKthFraction": 1.0,
           "validOutput": true
         },
@@ -779,47 +782,47 @@ export const merrecAlgorithmBenchmark = {
       "queryRows": 1000,
       "gpu": {
         "case": "knn_exact_1000",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 0.13182092900387943,
+            "elapsedSeconds": 0.1320188280005823,
             "rows": 10000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.2066e-05,
-              "vector_native:search": 0.027055574
+              "vector_native:build_index": 2.373e-05,
+              "vector_native:search": 0.027209256
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 0.13001018902286887,
+            "elapsedSeconds": 0.13310494199686218,
             "rows": 10000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.1653e-05,
-              "vector_native:search": 0.026974237
+              "vector_native:build_index": 2.4274e-05,
+              "vector_native:search": 0.027102234
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 0.13026756490580738,
+            "elapsedSeconds": 0.13348092600062955,
             "rows": 10000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.1764e-05,
-              "vector_native:search": 0.026884166
+              "vector_native:build_index": 2.2961e-05,
+              "vector_native:search": 0.027142235
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 0.13029937609098852,
+            "elapsedSeconds": 0.13238244700187352,
             "rows": 10000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.1994e-05,
-              "vector_native:search": 0.027121865
+              "vector_native:build_index": 2.4792e-05,
+              "vector_native:search": 0.027125806
             }
           }
         ]
@@ -892,7 +895,7 @@ export const merrecAlgorithmBenchmark = {
           "reportedDistanceMatches": false,
           "maxReportedDistanceError": 1.0728836059570312e-06,
           "maxCandidateDistanceError": 2.9182312566433666e-08,
-          "idRecallAtK": 0.9957,
+          "idRecallAtK": 0.9958,
           "withinReferenceKthFraction": 1.0,
           "validOutput": false
         },
@@ -922,7 +925,7 @@ export const merrecAlgorithmBenchmark = {
           "reportedDistanceMatches": false,
           "maxReportedDistanceError": 1.0728836059570312e-06,
           "maxCandidateDistanceError": 2.9182312566433666e-08,
-          "idRecallAtK": 0.9957,
+          "idRecallAtK": 0.9958,
           "withinReferenceKthFraction": 1.0,
           "validOutput": false
         }
@@ -932,47 +935,47 @@ export const merrecAlgorithmBenchmark = {
       "queryRows": 10000,
       "gpu": {
         "case": "knn_exact_10000",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 0.32206188095733523,
+            "elapsedSeconds": 0.32711469599598786,
             "rows": 100000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.147e-05,
-              "vector_native:search": 0.212039788
+              "vector_native:build_index": 2.5902e-05,
+              "vector_native:search": 0.214653763
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 0.32190171512775123,
+            "elapsedSeconds": 0.327664978998655,
             "rows": 100000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.317e-05,
-              "vector_native:search": 0.21163395
+              "vector_native:build_index": 2.3937e-05,
+              "vector_native:search": 0.214723041
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 0.32182688592001796,
+            "elapsedSeconds": 0.3286717100054375,
             "rows": 100000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.2788e-05,
-              "vector_native:search": 0.211558229
+              "vector_native:build_index": 2.497e-05,
+              "vector_native:search": 0.216115972
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 0.3690796971786767,
+            "elapsedSeconds": 0.3278047389976564,
             "rows": 100000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.2659e-05,
-              "vector_native:search": 0.211751207
+              "vector_native:build_index": 2.4389e-05,
+              "vector_native:search": 0.216034544
             }
           }
         ]
@@ -1085,47 +1088,47 @@ export const merrecAlgorithmBenchmark = {
       "queryRows": 100000,
       "gpu": {
         "case": "knn_exact_100000",
-        "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+        "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
         "warmups": 1,
         "runs": [
           {
             "repeat": 1,
-            "elapsedSeconds": 1.9783848088700324,
+            "elapsedSeconds": 1.9939271510011167,
             "rows": 1000000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.2305e-05,
-              "vector_native:search": 1.820310232
+              "vector_native:build_index": 2.3683e-05,
+              "vector_native:search": 1.827416824
             }
           },
           {
             "repeat": 2,
-            "elapsedSeconds": 1.9809493299107999,
+            "elapsedSeconds": 1.9882361349955318,
             "rows": 1000000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.3699e-05,
-              "vector_native:search": 1.820183694
+              "vector_native:build_index": 2.317e-05,
+              "vector_native:search": 1.823421702
             }
           },
           {
             "repeat": 3,
-            "elapsedSeconds": 1.9774437660817057,
+            "elapsedSeconds": 1.9871327810033108,
             "rows": 1000000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.2243e-05,
-              "vector_native:search": 1.820236597
+              "vector_native:build_index": 2.394e-05,
+              "vector_native:search": 1.822065454
             }
           },
           {
             "repeat": 4,
-            "elapsedSeconds": 1.9796334458515048,
+            "elapsedSeconds": 1.9867743689974304,
             "rows": 1000000,
             "runtimeComplete": true,
             "hostStagesSeconds": {
-              "vector_native:build_index": 2.3037e-05,
-              "vector_native:search": 1.820030909
+              "vector_native:build_index": 2.3949e-05,
+              "vector_native:search": 1.821904579
             }
           }
         ]
@@ -1249,43 +1252,43 @@ export const merrecAlgorithmBenchmark = {
   "itemPageRank": {
     "gpu": {
       "case": "04_item_pagerank",
-      "sourceArtifact": "target/merrec-reuse-review/final-d4b48c569/run/gpu-summary.json",
+      "sourceArtifact": "target/merrec-reuse-review/final-6932478ae/run/gpu-summary.json",
       "warmups": 1,
       "runs": [
         {
           "repeat": 1,
-          "elapsedSeconds": 21.18222666811198,
+          "elapsedSeconds": 21.59367772599944,
           "rows": 20,
           "runtimeComplete": true,
           "hostStagesSeconds": {
-            "graph_task": 7.924924956
+            "graph_task": 7.962540334
           }
         },
         {
           "repeat": 2,
-          "elapsedSeconds": 21.111742920940742,
+          "elapsedSeconds": 21.07951673700154,
           "rows": 20,
           "runtimeComplete": true,
           "hostStagesSeconds": {
-            "graph_task": 7.918916917
+            "graph_task": 7.949321106
           }
         },
         {
           "repeat": 3,
-          "elapsedSeconds": 20.171412657015026,
+          "elapsedSeconds": 20.76562313100294,
           "rows": 20,
           "runtimeComplete": true,
           "hostStagesSeconds": {
-            "graph_task": 7.912122593
+            "graph_task": 7.93637958
           }
         },
         {
           "repeat": 4,
-          "elapsedSeconds": 19.62013699300587,
+          "elapsedSeconds": 19.647084044998337,
           "rows": 20,
           "runtimeComplete": true,
           "hostStagesSeconds": {
-            "graph_task": 7.929701963
+            "graph_task": 7.934441381
           }
         }
       ]

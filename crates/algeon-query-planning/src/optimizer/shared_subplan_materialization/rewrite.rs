@@ -17,9 +17,8 @@ use arrow::datatypes::{Field, Schema};
 use super::{
     diagnostics::{SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationRejectedReason},
     expr_helpers::{
-        collect_expr_column_names, collect_join_expr_columns, conjunction, disjunction, field_with_name,
-        predicate_references_only_source_filterable_columns, scalar_count_star_aggregate_expr, scalar_count_star_expr,
-        scalar_filtered_aggregate_streaming_supported, scalar_filtered_aggregate_supported,
+        collect_expr_column_names, collect_join_expr_columns, field_with_name, scalar_count_star_aggregate_expr,
+        scalar_count_star_expr, scalar_filtered_aggregate_streaming_supported, scalar_filtered_aggregate_supported,
         source_reader_predicate_filter_is_elidable,
     },
     lineage::{
@@ -37,8 +36,12 @@ use super::{
     },
 };
 use crate::{
-    expr::{AggregateExpr, AggregateSpec, BinaryOp, ColumnRef, Expr, LiteralValue},
-    optimizer::rewrite as optimizer_rewrite,
+    backend::AnalysisContext,
+    expr::{AggregateExpr, AggregateSpec, ColumnRef, Expr, LiteralValue},
+    optimizer::{
+        predicate_factoring::{conjunction, disjunction, factor_selections, map_residual, split_conjuncts},
+        rewrite as optimizer_rewrite,
+    },
     plan::{
         AggregateNode, FilterNode, JoinOutputColumn, JoinSide, NodeId, PlanFacts, PlanNode, ProjectionNode,
         ProjectionOutput, QueryNode, QueryPlan,
@@ -225,8 +228,55 @@ fn widened_source_fingerprints(family: &[AggregateMaterializationSignature]) -> 
 
 /// Plans how `family` is shared, or names the reason it cannot be. The
 /// reason is a report contract; the check order fixes which one a family with
-/// several defects reports.
+/// several defects reports. A widened reader predicate the representative's
+/// source cannot read (a scan limit, a count-star probe, or an expression
+/// outside the reader contract) is a `WidenedReaderPredicateUnsupported`
+/// rejection, checked last.
 pub(super) fn shared_aggregate_family_rewrite_plan(
+    plan: &QueryPlan,
+    family: &[AggregateMaterializationSignature],
+    ctx: AnalysisContext<'_>,
+) -> Result<SharedAggregateFamilyRewrite, SharedSubplanMaterializationRejectedReason> {
+    let rewrite = family_rewrite_plan(plan, family)?;
+    if !widened_source_predicates_are_readable(plan, &rewrite, ctx) {
+        return Err(SharedSubplanMaterializationRejectedReason::WidenedReaderPredicateUnsupported);
+    }
+    Ok(rewrite)
+}
+
+/// Whether every source of the representative that the rewrite widens can
+/// read its widened predicate, with the widened columns added first.
+fn widened_source_predicates_are_readable(
+    plan: &QueryPlan,
+    rewrite: &SharedAggregateFamilyRewrite,
+    ctx: AnalysisContext<'_>,
+) -> bool {
+    let mut pending = vec![rewrite.representative_aggregate_node_id];
+    let mut visited = BTreeSet::new();
+    while let Some(node_id) = pending.pop() {
+        if !visited.insert(node_id) {
+            continue;
+        }
+        let Some(node) = plan.node(node_id) else { return false };
+        pending.extend(node.input_ids().iter().copied());
+        let PlanNode::Source(source) = &node.kind else { continue };
+        let SourceNode::LocalParquet(source) = source.as_ref() else { continue };
+        let signature = local_source_materialization_signature(source);
+        let Some(predicate) = matching_source_entry(&rewrite.widened_source_predicates, &signature) else {
+            continue;
+        };
+        let mut widened = source.clone();
+        if let Some(columns) = matching_source_entry(&rewrite.widened_source_columns, &signature) {
+            widen_local_parquet_source(&mut widened, columns);
+        }
+        if !widened.selection_can_widen() || !widened.reader_predicate_is_supported(predicate, ctx) {
+            return false;
+        }
+    }
+    true
+}
+
+fn family_rewrite_plan(
     plan: &QueryPlan,
     family: &[AggregateMaterializationSignature],
 ) -> Result<SharedAggregateFamilyRewrite, SharedSubplanMaterializationRejectedReason> {
@@ -282,21 +332,19 @@ struct FactoredGroupedSourcePredicate {
     branch_predicates: BTreeMap<NodeId, Option<Expr>>,
 }
 
-/// Splits the members' reader predicates on one source into the conjuncts
-/// they all share and the conjuncts that vary.
+/// Factors the members' reader predicates on one source through
+/// [`factor_selections`](crate::optimizer::predicate_factoring::factor_selections).
 ///
-/// The shared source keeps the common conjuncts and reads the disjunction of
-/// the varying ones, so it produces every row any member needs and no row
-/// none of them needs. Each member re-applies its own varying conjuncts after
-/// the aggregate, which is correct only when they read group columns the
-/// source emits unchanged; any other column is a `PredicateNotPostAggregateFilterable`
-/// rejection. A member with no varying conjunct needs every row the common
-/// part admits, so the disjunction is then omitted.
+/// The shared source reads the widened predicate, and each member re-applies
+/// its differing conjuncts after the aggregate, restated over group columns
+/// the source emits unchanged; a conjunct over any other column is a
+/// `PredicateNotPostAggregateFilterable` rejection. Filters above the source
+/// take no part: the family key compares them exactly, so members share them.
 fn factored_grouped_source_predicate(
     family: &[AggregateMaterializationSignature],
     fingerprint: &str,
 ) -> Result<FactoredGroupedSourcePredicate, SharedSubplanMaterializationRejectedReason> {
-    let mut branches = Vec::with_capacity(family.len());
+    let mut members = Vec::with_capacity(family.len());
     for signature in family {
         let source = signature
             .source_predicates
@@ -307,66 +355,29 @@ fn factored_grouped_source_predicate(
             .predicate
             .clone()
             .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-        let conjuncts = split_conjuncts(predicate);
-        let keys = conjuncts.iter().map(ToString::to_string).collect::<BTreeSet<_>>();
-        branches.push((signature, conjuncts, keys));
+        members.push(split_conjuncts(predicate));
     }
-
-    let mut common_keys = branches
-        .first()
-        .map(|(_, _, keys)| keys.clone())
-        .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-    for (_, _, keys) in branches.iter().skip(1) {
-        common_keys = common_keys.intersection(keys).cloned().collect();
-    }
-
-    let mut common_seen = BTreeSet::new();
-    let common_predicates = branches[0]
-        .1
-        .iter()
-        .filter(|expr| common_keys.contains(&expr.to_string()))
-        .filter(|expr| common_seen.insert(expr.to_string()))
-        .cloned()
-        .collect::<Vec<_>>();
-
+    let schema = Schema::new(
+        family
+            .iter()
+            .filter_map(|signature| signature.source_columns.get(fingerprint))
+            .flat_map(BTreeMap::values)
+            .map(|column| (column.name.clone(), column.field.clone()))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect::<Vec<_>>(),
+    );
+    let factored = factor_selections(&members, &schema);
+    let widened_source_predicate =
+        factored.widened.ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
     let mut branch_predicates = BTreeMap::new();
-    let mut varying_predicates = Vec::new();
-    let mut branch_without_varying_predicate = false;
-    for (signature, conjuncts, _) in branches {
-        let varying = conjuncts.into_iter().filter(|expr| !common_keys.contains(&expr.to_string())).collect::<Vec<_>>();
-        let branch_predicate = conjunction(varying);
-        if let Some(predicate) = &branch_predicate {
-            if !predicate_references_only_source_filterable_columns(predicate, signature, fingerprint) {
-                return Err(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable);
-            }
-            varying_predicates.push(predicate.clone());
-        } else {
-            branch_without_varying_predicate = true;
-        }
+    for (signature, differing) in family.iter().zip(&factored.differing) {
+        let outputs = signature.post_aggregate_group_keys_by_source.get(fingerprint).map_or(&[][..], Vec::as_slice);
+        let branch_predicate = map_residual(differing, outputs, &schema)
+            .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
         branch_predicates.insert(signature.aggregate_node_id, branch_predicate);
     }
-
-    let mut widened_predicates = common_predicates;
-    if !branch_without_varying_predicate {
-        let varying_union = disjunction(varying_predicates)
-            .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-        widened_predicates.push(varying_union);
-    }
-    let widened_source_predicate = conjunction(widened_predicates)
-        .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-
     Ok(FactoredGroupedSourcePredicate { widened_source_predicate, branch_predicates })
-}
-
-fn split_conjuncts(predicate: Expr) -> Vec<Expr> {
-    match predicate {
-        Expr::Binary { left, op: BinaryOp::And, right, output_type: None } => {
-            let mut conjuncts = split_conjuncts(*left);
-            conjuncts.extend(split_conjuncts(*right));
-            conjuncts
-        },
-        other => vec![other],
-    }
 }
 
 /// Plans a scalar filtered family: one aggregate whose expressions are every
@@ -770,8 +781,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                         source_facts = Some(PlanFacts::new(Arc::clone(source.output_schema())));
                     }
                     if let Some(predicate) = matching_source_entry(&family.widened_source_predicates, &signature) {
-                        source.reader_predicate = Some(predicate.clone());
-                        source.refresh_diagnostics();
+                        source.replace_reader_predicate(Some(predicate.clone()));
                     }
                     let new_kind = PlanNode::Source(Box::new(SourceNode::LocalParquet(source)));
                     return self.push_node(new_kind, source_facts.unwrap_or_else(|| old_node.facts.clone()));
@@ -809,8 +819,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                             facts = PlanFacts::new(Arc::clone(source.output_schema()));
                         }
                         if let Some(predicate) = matching_source_entry(&family.widened_source_predicates, &signature) {
-                            source.reader_predicate = Some(predicate.clone());
-                            source.refresh_diagnostics();
+                            source.replace_reader_predicate(Some(predicate.clone()));
                         }
                         (PlanNode::Source(Box::new(SourceNode::LocalParquet(source))), facts)
                     },

@@ -8,7 +8,7 @@ use arrow::datatypes::{Field, Schema};
 use super::signature::AggregateMaterializationSignature;
 use crate::{
     error::QueryError,
-    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LiteralValue},
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LiteralValue},
     plan::{FilterNode, NodeId, PlanNode, QueryPlan},
     source::SourceNode,
     validation::walk_join_residual_column_sides,
@@ -144,36 +144,6 @@ pub(super) fn materialization_family_aggregate_exprs(family: &[AggregateMaterial
         }
     }
     aggregate_exprs
-}
-
-/// `p0 AND (p1 AND (... AND pn))`, or `None` for no predicates. The shape is
-/// fixed because predicate text takes part in signatures.
-pub(super) fn conjunction(mut predicates: Vec<Expr>) -> Option<Expr> {
-    let first = predicates.pop()?;
-    Some(predicates.into_iter().fold(first, |right, left| Expr::binary(left, BinaryOp::And, right)))
-}
-
-/// `p0 OR (p1 OR (... OR pn))`, or `None` for no predicates.
-pub(super) fn disjunction(mut predicates: Vec<Expr>) -> Option<Expr> {
-    let first = predicates.pop()?;
-    Some(predicates.into_iter().fold(first, |right, left| Expr::binary(left, BinaryOp::Or, right)))
-}
-
-fn predicate_references_only_columns(predicate: &Expr, allowed_columns: &BTreeSet<String>) -> bool {
-    let mut columns = BTreeSet::new();
-    collect_expr_columns(predicate, &mut columns);
-    columns.iter().all(|column| allowed_columns.contains(column))
-}
-
-pub(super) fn predicate_references_only_source_filterable_columns(
-    predicate: &Expr,
-    signature: &AggregateMaterializationSignature,
-    source_fingerprint: &str,
-) -> bool {
-    signature
-        .post_aggregate_filter_columns_by_source
-        .get(source_fingerprint)
-        .is_some_and(|allowed_columns| predicate_references_only_columns(predicate, allowed_columns))
 }
 
 fn collect_expr_columns(expr: &Expr, columns: &mut BTreeSet<String>) {

@@ -17,6 +17,7 @@ use super::{
     signature::{AggregateMaterializationSignature, aggregate_materialization_signature},
 };
 use crate::{
+    backend::AnalysisContext,
     plan::{PlanNode, QueryPlan},
     util::sum_optional_u64,
 };
@@ -30,6 +31,7 @@ pub(super) struct SharedSubplanMaterializationDiscovery {
 
 pub(super) fn discover_shared_subplan_materialization_candidates(
     plan: &QueryPlan,
+    ctx: AnalysisContext<'_>,
 ) -> SharedSubplanMaterializationDiscovery {
     let mut diagnostics = SharedSubplanMaterializationDiagnostics::default();
     let mut families = BTreeMap::<String, Vec<AggregateMaterializationSignature>>::new();
@@ -72,7 +74,7 @@ pub(super) fn discover_shared_subplan_materialization_candidates(
         let exact_source_variant_count =
             family.iter().map(|signature| signature.exact_source_signature.as_str()).collect::<BTreeSet<_>>().len();
 
-        let rewrite_plan = shared_aggregate_family_rewrite_plan(plan, &family);
+        let rewrite_plan = shared_aggregate_family_rewrite_plan(plan, &family, ctx);
         let applied = rewrite_plan.is_ok();
         let rejected_reason = rewrite_plan.as_ref().err().copied();
         // The memory estimate is report evidence only. Whether the executor

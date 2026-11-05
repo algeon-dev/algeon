@@ -18,21 +18,38 @@
 //!
 //! Retention is a memory decision made without cardinality estimates; see
 //! `retains_resident_result`. Every inspected node gets one diagnostics row.
+//!
+//! Aggregate copies whose fingerprints differ only in what their local
+//! Parquet sources select (row groups, reader predicate, the filter directly
+//! above the source) can also share one producer; see
+//! `decide_residual_families`. Each such copy reads the producer through a
+//! filter over the producer's group outputs, which keeps exactly the groups
+//! the copy computed.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
-use super::lineage::substitute_unqualified_columns;
+use arrow::datatypes::DataType;
+
+use super::{
+    access::{local_parquet_source, projection_only_selects_columns},
+    lineage::substitute_unqualified_columns,
+    predicate_factoring::{
+        GroupKeyDefinition, GroupKeyOutput, conjunction, factor_selections, is_lossless_integer_widening, map_residual,
+        split_conjuncts,
+    },
+};
 use crate::{
+    dynamic_filter::{DynamicFilterConsumer, DynamicFilterId, DynamicFilterProducer, DynamicFilterRoute},
     error::Result,
     expr::Expr,
     plan::{
-        NodeId, PlanFingerprint, PlanNode, ProjectionNode, ProjectionOutput, QueryPlan, RewrittenNodes,
-        row_bounds::query_plan_hard_row_upper_bound,
+        FilterNode, JoinSide, NodeId, PlanFingerprint, PlanNode, ProjectionNode, ProjectionOutput, QueryNode,
+        QueryPlan, RewrittenNodes, clone_plan_node_with_inputs, row_bounds::query_plan_hard_row_upper_bound,
     },
-    source::{GpuResidentSource, SourceNode},
+    source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
 
 /// Stable optimizer rule name for shared-resident extraction diagnostics.
@@ -71,6 +88,19 @@ pub enum SharedResidentExtractionReason {
     ResidentPlanNotAdmitted,
     /// The candidate became a resident producer.
     Extracted,
+    /// The candidate and copies that differ from it only in source selection
+    /// predicates and row groups became one resident producer, which this
+    /// candidate reads under a filter over the producer's group outputs.
+    ExtractedUnderResidualFilter,
+    /// Copies that differ only in source selection predicates and row groups
+    /// stay separate because, for some source, no copy's scan selects every
+    /// row group the others select and admits every row the widened
+    /// selection needs.
+    WidenedScanNotCovered,
+    /// Copies that differ only in source selection predicates stay separate
+    /// because a predicate one of them does not share has no restatement over
+    /// the aggregate's group outputs.
+    ResidualNotMappedToOutput,
 }
 
 /// Structured decision for one inspected native-plan node.
@@ -301,23 +331,40 @@ fn extract_shared_resident_subplans(
         group.reason = Some(reason);
     }
 
+    let families = decide_residual_families(&fragments, &analyses, &mut groups, &mut selected)?;
+
     // Producer names share the namespace of the fragments' existing
     // GPU-resident inputs, which the adapter also binds by name.
     let mut reserved_names = fragments.iter().flat_map(gpu_resident_source_names).collect::<BTreeSet<_>>();
     let mut next_input_index = 0;
     let mut nodes = fragments.iter().map(|plan| plan.nodes().to_vec()).collect::<Vec<_>>();
     let mut changed = vec![false; fragments.len()];
-    let mut producers = Vec::new();
+    let family_members = families.iter().flat_map(|family| family.members.iter().map(|(fingerprint, _)| *fingerprint));
+    let family_members = family_members.collect::<BTreeSet<_>>();
     let mut extracted = groups
         .iter()
-        .filter(|(_, group)| group.reason == Some(SharedResidentExtractionReason::Extracted))
-        .map(|(fingerprint, group)| (group.occurrences[0], *fingerprint))
-        .collect::<Vec<_>>();
-    extracted.sort();
-    for (first, fingerprint) in extracted {
-        // Equal comparison fingerprints preserve the root schema and rows;
-        // the producer keeps the first occurrence's executable bindings.
-        let producer = fragments[first.fragment].resident_subplan(first.node)?;
+        .filter(|(fingerprint, group)| {
+            group.reason == Some(SharedResidentExtractionReason::Extracted) && !family_members.contains(*fingerprint)
+        })
+        .map(|(fingerprint, group)| {
+            // Equal comparison fingerprints preserve the root schema and rows;
+            // the producer keeps the first occurrence's executable bindings.
+            let first = group.occurrences[0];
+            Ok((first, fragments[first.fragment].resident_subplan(first.node)?, vec![(*fingerprint, None)]))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for family in families {
+        let first = family
+            .members
+            .iter()
+            .map(|(fingerprint, _)| groups[fingerprint].occurrences[0])
+            .min()
+            .expect("a residual family has members");
+        extracted.push((first, family.producer, family.members));
+    }
+    extracted.sort_by_key(|(first, _, _)| *first);
+    let mut producers = Vec::new();
+    for (_, producer, members) in extracted {
         let input_name = loop {
             let candidate = format!("__algeon_shared_resident_{next_input_index}");
             next_input_index += 1;
@@ -325,22 +372,42 @@ fn extract_shared_resident_subplans(
                 break candidate;
             }
         };
-        let root_facts =
-            fragments[first.fragment].node(first.node).expect("an occurrence names a node of its plan").facts.clone();
+        let root_facts = producer.root_node().facts.clone();
         let mut source = GpuResidentSource::new(&input_name, Arc::clone(&root_facts.output_schema));
         if let Some(rows) = query_plan_hard_row_upper_bound(&producer) {
             source = source.with_row_count_upper_bound(rows);
         }
-        let group = groups.get_mut(&fingerprint).expect("extracted fingerprints name existing groups");
+        let source_kind = PlanNode::Source(Box::new(SourceNode::GpuResident(source)));
         let mut consumer_fragments = BTreeSet::new();
-        for occurrence in &group.occurrences {
-            let node = &mut nodes[occurrence.fragment][occurrence.node.index()];
-            node.kind = PlanNode::Source(Box::new(SourceNode::GpuResident(source.clone())));
-            node.facts = root_facts.clone();
-            changed[occurrence.fragment] = true;
-            consumer_fragments.insert(occurrence.fragment);
+        for (fingerprint, residual) in members {
+            let group = groups.get_mut(&fingerprint).expect("extracted fingerprints name existing groups");
+            for occurrence in &group.occurrences {
+                let fragment_nodes = &mut nodes[occurrence.fragment];
+                match &residual {
+                    None => {
+                        fragment_nodes[occurrence.node.index()].kind = source_kind.clone();
+                    },
+                    Some(predicate) => {
+                        // The occurrence's subtree is closed and about to be
+                        // dropped, so its lowest node, which precedes the
+                        // occurrence, holds the resident source the residual
+                        // filter reads.
+                        let slot = *subtree_nodes(&fragments[occurrence.fragment], occurrence.node)
+                            .first()
+                            .expect("a subtree contains its root");
+                        debug_assert_ne!(slot, occurrence.node, "an aggregate occurrence has an input");
+                        fragment_nodes[slot.index()].kind = source_kind.clone();
+                        fragment_nodes[slot.index()].facts = root_facts.clone();
+                        fragment_nodes[occurrence.node.index()].kind =
+                            PlanNode::Filter(FilterNode { input: slot, predicate: predicate.clone() });
+                    },
+                }
+                fragment_nodes[occurrence.node.index()].facts = root_facts.clone();
+                changed[occurrence.fragment] = true;
+                consumer_fragments.insert(occurrence.fragment);
+            }
+            group.resident_input_name = Some(input_name.clone());
         }
-        group.resident_input_name = Some(input_name.clone());
         producers.push(SharedResidentProducerPlan {
             input_name,
             plan: producer,
@@ -359,9 +426,16 @@ fn extract_shared_resident_subplans(
             let group = &groups[fingerprint];
             let reason = group.reason.expect("every group is decided");
             let decision = match reason {
-                SharedResidentExtractionReason::Extracted => SharedResidentExtractionDecision::Extracted,
+                SharedResidentExtractionReason::Extracted
+                | SharedResidentExtractionReason::ExtractedUnderResidualFilter => {
+                    SharedResidentExtractionDecision::Extracted
+                },
                 SharedResidentExtractionReason::RootDoesNotReduceRows
-                | SharedResidentExtractionReason::ResidentPlanNotAdmitted => SharedResidentExtractionDecision::Rejected,
+                | SharedResidentExtractionReason::ResidentPlanNotAdmitted
+                | SharedResidentExtractionReason::WidenedScanNotCovered
+                | SharedResidentExtractionReason::ResidualNotMappedToOutput => {
+                    SharedResidentExtractionDecision::Rejected
+                },
                 _ => SharedResidentExtractionDecision::Skipped,
             };
             if decision == SharedResidentExtractionDecision::Rejected {
@@ -390,6 +464,524 @@ fn extract_shared_resident_subplans(
         )
         .collect::<Result<Vec<_>>>()?;
     Ok(SharedResidentFragments { fragments, producers, diagnostics })
+}
+
+/// Copies of one aggregate that differ only in source selections, fused into
+/// one producer.
+struct ResidualFamily {
+    producer: QueryPlan,
+    /// Member fingerprints in first-occurrence order, each with the filter
+    /// over the producer's output that its occurrences read under.
+    members: Vec<(PlanFingerprint, Option<Expr>)>,
+}
+
+/// Fuses aggregate groups whose subplans are equal apart from what their
+/// local Parquet sources select: each source's row groups and its selection
+/// predicate, which is the reader predicate AND the filter directly above
+/// the source (through projections that only select columns).
+///
+/// Runs after the identical-fingerprint decisions. A family takes members
+/// that were extracted on their own or are not repeated, and is skipped when
+/// a member is not closed, contains a resident source, overlaps a selected
+/// subplan other than its own members, or retains a descendant read
+/// elsewhere. A fused family's producer is cheaper than its members together
+/// only when its scans are scans one member already performs; the covering
+/// check in [`fuse_residual_family`] holds it to that. A refused family
+/// reports its reason on members that would otherwise be `NotRepeated`.
+fn decide_residual_families(
+    fragments: &[QueryPlan],
+    analyses: &[FragmentAnalysis],
+    groups: &mut BTreeMap<PlanFingerprint, CandidateGroup>,
+    selected: &mut Vec<Occurrence>,
+) -> Result<Vec<ResidualFamily>> {
+    let mut buckets = BTreeMap::<PlanFingerprint, Vec<PlanFingerprint>>::new();
+    for (fingerprint, group) in groups.iter() {
+        if !matches!(
+            group.reason,
+            Some(SharedResidentExtractionReason::Extracted | SharedResidentExtractionReason::NotRepeated)
+        ) {
+            continue;
+        }
+        let first = group.occurrences[0];
+        let subplan = fragments[first.fragment].resident_subplan(first.node)?;
+        if !matches!(subplan.root_node().kind, PlanNode::Aggregate(_)) || source_selections(&subplan).is_empty() {
+            continue;
+        }
+        buckets.entry(selection_wildcard_fingerprint(subplan)?).or_default().push(*fingerprint);
+    }
+    let mut ordered = buckets.into_values().filter(|members| members.len() >= 2).collect::<Vec<_>>();
+    for members in &mut ordered {
+        members.sort_by_key(|fingerprint| groups[fingerprint].occurrences[0]);
+    }
+    ordered.sort_by_key(|members| {
+        let group = &groups[&members[0]];
+        (std::cmp::Reverse(group.subplan_size), group.occurrences[0])
+    });
+
+    let mut families = Vec::new();
+    for members in ordered {
+        let occurrences =
+            members.iter().flat_map(|fingerprint| groups[fingerprint].occurrences.iter().copied()).collect::<Vec<_>>();
+        let union = CandidateGroup {
+            occurrences: occurrences.clone(),
+            consumer_count: members.iter().map(|fingerprint| groups[fingerprint].consumer_count).sum(),
+            subplan_size: groups[&members[0]].subplan_size,
+            reason: None,
+            resident_input_name: None,
+        };
+        let own = occurrences.iter().copied().collect::<BTreeSet<_>>();
+        let overlaps_selected = selected.iter().filter(|root| !own.contains(root)).any(|root| {
+            occurrences.iter().any(|occurrence| {
+                occurrence.fragment == root.fragment
+                    && (subtree_nodes(&fragments[root.fragment], root.node).contains(&occurrence.node)
+                        || subtree_nodes(&fragments[root.fragment], occurrence.node).contains(&root.node))
+            })
+        });
+        if overlaps_selected
+            || occurrences.iter().any(|occurrence| {
+                subtree_contains_gpu_resident_source(&fragments[occurrence.fragment], occurrence.node)
+            })
+            || !occurrences_are_closed(fragments, analyses, &union)
+            || retained_descendant_occurs_elsewhere(fragments, analyses, groups, &union)?
+        {
+            continue;
+        }
+        match fuse_residual_family(fragments, groups, &members)? {
+            Ok(family) => {
+                for (fingerprint, residual) in &family.members {
+                    groups.get_mut(fingerprint).expect("family members name existing groups").reason =
+                        Some(if residual.is_some() {
+                            SharedResidentExtractionReason::ExtractedUnderResidualFilter
+                        } else {
+                            SharedResidentExtractionReason::Extracted
+                        });
+                }
+                let newly_selected =
+                    occurrences.into_iter().filter(|occurrence| !selected.contains(occurrence)).collect::<Vec<_>>();
+                selected.extend(newly_selected);
+                families.push(family);
+            },
+            Err(reason) => {
+                for fingerprint in &members {
+                    let group = groups.get_mut(fingerprint).expect("family members name existing groups");
+                    if group.reason == Some(SharedResidentExtractionReason::NotRepeated) {
+                        group.reason = Some(reason);
+                    }
+                }
+            },
+        }
+    }
+    Ok(families)
+}
+
+/// Builds the producer of one family, or names the reason it cannot be
+/// shared.
+///
+/// Members list their local Parquet sources in the same order, since their
+/// subplans match once selections are cleared. For each source,
+/// [`factor_selections`] splits the members' selection conjuncts, and each
+/// member's differing conjuncts are restated over the aggregate's group
+/// outputs ([`map_residual`]), which needs every node from a source whose
+/// selections differ up to the root to have one reader. The producer is the
+/// first member's subplan with each source replaced, unchanged, by a covering
+/// member's source node. A member's source covers when its row groups contain
+/// every other member's, file by file (`None` selects all), and its reader
+/// predicate holds only common conjuncts. The widened predicate replaces the representative's
+/// selection filter, which is removed when no predicate remains; a source
+/// without a selection filter in any member needs a covering member whose
+/// reader predicate already selects the widened rows. The source is never
+/// rewritten, so its reader predicate stays one the reader accepted and its
+/// `max_rows` bound stays proven. A source with a scan limit or a count-star
+/// probe takes part only when every member selects the same rows from it.
+/// Selected row groups are pruning results of predicates and joins every
+/// member applies, so reading more of them changes no result.
+fn fuse_residual_family(
+    fragments: &[QueryPlan],
+    groups: &BTreeMap<PlanFingerprint, CandidateGroup>,
+    members: &[PlanFingerprint],
+) -> Result<std::result::Result<ResidualFamily, SharedResidentExtractionReason>> {
+    let plans = members
+        .iter()
+        .map(|fingerprint| {
+            let first = groups[fingerprint].occurrences[0];
+            fragments[first.fragment].resident_subplan(first.node)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let representative = &plans[0];
+    let PlanNode::Aggregate(aggregate) = &representative.root_node().kind else {
+        unreachable!("residual families are aggregate-rooted");
+    };
+    if aggregate.spec.grouping_sets.is_some() {
+        return Ok(Err(SharedResidentExtractionReason::ResidualNotMappedToOutput));
+    }
+    let group_keys = group_key_outputs(representative, aggregate.input, &aggregate.spec.group_exprs);
+    let member_selections = plans.iter().map(source_selections).collect::<Vec<_>>();
+    let member_parents = plans.iter().map(parents_by_node).collect::<Vec<_>>();
+
+    let mut residuals = vec![Vec::<Expr>::new(); plans.len()];
+    let mut factored_sources = Vec::with_capacity(member_selections[0].len());
+    for (position, selection) in member_selections[0].iter().enumerate() {
+        let selections = member_selections.iter().map(|selections| &selections[position]).collect::<Vec<_>>();
+        let sources = plans
+            .iter()
+            .zip(&selections)
+            .map(|(plan, selection)| local_parquet_source_at(plan, selection.source))
+            .collect::<Vec<_>>();
+        let readers = sources
+            .iter()
+            .map(|source| source.reader_predicate.clone().map(split_conjuncts).unwrap_or_default())
+            .collect::<Vec<_>>();
+        let conjuncts = plans
+            .iter()
+            .zip(&selections)
+            .zip(&readers)
+            .map(|((plan, selection), reader)| {
+                let mut conjuncts = reader.clone();
+                if let Some(filter) = selection.filter {
+                    conjuncts.extend(split_conjuncts(filter_predicate_at(plan, filter).clone()));
+                }
+                conjuncts
+            })
+            .collect::<Vec<_>>();
+        let schema = Arc::clone(sources[0].output_schema());
+        let factored = factor_selections(&conjuncts, &schema);
+        // A residual over group outputs restates the selection for the one
+        // path its rows take to the aggregate. A source read along several
+        // paths, such as both inputs of a self-join, would have every other
+        // path read the widened rows.
+        if factored.differing.iter().any(|differing| !differing.is_empty())
+            && !plans
+                .iter()
+                .zip(&member_parents)
+                .zip(&selections)
+                .all(|((plan, parents), selection)| has_single_reader_path(plan, parents, selection.source))
+        {
+            return Ok(Err(SharedResidentExtractionReason::ResidualNotMappedToOutput));
+        }
+        let outputs = group_keys.get(&selection.source).map_or(&[][..], Vec::as_slice);
+        for (residual, differing) in residuals.iter_mut().zip(&factored.differing) {
+            let Some(mapped) = map_residual(differing, outputs, &schema) else {
+                return Ok(Err(SharedResidentExtractionReason::ResidualNotMappedToOutput));
+            };
+            residual.extend(mapped);
+        }
+        let any_filter = selections.iter().any(|selection| selection.filter.is_some());
+        factored_sources.push((sources, readers, factored, any_filter));
+    }
+
+    let mut nodes = representative.nodes().to_vec();
+    let mut removed_filters = BTreeSet::new();
+    for (selection, (sources, readers, factored, any_filter)) in member_selections[0].iter().zip(factored_sources) {
+        let selections_differ = factored.differing.iter().any(|differing| !differing.is_empty())
+            || sources.iter().any(|other| {
+                other.files.iter().map(|file| &file.row_groups).ne(sources[0].files.iter().map(|file| &file.row_groups))
+            });
+        if selections_differ && sources.iter().any(|source| !source.selection_can_widen()) {
+            return Ok(Err(SharedResidentExtractionReason::WidenedScanNotCovered));
+        }
+        // The widened predicate goes into the representative's selection
+        // filter. Without one, the covering copy's own reader predicate must
+        // already select exactly the widened rows.
+        let in_filter = selection.filter.is_some() && factored.widened.is_some();
+        if selection.filter.is_none() && any_filter && factored.widened.is_some() {
+            return Ok(Err(SharedResidentExtractionReason::WidenedScanNotCovered));
+        }
+        if let (true, Some(filter), Some(widened)) = (in_filter, selection.filter, &factored.widened) {
+            let PlanNode::Filter(filter) = &nodes[filter.index()].kind else {
+                unreachable!("a selection filter is a filter node");
+            };
+            let input_schema = Arc::clone(nodes[filter.input.index()].output_schema());
+            if widened.columns().any(|column| input_schema.field_with_name(column.name()).is_err()) {
+                return Ok(Err(SharedResidentExtractionReason::WidenedScanNotCovered));
+            }
+        }
+        let covering = (0..sources.len()).find(|&candidate| {
+            let is_common = |conjunct: &Expr| {
+                !factored.differing[candidate].iter().any(|differing| differing.to_string() == conjunct.to_string())
+            };
+            let reader_is_common = readers[candidate].iter().all(is_common);
+            let reader_selects_widened =
+                in_filter || factored.widened.is_none() || factored.differing[candidate].is_empty();
+            reader_is_common
+                && reader_selects_widened
+                && sources.iter().all(|other| selects_row_group_superset(sources[candidate], other))
+        });
+        let Some(covering) = covering else {
+            return Ok(Err(SharedResidentExtractionReason::WidenedScanNotCovered));
+        };
+        match (selection.filter, factored.widened) {
+            (Some(filter), Some(widened)) => {
+                let PlanNode::Filter(filter) = &mut nodes[filter.index()].kind else {
+                    unreachable!("a selection filter is a filter node");
+                };
+                filter.predicate = widened;
+            },
+            (filter, _) => removed_filters.extend(filter),
+        }
+        let source = sources[covering].clone();
+        nodes[selection.source.index()].kind = PlanNode::Source(Box::new(SourceNode::LocalParquet(source)));
+    }
+    // The node list keeps its structure, so the representative's routes keep
+    // their endpoints; a wider build input only widens the runtime filter.
+    let producer = representative
+        .rewrite(RewrittenNodes::in_place(nodes, representative.root_id()))?
+        .with_dynamic_filter_routes(representative.dynamic_filter_routes().to_vec());
+    Ok(Ok(ResidualFamily {
+        producer: without_filters(&producer, &removed_filters)?,
+        members: members.iter().copied().zip(residuals.into_iter().map(conjunction)).collect(),
+    }))
+}
+
+/// `plan` with each listed filter removed and its readers reading the
+/// filter's input. Routes move with their nodes; a route through a removed
+/// filter moves to that filter's input, and a route the filter consumed is
+/// dropped.
+fn without_filters(plan: &QueryPlan, filters: &BTreeSet<NodeId>) -> Result<QueryPlan> {
+    if filters.is_empty() {
+        return Ok(plan.clone());
+    }
+    let bypass = |mut node: NodeId| {
+        while filters.contains(&node) {
+            let PlanNode::Filter(filter) = &plan.node(node).expect("removed filters exist").kind else {
+                unreachable!("only filters are removed");
+            };
+            node = filter.input;
+        }
+        node
+    };
+    let nodes = plan
+        .nodes()
+        .iter()
+        .map(|node| QueryNode {
+            id: node.id,
+            kind: clone_plan_node_with_inputs(&node.kind, bypass),
+            facts: node.facts.clone(),
+        })
+        .collect();
+    // Every other node of the closed subplan stays reachable, so compaction
+    // renumbers them in order.
+    let compacted = |node: NodeId| {
+        let node = bypass(node);
+        NodeId(node.index() - filters.iter().filter(|filter| filter.index() < node.index()).count())
+    };
+    let routes = plan
+        .dynamic_filter_routes()
+        .iter()
+        .filter_map(|route| {
+            let producer = match route.producer {
+                DynamicFilterProducer::HashJoinBuild { join_node_id, build_side, build_input } => {
+                    DynamicFilterProducer::HashJoinBuild {
+                        join_node_id: compacted(join_node_id),
+                        build_side,
+                        build_input: compacted(build_input),
+                    }
+                },
+                DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id } => {
+                    DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id: compacted(aggregate_node_id) }
+                },
+            };
+            let consumer = match route.consumer {
+                DynamicFilterConsumer::Filter { filter_node_id } if filters.contains(&filter_node_id) => return None,
+                DynamicFilterConsumer::Filter { filter_node_id } => {
+                    DynamicFilterConsumer::Filter { filter_node_id: compacted(filter_node_id) }
+                },
+                DynamicFilterConsumer::LocalParquetSource { source_node_id } => {
+                    DynamicFilterConsumer::LocalParquetSource { source_node_id: compacted(source_node_id) }
+                },
+                DynamicFilterConsumer::HashJoinProbe { join_node_id, probe_side } => {
+                    DynamicFilterConsumer::HashJoinProbe { join_node_id: compacted(join_node_id), probe_side }
+                },
+            };
+            Some(DynamicFilterRoute { producer, consumer, ..route.clone() })
+        })
+        .collect();
+    Ok(plan.rewrite(RewrittenNodes::in_place(nodes, plan.root_id()))?.with_dynamic_filter_routes(routes))
+}
+
+/// One local Parquet source of a subplan and the filter that selects its
+/// rows, when one sits directly above it.
+struct SourceSelection {
+    source: NodeId,
+    filter: Option<NodeId>,
+}
+
+fn source_selections(plan: &QueryPlan) -> Vec<SourceSelection> {
+    let parents = parents_by_node(plan);
+    plan.nodes()
+        .iter()
+        .filter(|node| {
+            matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_)))
+        })
+        .map(|node| SourceSelection { source: node.id, filter: selection_filter(plan, &parents, node.id) })
+        .collect()
+}
+
+/// The filter that is the only reader of `source`, possibly through
+/// projections that only select columns under their own names, so its
+/// columns are source columns.
+fn selection_filter(plan: &QueryPlan, parents: &[Vec<NodeId>], source: NodeId) -> Option<NodeId> {
+    let mut current = source;
+    loop {
+        let [parent] = parents[current.index()].as_slice() else {
+            return None;
+        };
+        match &plan.node(*parent)?.kind {
+            PlanNode::Filter(_) => return Some(*parent),
+            PlanNode::Projection(projection) if projection_only_selects_columns(projection) => current = *parent,
+            _ => return None,
+        }
+    }
+}
+
+/// Whether every node from `source` up to the subplan root, the source
+/// included and the root excluded, has exactly one reader.
+fn has_single_reader_path(plan: &QueryPlan, parents: &[Vec<NodeId>], source: NodeId) -> bool {
+    let mut current = source;
+    while current != plan.root_id() {
+        let [parent] = parents[current.index()].as_slice() else {
+            return false;
+        };
+        current = *parent;
+    }
+    true
+}
+
+/// Comparison fingerprint with every source's row groups and reader
+/// predicate cleared, every selection filter removed and routes numbered in
+/// order, so copies that select differently, or select only in some copies,
+/// compare equal.
+fn selection_wildcard_fingerprint(subplan: QueryPlan) -> Result<PlanFingerprint> {
+    let plan = comparison_subplan(subplan)?;
+    let mut nodes = plan.nodes().to_vec();
+    let mut filters = BTreeSet::new();
+    for selection in source_selections(&plan) {
+        if let PlanNode::Source(source) = &mut nodes[selection.source.index()].kind
+            && let SourceNode::LocalParquet(source) = source.as_mut()
+        {
+            source.reader_predicate = None;
+            for file in &mut source.files {
+                file.row_groups = None;
+            }
+        }
+        filters.extend(selection.filter);
+    }
+    let cleared = plan
+        .rewrite(RewrittenNodes::in_place(nodes, plan.root_id()))?
+        .with_dynamic_filter_routes(plan.dynamic_filter_routes().to_vec());
+    let wildcard = without_filters(&cleared, &filters)?;
+    // Route ids number routes within one plan, so copies planned in
+    // different units carry different ids for the same route.
+    let routes = wildcard
+        .dynamic_filter_routes()
+        .iter()
+        .enumerate()
+        .map(|(index, route)| DynamicFilterRoute { id: DynamicFilterId::new(index), ..route.clone() })
+        .collect();
+    Ok(wildcard.with_dynamic_filter_routes(routes).execution_fingerprint())
+}
+
+fn local_parquet_source_at(plan: &QueryPlan, node: NodeId) -> &LocalParquetSource {
+    local_parquet_source(plan, node).expect("family members share local Parquet source positions")
+}
+
+fn filter_predicate_at(plan: &QueryPlan, node: NodeId) -> &Expr {
+    match &plan.node(node).expect("family members share node positions").kind {
+        PlanNode::Filter(filter) => &filter.predicate,
+        _ => unreachable!("family members share selection filter positions"),
+    }
+}
+
+/// Whether `source` selects every row group `other` selects, file by file.
+fn selects_row_group_superset(source: &LocalParquetSource, other: &LocalParquetSource) -> bool {
+    source.files.len() == other.files.len()
+        && source.files.iter().zip(&other.files).all(|(file, other)| match (&file.row_groups, &other.row_groups) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(selected), Some(other)) => other.iter().all(|row_group| selected.contains(row_group)),
+        })
+}
+
+/// Group outputs of an aggregate over `input`, keyed by the local Parquet
+/// source whose columns define them. Only definitions [`map_residual`] can
+/// restate a conjunct over are listed.
+fn group_key_outputs(plan: &QueryPlan, input: NodeId, group_exprs: &[Expr]) -> BTreeMap<NodeId, Vec<GroupKeyOutput>> {
+    let mut outputs = BTreeMap::<NodeId, Vec<GroupKeyOutput>>::new();
+    let output_fields = plan.root_node().output_schema().fields().clone();
+    for (expr, field) in group_exprs.iter().zip(output_fields.iter()) {
+        let Some((source, mut definition)) = source_expr(plan, input, expr) else {
+            continue;
+        };
+        while let Expr::Alias { expr, .. } = definition {
+            definition = *expr;
+        }
+        let schema = local_parquet_source_at(plan, source).output_schema();
+        let definition = match definition {
+            Expr::Column(column) => GroupKeyDefinition::Column(column.name().to_string()),
+            Expr::Cast { expr, target_type } => {
+                let Expr::Column(column) = expr.as_ref() else { continue };
+                let Ok(source_field) = schema.field_with_name(column.name()) else { continue };
+                if *source_field.data_type() == target_type {
+                    GroupKeyDefinition::Column(column.name().to_string())
+                } else if is_lossless_integer_widening(source_field.data_type(), &target_type) {
+                    GroupKeyDefinition::WideningCast { column: column.name().to_string(), target: target_type }
+                } else {
+                    continue;
+                }
+            },
+            definition if *field.data_type() == DataType::Boolean => GroupKeyDefinition::Boolean(definition),
+            _ => continue,
+        };
+        outputs.entry(source).or_default().push(GroupKeyOutput { output: field.name().clone(), definition });
+    }
+    outputs
+}
+
+/// `expr` at `node` restated over the columns of the one local Parquet
+/// source every column it reads comes from, through filters, sorts,
+/// projections and joins that pass that source's rows through.
+fn source_expr(plan: &QueryPlan, node: NodeId, expr: &Expr) -> Option<(NodeId, Expr)> {
+    let mut source = None;
+    let mut columns = BTreeMap::new();
+    for column in expr.columns() {
+        if column.qualifier().is_some() {
+            return None;
+        }
+        let (column_source, resolved) = source_column_expr(plan, node, column.name())?;
+        if *source.get_or_insert(column_source) != column_source {
+            return None;
+        }
+        columns.insert(column.name().to_string(), resolved);
+    }
+    Some((source?, substitute_unqualified_columns(expr.clone(), &|name| columns.get(name).cloned())))
+}
+
+fn source_column_expr(plan: &QueryPlan, node_id: NodeId, name: &str) -> Option<(NodeId, Expr)> {
+    match &plan.node(node_id)?.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) if source.output_schema().field_with_name(name).is_ok() => {
+                Some((node_id, Expr::column(name)))
+            },
+            _ => None,
+        },
+        PlanNode::Filter(filter) => source_column_expr(plan, filter.input, name),
+        PlanNode::Sort(sort) => source_column_expr(plan, sort.input, name),
+        PlanNode::Projection(projection) => {
+            let output = projection.outputs.iter().find(|output| output.field.name() == name)?;
+            source_expr(plan, projection.input, &output.expr)
+        },
+        PlanNode::Join(join) => {
+            let output = join.spec.output_projection.iter().find(|output| output.output_name == name)?;
+            if !join.spec.join_type.passes_through_rows_of(output.side) {
+                return None;
+            }
+            let input = match output.side {
+                JoinSide::Left => join.inputs[0],
+                JoinSide::Right => join.inputs[1],
+            };
+            source_column_expr(plan, input, output.column.name())
+        },
+        _ => None,
+    }
 }
 
 fn analyze_fragment(plan: &QueryPlan) -> Result<FragmentAnalysis> {

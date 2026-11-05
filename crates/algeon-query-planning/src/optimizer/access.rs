@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     expr::{ColumnRef, Expr},
-    plan::{JoinNode, JoinOutputColumn, NodeId, PlanNode, QueryNode, QueryPlan},
+    plan::{JoinNode, JoinOutputColumn, NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan},
     source::{LocalParquetSource, SourceColumnRef, SourceNode},
 };
 
@@ -23,6 +23,18 @@ pub fn local_parquet_source(plan: &QueryPlan, node_id: NodeId) -> Option<&LocalP
         return None;
     };
     Some(source)
+}
+
+/// Whether every output of `projection` is an unqualified input column under
+/// its own name, possibly behind aliases.
+pub(super) fn projection_only_selects_columns(projection: &ProjectionNode) -> bool {
+    projection.outputs.iter().all(|output| {
+        let mut expr = &output.expr;
+        while let Expr::Alias { expr: inner, .. } = expr {
+            expr = inner;
+        }
+        matches!(expr, Expr::Column(column) if column.qualifier().is_none() && column.name() == output.field.name())
+    })
 }
 
 /// The local Parquet source at `node_id` in a node list under in-place edit.

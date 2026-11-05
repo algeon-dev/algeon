@@ -602,11 +602,11 @@ async fn cugraph_edge_inputs_of_one_period_read_one_shared_distinct() {
     // The display repeats a producer under each unit that reads it.
     let rendered = displayable(plan.as_ref()).indent(false).to_string();
     let producers =
-        rendered.lines().filter(|line| line.contains("shared_consumers=2")).map(str::trim).collect::<BTreeSet<_>>();
-    assert_eq!(producers.len(), 2, "one producer per period:\n{rendered}");
+        rendered.lines().filter(|line| line.contains("shared_consumers=5")).map(str::trim).collect::<BTreeSet<_>>();
+    assert_eq!(producers.len(), 1, "one producer for both periods and the root:\n{rendered}");
 
-    // Both edge units of a period read its producer. The root's `fans` copy
-    // keeps both periods, so it differs and the root reads neither.
+    // Both edge units of each period and the root's `fans` copy read the one
+    // producer, each under a filter over its own period or brands.
     let mut readers = BTreeMap::<String, BTreeSet<usize>>::new();
     let diagnostics = attempt.planning_diagnostics().expect("native planning diagnostics");
     for candidate in &diagnostics.native_optimizer.shared_resident_extraction.candidates {
@@ -617,8 +617,7 @@ async fn cugraph_edge_inputs_of_one_period_read_one_shared_distinct() {
                 .insert(candidate.attempt_fragment.expect("island candidates name their unit"));
         }
     }
-    assert_eq!(readers.len(), 2, "{readers:?}");
-    assert!(readers.values().all(|units| units.len() == 2 && !units.contains(&0)), "{readers:?}");
+    assert_eq!(readers.into_values().collect::<Vec<_>>(), [BTreeSet::from([0, 1, 3, 4, 6])]);
 
     let mut stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx).unwrap();
     let mut batches = Vec::new();
@@ -630,8 +629,8 @@ async fn cugraph_edge_inputs_of_one_period_read_one_shared_distinct() {
     assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
     assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
     let metrics = attempt.sealed_native_execution_snapshot().expect("sealed native execution snapshot").metrics;
-    // Each period's producer and the root's `fans` copy scan both files once.
-    assert_eq!(metrics.parquet_files, 6, "{metrics:?}");
+    // The one producer scans both files once.
+    assert_eq!(metrics.parquet_files, 2, "{metrics:?}");
     assert_eq!(metrics.graph_runtime_rows.len(), 4, "{metrics:?}");
     drop(attempt);
     let rows = period_lift_rows(&batches);

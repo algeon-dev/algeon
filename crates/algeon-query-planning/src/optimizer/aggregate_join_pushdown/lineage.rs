@@ -14,7 +14,7 @@ use super::{
     JoinNode, JoinSide, JoinType, PreAggregateColumn, ProjectionNode, simple_projection_column,
     unique_join_output_for_name,
 };
-use crate::optimizer::lineage::substitute_unqualified_columns;
+use crate::optimizer::lineage::{substitute_columns_through_projection, substitute_unqualified_columns};
 
 /// One group key traced to a join input.
 #[derive(Clone)]
@@ -160,30 +160,11 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn inline_expr_through_project
 ) -> Result<Expr, AggregateJoinPushdownRejectedReason> {
     let mut current = expr;
     for projection in chain {
-        current = substitute_columns_through_projection(current, projection)?;
+        // Two outputs that share a name leave a reference to it ambiguous.
+        current = substitute_columns_through_projection(current, projection)
+            .ok_or(AggregateJoinPushdownRejectedReason::MissingJoinOutputLineage)?;
     }
     Ok(current)
-}
-
-pub(in crate::optimizer::aggregate_join_pushdown) fn substitute_columns_through_projection(
-    expr: Expr,
-    projection: &ProjectionNode,
-) -> Result<Expr, AggregateJoinPushdownRejectedReason> {
-    let mut map: BTreeMap<&str, &Expr> = BTreeMap::new();
-    for output in &projection.outputs {
-        if map.insert(output.field.name(), &output.expr).is_some() {
-            // Two outputs share the same name; ambiguous lineage.
-            return Err(AggregateJoinPushdownRejectedReason::MissingJoinOutputLineage);
-        }
-    }
-    Ok(substitute_unqualified_columns(expr, &|name| map.get(name).map(|expr| peel_outer_alias((**expr).clone()))))
-}
-
-pub(in crate::optimizer::aggregate_join_pushdown) fn peel_outer_alias(expr: Expr) -> Expr {
-    match expr {
-        Expr::Alias { expr, .. } => peel_outer_alias(*expr),
-        other => other,
-    }
 }
 
 /// Resolves which side of `join` an expression draws its columns from and

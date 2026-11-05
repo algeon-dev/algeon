@@ -7,7 +7,8 @@
 //! twin that includes it. A grouped family keys on abstract fingerprints, so
 //! members must read the same columns, and on the operators between the
 //! aggregate and its sources, so a filter, join or computed projection that
-//! differs between members keeps them apart; a scalar filtered family keys on rowset
+//! differs between members keeps them apart while the names projections give
+//! values that other projections read do not; a scalar filtered family keys on rowset
 //! fingerprints, because its rewrite re-reads the source with the union of the
 //! branches' columns. Signature strings are compared for equality only and are
 //! never shown in reports except through `family_key`.
@@ -27,7 +28,12 @@ use super::{
 };
 use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, ColumnQualifier, Expr},
-    plan::{JoinNode, JoinSide, JoinSpec, NodeId, PlanNode, ProjectionNode, QueryPlan},
+    optimizer::{
+        access::projection_only_selects_columns,
+        lineage::{peel_outer_alias, substitute_columns_through_projection},
+        predicate_factoring::{GroupKeyDefinition, GroupKeyOutput},
+    },
+    plan::{JoinNode, JoinSide, JoinSpec, NodeId, PlanNode, ProjectionNode, ProjectionOutput, QueryPlan},
     source::{
         LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ParquetSourceLocation, ResolvedParquetSource,
         SourceColumnRef, SourceNode,
@@ -39,10 +45,10 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(super) struct AggregateMaterializationSignature {
     pub(super) aggregate_node_id: NodeId,
-    /// Group output columns, by source fingerprint, that the source emits
-    /// unchanged under the same name. A grouped branch predicate may be
-    /// re-applied after the aggregate only over these.
-    pub(super) post_aggregate_filter_columns_by_source: BTreeMap<String, BTreeSet<String>>,
+    /// Group outputs, by source fingerprint, that are a column the source
+    /// emits unchanged under the same name. A grouped branch predicate is
+    /// restated after the aggregate over these.
+    pub(super) post_aggregate_group_keys_by_source: BTreeMap<String, Vec<GroupKeyOutput>>,
     /// Hash of the family signature: group keys, aggregate expressions, input
     /// operators and predicate-wildcarded sources (grouped), or input shape
     /// and rowsets (scalar). Equal keys mean the aggregates differ at most in
@@ -111,12 +117,8 @@ pub(super) fn aggregate_materialization_signature(
     let group_exprs = spec.group_exprs.iter().map(ToString::to_string).collect::<Vec<_>>();
     let aggregate_exprs =
         spec.aggr_exprs.iter().map(|expr| aggregate_expr_signature(plan, input, expr)).collect::<Vec<_>>();
-    let post_aggregate_filter_columns_by_source = post_aggregate_filterable_group_columns_by_source(
-        plan,
-        input,
-        plan.node(aggregate_node_id)?.output_schema(),
-        spec,
-    );
+    let post_aggregate_group_keys_by_source =
+        post_aggregate_group_keys_by_source(plan, input, plan.node(aggregate_node_id)?.output_schema(), spec);
     let source_predicates = sources
         .iter()
         .map(|source| SourcePredicateSignature {
@@ -185,7 +187,7 @@ pub(super) fn aggregate_materialization_signature(
 
     Some(AggregateMaterializationSignature {
         aggregate_node_id,
-        post_aggregate_filter_columns_by_source,
+        post_aggregate_group_keys_by_source,
         family_key,
         group_exprs,
         aggregate_exprs,
@@ -230,12 +232,18 @@ fn aggregate_read_columns(spec: &AggregateSpec) -> ReadColumns {
 /// describes those columns and nothing else: sorts and projections that only
 /// select columns are left out, a join keeps its type, keys, residual
 /// predicate and null equality plus the output columns read above it (with
-/// the side and input column each comes from), and a filter or computed
-/// projection adds the columns it reads. Branches over the same rows differ in
-/// column pruning and in physical join choices that order the output (TPC-DS
-/// q27's rollup branches); neither reaches a read column. Below an operator
-/// that depends on order or positions (a limit, window or union), and below
-/// anything else, the shape is exact operator for operator.
+/// the side and input column each comes from), a filter adds the columns it
+/// reads, and a computed projection keeps the outputs read above it, each
+/// restated through the projections and sorts below it over the columns of
+/// the first other operator (`read_outputs_below_projections`). Branches over
+/// the same rows differ in column pruning, in physical join choices that order
+/// the output (TPC-DS q27's rollup branches), and in the names projections give
+/// intermediate values (the `__common_expr_N` aliases DataFusion numbers per
+/// inlined CTE copy); none of these reaches a read column. A filter or join
+/// that reads such a name still keys on the name, so copies that differ there
+/// stay apart. Below an operator that depends on order or positions (a limit,
+/// window or union), and below anything else, the shape is exact operator for
+/// operator.
 fn grouped_input_shape(plan: &QueryPlan, node_id: NodeId, read: &ReadColumns) -> Option<String> {
     let ReadColumns::Named(read) = read else {
         return exact_input_shape(plan, node_id);
@@ -248,8 +256,16 @@ fn grouped_input_shape(plan: &QueryPlan, node_id: NodeId, read: &ReadColumns) ->
             return grouped_input_shape(plan, projection.input, &ReadColumns::Named(read.clone()));
         },
         PlanNode::Projection(projection) => {
-            let input_read = projection.expressions().flat_map(Expr::columns).map(|column| column.name().to_string());
-            (node.kind.detached_fingerprint(), vec![(projection.input, ReadColumns::Named(input_read.collect()))])
+            let (below, outputs) = read_outputs_below_projections(plan, projection, read)?;
+            let input_read = outputs
+                .iter()
+                .flat_map(|output| output.expr.columns())
+                .map(|column| column.name().to_string())
+                .collect();
+            (
+                PlanNode::Projection(ProjectionNode::new(below, outputs)).detached_fingerprint(),
+                vec![(below, ReadColumns::Named(input_read))],
+            )
         },
         PlanNode::Filter(filter) => {
             let mut input_read = read.clone();
@@ -305,6 +321,55 @@ fn grouped_input_shape(plan: &QueryPlan, node_id: NodeId, read: &ReadColumns) ->
     Some(format!("{fingerprint}({})", inputs.join(",")))
 }
 
+/// The outputs of `projection` named in `read`, sorted by name and without
+/// outer aliases, each restated over the columns of the first node below the
+/// projections and sorts under `projection`, which is returned with them.
+/// Projections and sorts keep the row set, so the restated outputs compute
+/// the same values from that node. The restatement ends at a projection whose
+/// outputs repeat a name, and before any projection while an output reads a
+/// qualified column, which substitution leaves untouched; the shape then
+/// describes that projection on its own.
+fn read_outputs_below_projections(
+    plan: &QueryPlan,
+    projection: &ProjectionNode,
+    read: &BTreeSet<String>,
+) -> Option<(NodeId, Vec<ProjectionOutput>)> {
+    let mut outputs = projection
+        .outputs
+        .iter()
+        .filter(|output| read.contains(output.field.name()))
+        .map(|output| ProjectionOutput::new(peel_outer_alias(output.expr.clone()), output.field.clone()))
+        .collect::<Vec<_>>();
+    outputs.sort_by(|left, right| left.field.name().cmp(right.field.name()));
+    let mut below = projection.input;
+    loop {
+        match &plan.node(below)?.kind {
+            PlanNode::Sort(sort) => below = sort.input,
+            PlanNode::Projection(_)
+                if outputs.iter().any(|output| output.expr.columns().any(|column| column.qualifier().is_some())) =>
+            {
+                break;
+            },
+            PlanNode::Projection(inner) => {
+                let Some(restated) = outputs
+                    .iter()
+                    .map(|output| {
+                        substitute_columns_through_projection(output.expr.clone(), inner)
+                            .map(|expr| ProjectionOutput::new(expr, output.field.clone()))
+                    })
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    break;
+                };
+                outputs = restated;
+                below = inner.input;
+            },
+            _ => break,
+        }
+    }
+    Some((below, outputs))
+}
+
 /// Operator-for-operator shape of the subtree at `node_id`, with each local
 /// Parquet source reduced to its predicate-wildcarded abstract fingerprint.
 fn exact_input_shape(plan: &QueryPlan, node_id: NodeId) -> Option<String> {
@@ -319,28 +384,16 @@ fn exact_input_shape(plan: &QueryPlan, node_id: NodeId) -> Option<String> {
     Some(format!("{}({})", node.kind.detached_fingerprint(), inputs.join(",")))
 }
 
-/// Whether every output of `projection` is an unqualified input column under
-/// its own name, possibly behind aliases.
-fn projection_only_selects_columns(projection: &ProjectionNode) -> bool {
-    projection.outputs.iter().all(|output| {
-        let mut expr = &output.expr;
-        while let Expr::Alias { expr: inner, .. } = expr {
-            expr = inner;
-        }
-        matches!(expr, Expr::Column(column) if column.qualifier().is_none() && column.name() == output.field.name())
-    })
-}
-
-/// Group output columns that are a source column under the same name, keyed
-/// by that source's abstract fingerprint. A predicate over such a column
-/// selects the same groups before or after the aggregate.
-fn post_aggregate_filterable_group_columns_by_source(
+/// Group outputs that are a source column under the same name, keyed by that
+/// source's abstract fingerprint. A predicate over such a column selects the
+/// same groups before or after the aggregate.
+fn post_aggregate_group_keys_by_source(
     plan: &QueryPlan,
     input: NodeId,
     output_schema: &Arc<Schema>,
     spec: &AggregateSpec,
-) -> BTreeMap<String, BTreeSet<String>> {
-    let mut columns = BTreeMap::<String, BTreeSet<String>>::new();
+) -> BTreeMap<String, Vec<GroupKeyOutput>> {
+    let mut outputs = BTreeMap::<String, Vec<GroupKeyOutput>>::new();
     for (expr, field) in spec.group_exprs.iter().zip(output_schema.fields().iter()) {
         let Some(column) = simple_group_column_name(expr) else {
             continue;
@@ -352,10 +405,13 @@ fn post_aggregate_filterable_group_columns_by_source(
             continue;
         };
         if lineage.source_column == column {
-            columns.entry(lineage.source_fingerprint).or_default().insert(column.to_string());
+            outputs.entry(lineage.source_fingerprint).or_default().push(GroupKeyOutput {
+                output: column.to_string(),
+                definition: GroupKeyDefinition::Column(column.to_string()),
+            });
         }
     }
-    columns
+    outputs
 }
 
 fn simple_group_column_name(expr: &Expr) -> Option<&str> {
