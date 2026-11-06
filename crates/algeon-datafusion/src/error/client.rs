@@ -5,7 +5,8 @@
 //! them from here. The status message of a blocking plan element adds a pointer
 //! to `EXPLAIN GPU`, which the summary omits. Text of the failure kinds whose
 //! raw message stays on the server is replaced by a static message, and caller
-//! schema identifiers join only the wire text, never the logged one.
+//! schema identifiers and native diagnostic text join only the wire text, never
+//! the logged one.
 
 use datafusion::common::DataFusionError;
 use query_planning::error::bytes_with_gib;
@@ -40,10 +41,14 @@ const BLOCKING_SUBJECT_POINTER: &str = "EXPLAIN GPU lists every blocking candida
 /// The texts a query caller sees for one failure.
 pub(crate) struct ClientMessage {
     /// The text without caller schema identifiers, which the boundary log may record.
-    #[cfg_attr(not(feature = "server"), expect(dead_code, reason = "only the Flight boundary logs the message"))]
+    #[cfg_attr(
+        all(not(feature = "server"), not(test)),
+        expect(dead_code, reason = "only the Flight boundary logs the message")
+    )]
     pub(crate) logged: String,
-    /// The failure text a caller receives: `logged` plus the caller schema
-    /// detail the error names, without the closing pointer to `EXPLAIN GPU`.
+    /// The failure text a caller receives: `logged` plus the native
+    /// diagnostic of a client-actionable failure and the caller schema detail
+    /// the error names, without the closing pointer to `EXPLAIN GPU`.
     pub(crate) text: String,
     #[cfg_attr(not(feature = "server"), expect(dead_code, reason = "only the Flight boundary appends the pointer"))]
     pointer: Option<&'static str>,
@@ -69,8 +74,10 @@ const NATIVE_REQUIRED_REJECTION: &str = "native_required mode rejected a plan th
 /// The texts the status boundary shows a query caller for `error`.
 pub(crate) fn client_message(error: &Error) -> ClientMessage {
     let mut logged = client_status_message(error);
+    let status =
+        client_native_message(error, &logged).map_or_else(|| logged.clone(), |native| format!("{logged}: {native}"));
     let detail = client_actionable_kind(error).then(|| error.client_detail()).flatten();
-    let mut text = detail.map_or_else(|| logged.clone(), |detail| client_schema_detail_message(detail, &logged));
+    let mut text = detail.map_or_else(|| status.clone(), |detail| client_schema_detail_message(detail, &status));
     if error.code() == ErrorCode::SizeOverflow
         && let Some(column) = error.fact_value("column")
     {
@@ -80,10 +87,12 @@ pub(crate) fn client_message(error: &Error) -> ClientMessage {
         logged.insert_str(0, NATIVE_REQUIRED_REJECTION);
         text.insert_str(0, NATIVE_REQUIRED_REJECTION);
     }
-    // The native layer owns `remedy`, the change that makes the call succeed;
-    // the client text renders it once, after the failure itself.
+    // `remedy` is static Algeon text naming the change that makes the call
+    // succeed, set by the layer that knows the failing operation: the native
+    // algorithm for a convergence failure, the cuGraph vertex mapping for a
+    // memory cap failure. The client text renders it once, after the failure.
     let remedy = match (error.fact_value("remedy"), error.code()) {
-        (Some(remedy), ErrorCode::AlgorithmDidNotConverge) => Some(remedy),
+        (Some(remedy), ErrorCode::AlgorithmDidNotConverge | ErrorCode::QueryMemoryLimitExceeded) => Some(remedy),
         (None, ErrorCode::AlgorithmDidNotConverge) => Some("change the convergence parameters"),
         (remedy, _) => remedy.filter(|_| client_actionable_kind(error)),
     };
@@ -93,6 +102,21 @@ pub(crate) fn client_message(error: &Error) -> ClientMessage {
     }
     let pointer = matches!(detail, Some(ClientDetail::BlockingSubject { .. })).then_some(BLOCKING_SUBJECT_POINTER);
     ClientMessage { logged, text, pointer }
+}
+
+/// The native diagnostic the client text of `error` adds after `status`.
+///
+/// It is the `native_message` fact the Flight metadata projects under the same
+/// [`client_actionable_kind`] gate, so the text discloses nothing the metadata
+/// does not, and it stays out of the logged text because the fact is raw. It
+/// joins only a status that passes the error's own message through, so a
+/// fixed sentence such as a source failure's stays fixed. A message that
+/// already quotes it, as [`Error::from_native_with_blocking_diagnostics`]
+/// composes one, shows it once.
+fn client_native_message<'a>(error: &'a Error, status: &str) -> Option<&'a str> {
+    error
+        .fact_value("native_message")
+        .filter(|native| client_actionable_kind(error) && status == error.message() && !status.contains(native))
 }
 
 /// The code and the text a query caller sees when `error` fails a statement.

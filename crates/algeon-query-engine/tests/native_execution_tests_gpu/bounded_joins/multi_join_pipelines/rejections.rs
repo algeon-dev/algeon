@@ -87,7 +87,7 @@ fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_re
     };
     assert_eq!(*reason, Reason::UnsupportedJoinResidualExpressionCapability);
     assert_eq!(facts.get("expression_family").map(String::as_str), Some("like"));
-    assert_eq!(facts.get("reason").map(String::as_str), Some("join_residual_expression_family_not_supported"));
+    assert_eq!(facts.get("rule").map(String::as_str), Some("join_residual_expression_family_not_supported"));
 
     let context = backend_context_with_grant(1024 * 1024_u64);
     let error = match execute_query_plan(&context, &plan) {

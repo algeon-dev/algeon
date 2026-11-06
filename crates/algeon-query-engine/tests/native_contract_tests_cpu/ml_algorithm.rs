@@ -410,7 +410,7 @@ fn validation_and_capability_reject_bad_ml_contracts() {
             .unwrap();
         let CapabilityDecision::Rejected { reason: rejection, facts } = root.executable else { panic!("must reject") };
         assert_eq!(rejection, Reason::UnsupportedMlAlgorithmNodeCapability(UnsupportedPart::from_code(error.code())));
-        assert_eq!(facts.get("reason").map(String::as_str), Some(reason));
+        assert_eq!(facts.get("rule").map(String::as_str), Some(reason));
     }
     // Execution narrows Float64 features to Float32, so preflight admits them.
     preflight_query_plan(&plan_with_schema(
@@ -709,7 +709,7 @@ fn forest_feature_count_mismatch_rejects_preflight_and_capability() {
         .unwrap();
     let CapabilityDecision::Rejected { reason, facts } = root.executable else { panic!("must reject") };
     assert_eq!(reason, Reason::UnsupportedMlAlgorithmNodeCapability(UnsupportedPart::Operator));
-    assert_eq!(facts.get("reason").map(String::as_str), Some("forest_feature_count_mismatch"));
+    assert_eq!(facts.get("rule").map(String::as_str), Some("forest_feature_count_mismatch"));
     assert_eq!(facts.get("expected").map(String::as_str), Some("4"));
     assert_eq!(facts.get("actual").map(String::as_str), Some("3"));
     assert_eq!(facts.get("validation_code").map(String::as_str), Some("invalid_plan"));

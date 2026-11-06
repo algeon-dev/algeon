@@ -23,12 +23,21 @@ narrows either part of this shared contract.
 
 ## Vertex codebook
 
-`cugraph_spectral_modularity_maximization` and `cugraph_minimum_spanning_tree`
-run their native algorithms on Int32 vertex ids. Both accept Int32, Int64 and
-string vertex columns. For Int64 and string vertices, the call maps each
-distinct vertex to a dense Int32 id before the native algorithm runs and
-decodes the returned ids to the input vertex type, so the SQL needs no mapping
-table. The distinct vertex count must fit in Int32.
+A call whose vertex type the native algorithm cannot index maps each distinct
+vertex to a dense id of the native vertex id type in the table above, runs the
+algorithm on those ids and decodes the returned ids to the input vertex type,
+so the SQL needs no mapping table. String vertices are mapped for every
+algorithm. `cugraph_spectral_modularity_maximization` and
+`cugraph_minimum_spanning_tree` run on Int32 ids, so they also map Int64
+vertices, and their distinct vertex count must fit in Int32.
+
+The mapping keeps the edge relation resident with both endpoint columns,
+builds the distinct vertex set from both endpoints and joins the edge relation
+to it once per endpoint. Peak device memory for a string-vertex call grows with
+the string bytes of the edge relation and is several times the peak of the
+same graph with Int64 vertex ids. When such a call exceeds the query memory
+grant, assign Int64 surrogate ids in the edge subquery, for example by joining
+the edges to a vertex table, and join the algorithm output back to the strings.
 
 ## Construction options
 

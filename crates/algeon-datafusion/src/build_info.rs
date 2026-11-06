@@ -40,8 +40,9 @@ pub struct BuildInfo {
     /// build time, else `git rev-parse --short=12 HEAD`, else `None` when the
     /// source tree is not a git checkout.
     pub git_commit: Option<&'static str>,
-    /// Enabled optional engine features, sorted: a subset of `cugraph`,
-    /// `cuml`, `cuvs` and `nvml`.
+    /// Enabled optional features, sorted: a subset of `cugraph`, `cuml`,
+    /// `cuvs`, `iceberg` and `nvml`. `iceberg` is on when `algeon-iceberg`
+    /// is linked into the build.
     pub features: &'static [&'static str],
     /// The linked DataFusion release.
     pub datafusion_version: &'static str,
@@ -54,6 +55,8 @@ const ENABLED_FEATURES: &[&str] = &[
     "cuml",
     #[cfg(feature = "cuvs")]
     "cuvs",
+    #[cfg(feature = "iceberg")]
+    "iceberg",
     #[cfg(feature = "nvml")]
     "nvml",
 ];

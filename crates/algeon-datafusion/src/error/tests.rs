@@ -1083,3 +1083,15 @@ fn query_memory_cap_message_names_the_setting_that_raises_it() {
     let text = client::client_message(&error).text;
     assert!(text.contains("raise `admission.device_profiles.default_query_limit_bytes` for the device"), "{text}");
 }
+
+#[test]
+fn query_memory_cap_message_ends_with_its_remedy_once_in_both_texts() {
+    let remedy = "assign Int64 surrogate ids to the string vertices in the edge subquery";
+    let error = Error::new(ErrorCode::QueryMemoryLimitExceeded, "query_engine.filter.execute", "allocation failed")
+        .with_fact("remedy", remedy);
+    let message = client::client_message(&error);
+    for text in [&message.logged, &message.text] {
+        assert!(text.ends_with(&format!("fails again; {remedy}")), "{text}");
+        assert_eq!(text.matches(remedy).count(), 1, "{text}");
+    }
+}

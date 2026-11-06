@@ -26,6 +26,7 @@ futures = "0.3"
 | `cuml` | Machine learning and forest inference table functions | cuVS, cuML |
 | `server` | Embedded Arrow Flight SQL server | none |
 | `nvml` | Live device diagnostics through NVML | none |
+| `iceberg` | Set by `algeon-iceberg` so `algeon_version()` lists Iceberg support; enabling it directly adds nothing | none |
 
 No feature is on by default. Algeon needs Linux, an NVIDIA GPU and a CUDA toolkit, and
 Cargo does not build the RAPIDS libraries. Build them from the Algeon source tag

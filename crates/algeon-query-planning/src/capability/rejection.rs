@@ -9,7 +9,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use super::{CapabilityRejectionCategory, CapabilityScope, EdgeConsumer, InvariantId, NodeId, ResultSinkKind};
-use crate::error::QueryErrorCode;
+use crate::error::{QueryError, QueryErrorCode};
 
 /// The part of an operator the backend cannot execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -530,7 +530,8 @@ pub struct Rejection {
     pub owner: RejectionOwner,
     /// Decides the report label and category.
     pub reason: Reason,
-    /// Diagnostics only; they never change the category or boundary.
+    /// Diagnostics only; they never change the category or boundary. The
+    /// local rule a check applied is the `rule` fact.
     pub facts: BTreeMap<&'static str, String>,
 }
 
@@ -539,6 +540,28 @@ impl Rejection {
     /// retain the last value; facts do not change its classification.
     pub fn new(owner: RejectionOwner, reason: Reason, facts: impl IntoIterator<Item = (&'static str, String)>) -> Self {
         Self { owner, reason, facts: facts.into_iter().collect() }
+    }
+
+    /// The facts of `error` as rejection facts.
+    ///
+    /// A validator names the rule it applied in its `reason` fact. The
+    /// rejection's own reason is the typed [`Reason`], which the adapter
+    /// reports under that name, so the rule is carried as `rule`.
+    pub(crate) fn error_facts(error: &QueryError) -> BTreeMap<&'static str, String> {
+        error
+            .facts()
+            .iter()
+            .map(|(key, value)| (if key == "reason" { "rule" } else { key }, value.to_string()))
+            .collect()
+    }
+
+    /// [`Self::error_facts`] with the validator's code and operation, for a
+    /// rejection that reports a plan validation failure.
+    pub(crate) fn validation_facts(error: &QueryError) -> BTreeMap<&'static str, String> {
+        let mut facts = Self::error_facts(error);
+        facts.insert("validation_code", error.code().as_str().to_string());
+        facts.insert("validation_operation", error.operation().to_string());
+        facts
     }
 
     /// Classification determined by the rejection reason.

@@ -42,7 +42,9 @@ use input::{
     check_host_staging_cancellation, collect_cugraph_inputs, materialize_gpu_output_eagerly,
     prepare_cugraph_source_metadata, record_batches_to_gpu,
 };
-use logical_mapping::{add_logical_mapping_plan, decode_logical_graph_result, graph_uses_logical_mapping};
+use logical_mapping::{
+    StringVertexMappingNodes, add_logical_mapping_plan, decode_logical_graph_result, graph_uses_logical_mapping,
+};
 use lowering::{
     CugraphPlanDefinition, cugraph_execution_capability_evidence, cugraph_schema_query_plan,
     execute_cugraph_query_to_gpu_with_options, native_algorithm, native_graph_spec_for_placement_hint,

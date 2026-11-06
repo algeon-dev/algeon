@@ -505,7 +505,7 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
         panic!("invalid vector dtype should be rejected locally");
     };
     assert_eq!(reason, Reason::UnsupportedVectorAlgorithmNodeCapability(UnsupportedPart::DataType));
-    assert_eq!(facts.get("reason").map(String::as_str), Some("unsupported_feature_type"));
+    assert_eq!(facts.get("rule").map(String::as_str), Some("unsupported_feature_type"));
     assert_eq!(facts.get("validation_code").map(String::as_str), Some("unsupported_type"));
 }
 

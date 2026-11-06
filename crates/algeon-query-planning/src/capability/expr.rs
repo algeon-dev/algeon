@@ -13,8 +13,9 @@ use crate::{
 };
 
 /// Stable report facts for an expression capability miss. Both strings are
-/// report contracts: `reason` names the rule and `expression_family` the
-/// `expr_family` label of the offending form.
+/// report contracts: `reason` names the rule, reported as the `rule` fact of
+/// a rejection, and `expression_family` the `expr_family` label of the
+/// offending form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ExpressionCapabilityRejection {
     reason: &'static str,
@@ -31,7 +32,7 @@ pub(super) fn expression_rejection_decision(
         reason,
         [
             ("node_id", node_id.to_string()),
-            ("reason", rejection.reason.to_string()),
+            ("rule", rejection.reason.to_string()),
             ("expression_family", rejection.expression_family.to_string()),
             ("expression", expression.to_string()),
         ],

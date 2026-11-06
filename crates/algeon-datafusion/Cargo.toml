@@ -17,7 +17,7 @@ readme = "README.md"
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
-features = ["server", "bench-support", "cugraph", "cuvs", "cuml", "nvml"]
+features = ["server", "bench-support", "cugraph", "cuvs", "cuml", "nvml", "iceberg"]
 
 [features]
 default = []
@@ -46,6 +46,8 @@ cuvs = ["dep:cuvs", "dep:cuvs-sys", "query-engine/cuvs"]
 cuml = ["dep:cuml", "dep:cuml-sys", "dep:libc", "query-engine/cuml"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["query-engine/nvml"]
+# Set by algeon-iceberg so `algeon_version()` reports Iceberg catalog support; enabling it directly adds nothing.
+iceberg = []
 
 [dependencies]
 arrow = { workspace = true }

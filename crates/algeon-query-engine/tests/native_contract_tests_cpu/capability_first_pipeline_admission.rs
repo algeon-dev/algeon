@@ -741,7 +741,7 @@ fn capability_admission_rejects_regexp_replace_with_an_empty_replacement() {
         let decision = admit_default(&plan).expect("an unsupported replacement is a decision");
         let rejection = decision.rejection().expect("an empty REGEXP_REPLACE replacement is rejected");
         assert_eq!(
-            rejection.facts.get("reason").map(String::as_str),
+            rejection.facts.get("rule").map(String::as_str),
             Some("regexp_replace_replacement_must_not_be_empty")
         );
         assert_eq!(rejection.facts.get("expression_family").map(String::as_str), Some("regexp_replace"));
@@ -791,7 +791,7 @@ fn capability_admission_rejects_regexp_replace_with_an_empty_replacement_in_a_po
     assert!(admitted.rejection().is_none(), "the residual form admits REGEXP_REPLACE");
     let decision = admit_default(&plan_with_replacement("")).expect("an empty replacement is a decision");
     let rejection = decision.rejection().expect("an empty REGEXP_REPLACE replacement is rejected in the residual");
-    assert_eq!(rejection.facts.get("reason").map(String::as_str), Some("regexp_replace_replacement_must_not_be_empty"));
+    assert_eq!(rejection.facts.get("rule").map(String::as_str), Some("regexp_replace_replacement_must_not_be_empty"));
     assert_eq!(rejection.facts.get("expression_family").map(String::as_str), Some("regexp_replace"));
 }
 
