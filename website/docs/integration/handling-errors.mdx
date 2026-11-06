@@ -188,6 +188,13 @@ filter or project earlier, split the query, or raise
 unchanged resubmission fails again. A device allocation failure also points at
 the sealed attempt report.
 
+When the operation that exceeded the cap maps the vertices of a string-vertex
+cuGraph call, the `query_memory_limit_exceeded` message ends with the remedy
+`assign Int64 surrogate ids to the string vertices in the edge subquery`. The
+[vertex codebook](../cugraph/graph-options.mdx#vertex-codebook) section
+explains why string vertices raise the peak. A failure in the graph algorithm
+itself or elsewhere in the query keeps the message above.
+
 | Fact | Meaning |
 | --- | --- |
 | `native_operation`, `budget_operation` | Code identifier of the failing operation. |

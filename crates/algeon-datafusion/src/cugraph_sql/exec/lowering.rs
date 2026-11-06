@@ -28,8 +28,8 @@ use super::{
     GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, NativeExpr, NativeGraphBetweennessSeeds,
     NativeGraphBfsPredicateInputs, NativeGraphEdgePredicateInput, NativeGraphPageRankPersonalizationInput,
     NativeGraphPredicateInput, ProjectionOutput, QueryExecutionRequest, QueryOutput, QueryPlanBuilder, Result,
-    SchemaRef, SortExpr, SortSpec, SourceNode, add_logical_mapping_plan, decode_logical_graph_result,
-    execute_query_plan, finalize_graph_query_outcome, graph_uses_logical_mapping, plan,
+    SchemaRef, SortExpr, SortSpec, SourceNode, StringVertexMappingNodes, add_logical_mapping_plan,
+    decode_logical_graph_result, execute_query_plan, finalize_graph_query_outcome, graph_uses_logical_mapping, plan,
 };
 
 /// The graph-fragment definition shared by preflight, plan construction, and
@@ -83,8 +83,9 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
     singleflight_leader: Option<&mut GraphBfsLeader>,
 ) -> Result<GpuResultHandle> {
     let graph_context = graph_algorithm_execution_context(context)?;
-    let plan = cugraph_query_plan(&graph_context, definition, edge_frame, predicate_frames)?;
-    plan.inputs.get(CUGRAPH_EDGE_INPUT_NAME).ok_or_else(|| {
+    let CugraphQueryPlan { admitted, inputs, string_vertex_mapping } =
+        cugraph_query_plan(&graph_context, definition, edge_frame, predicate_frames)?;
+    inputs.get(CUGRAPH_EDGE_INPUT_NAME).ok_or_else(|| {
         Error::new(
             ErrorCode::InvalidExecutionPlan,
             "algeon_datafusion.cugraph_sql.execute_gpu",
@@ -95,16 +96,18 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
     if let Some(leader) = singleflight_leader {
         leader.record_traversal_submission();
     }
-    let outcome = execute_query_plan(
-        &graph_context,
-        QueryExecutionRequest::admitted(&plan.admitted).with_owned_gpu_inputs(plan.inputs),
-    );
+    let outcome =
+        execute_query_plan(&graph_context, QueryExecutionRequest::admitted(&admitted).with_owned_gpu_inputs(inputs));
     let output = finalize_graph_query_outcome(
         metrics,
         outcome,
         "algeon_datafusion.cugraph_sql.execute_gpu",
         "native cuGraph SQL GPU-resident query execution failed",
-    )?;
+    )
+    .map_err(|error| match &string_vertex_mapping {
+        Some(mapping) => mapping.with_memory_remedy(error),
+        None => error,
+    })?;
     let QueryOutput::GpuResident(handle) = output else {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
@@ -123,6 +126,7 @@ pub(super) fn graph_algorithm_execution_context(context: &ExecutionContext) -> R
 pub(super) struct CugraphQueryPlan {
     admitted: Arc<AdmittedPlan>,
     inputs: GpuResidentInputMap,
+    string_vertex_mapping: Option<StringVertexMappingNodes>,
 }
 
 pub(super) const CUGRAPH_EDGE_INPUT_NAME: &str = "__algeon_datafusion_cugraph_edges";
@@ -147,7 +151,7 @@ pub(super) fn cugraph_query_plan(
     let mut inputs = GpuResidentInputMap::new();
     inputs.insert(CUGRAPH_EDGE_INPUT_NAME.to_string(), handle);
     bind_predicate_gpu_inputs(context, &mut inputs, predicate_frames)?;
-    let plan = cugraph_schema_query_plan(definition)?;
+    let (plan, string_vertex_mapping) = cugraph_query_plan_with_vertex_mapping(definition)?;
     // The graph plan is built here, after its inputs are bound, so it is
     // admitted here, once; a refusal is a typed error, never a CPU rerun.
     let admitted = admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
@@ -158,10 +162,18 @@ pub(super) fn cugraph_query_plan(
             error,
         )
     })?;
-    Ok(CugraphQueryPlan { admitted, inputs })
+    Ok(CugraphQueryPlan { admitted, inputs, string_vertex_mapping })
 }
 
 pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> Result<QueryPlan> {
+    cugraph_query_plan_with_vertex_mapping(definition).map(|(plan, _)| plan)
+}
+
+/// The graph plan of `definition` and, for a string-vertex call, the nodes
+/// that map its vertices.
+pub(super) fn cugraph_query_plan_with_vertex_mapping(
+    definition: &CugraphPlanDefinition,
+) -> Result<(QueryPlan, Option<StringVertexMappingNodes>)> {
     let CugraphPlanDefinition {
         spec,
         edge_schema,
@@ -240,7 +252,8 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
         native_vertex_type,
     );
     let mut root_schema = Arc::clone(&graph_spec.output_schema);
-    let mut root = builder.add_graph_algorithm(graph_input, graph_predicates, graph_spec).map_err(native_plan_error)?;
+    let graph = builder.add_graph_algorithm(graph_input, graph_predicates, graph_spec).map_err(native_plan_error)?;
+    let mut root = graph;
     if let Some(outputs) = bfs_vertices_output_projection(&execution_spec, &graph_edge_schema)? {
         root = builder.add_projection(root, outputs).map_err(native_plan_error)?;
         root_schema = Arc::clone(&execution_spec.output_schema);
@@ -251,8 +264,11 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
     if logical_mapping && let Some(limit) = result_options.limit {
         root = builder.add_limit(root, LimitSpec::fetch(limit)).map_err(native_plan_error)?;
     }
+    let mut decode = None;
     if let Some(codebook) = &codebook {
+        let decode_input = root;
         (root, _) = decode_logical_graph_result(&mut builder, &spec, root, root_schema, codebook)?;
+        decode = Some((decode_input, root));
         if spec.is_bfs_path_output() {
             root = builder
                 .add_sort(root, SortSpec::new(vec![SortExpr::new(NativeExpr::column("path_index"), false, false)]))
@@ -283,7 +299,11 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
     if !logical_mapping && let Some(limit) = result_options.limit {
         root = builder.add_limit(root, LimitSpec::fetch(limit)).map_err(native_plan_error)?;
     }
-    builder.finish_gpu_resident(root).map_err(native_plan_error)
+    let plan = builder.finish_gpu_resident(root).map_err(native_plan_error)?;
+    let mapping = codebook.zip(decode).and_then(|(codebook, (decode_input, decoded))| {
+        StringVertexMappingNodes::new(&plan, &codebook, graph, decode_input, decoded)
+    });
+    Ok((plan, mapping))
 }
 
 /// A native cuGraph plan the builder rejects is an adapter defect.

@@ -84,10 +84,12 @@ pub(crate) fn client_message(error: &Error) -> ClientMessage {
         logged.insert_str(0, NATIVE_REQUIRED_REJECTION);
         text.insert_str(0, NATIVE_REQUIRED_REJECTION);
     }
-    // The native layer owns `remedy`, the change that makes the call succeed;
-    // the client text renders it once, after the failure itself.
+    // `remedy` is static Algeon text naming the change that makes the call
+    // succeed, set by the layer that knows the failing operation: the native
+    // algorithm for a convergence failure, the cuGraph vertex mapping for a
+    // memory cap failure. The client text renders it once, after the failure.
     let remedy = match (error.fact_value("remedy"), error.code()) {
-        (Some(remedy), ErrorCode::AlgorithmDidNotConverge) => Some(remedy),
+        (Some(remedy), ErrorCode::AlgorithmDidNotConverge | ErrorCode::QueryMemoryLimitExceeded) => Some(remedy),
         (None, ErrorCode::AlgorithmDidNotConverge) => Some("change the convergence parameters"),
         (remedy, _) => remedy.filter(|_| client_actionable_kind(error)),
     };

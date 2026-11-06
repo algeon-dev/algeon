@@ -1,18 +1,18 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, StringArray},
     datatypes::Field,
 };
-use query_planning::plan::NodeId;
+use query_planning::plan::{NodeId, QueryPlan};
 
 use super::{
     AggregateSpec, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, ColumnRef, CugraphAlgorithmParams,
     CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsSourceVertex,
-    CugraphLogicalOutputMultiplicity, CugraphVertexSelector, DataType, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
-    JoinType, LiteralBatchSource, NativeExpr, PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder,
-    RecordBatch, Result, Schema, SchemaRef, SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec,
-    lowering::native_plan_error, plan, result_schema_for_params, vertex_id_domain_for_call,
+    CugraphLogicalOutputMultiplicity, CugraphVertexSelector, DataType, Error, ErrorCode, JoinKey, JoinOutputColumn,
+    JoinSide, JoinSpec, JoinType, LiteralBatchSource, NativeExpr, PredicateSourceColumnRole, ProjectionOutput,
+    QueryPlanBuilder, RecordBatch, Result, Schema, SchemaRef, SortExpr, SortSpec, SourceNode, WindowFunction,
+    WindowSpec, lowering::native_plan_error, plan, result_schema_for_params, vertex_id_domain_for_call,
 };
 use crate::cugraph_sql::{
     CugraphVertexIdDomain, registry::CugraphLogicalOutputColumn, types::bfs_result_schema_for_vertex_domain,
@@ -21,12 +21,80 @@ use crate::cugraph_sql::{
 const LOGICAL_VERTEX_COLUMN: &str = "__vertex_id_logical";
 const NATIVE_VERTEX_COLUMN: &str = "__vertex_id";
 
+/// Remedy of a query memory cap failure in the vertex mapping of a
+/// string-vertex call. The mapping holds the string bytes of the edge relation
+/// in its union, codebook and joins, which Int64 vertex ids avoid. The wording
+/// follows the vertex codebook section of `website/docs/cugraph/graph-options.mdx`.
+const STRING_VERTEX_MEMORY_REMEDY: &str = "assign Int64 surrogate ids to the string vertices in the edge subquery";
+
 /// The per-call vertex codebook: one row per distinct vertex with its logical
 /// id (the input vertex type) and its dense native id (the algorithm's native
 /// vertex type).
 pub(super) struct VertexCodebook {
     pub(super) node: NodeId,
     pub(super) logical_type: DataType,
+    string_vertices: bool,
+}
+
+/// The nodes of a string-vertex call's plan that map its vertices: every node
+/// below the graph node, from the GPU-resident edge and side inputs through
+/// the codebook to the encode joins, and the joins that decode the graph
+/// output.
+pub(super) struct StringVertexMappingNodes {
+    nodes: BTreeSet<NodeId>,
+}
+
+impl StringVertexMappingNodes {
+    /// The mapping nodes of `plan`, or `None` when `codebook` maps numeric
+    /// vertices. `graph` is the graph-algorithm node, and the decode joins lead
+    /// from `decode_input` to `decoded`.
+    pub(super) fn new(
+        plan: &QueryPlan,
+        codebook: &VertexCodebook,
+        graph: NodeId,
+        decode_input: NodeId,
+        decoded: NodeId,
+    ) -> Option<Self> {
+        if !codebook.string_vertices {
+            return None;
+        }
+        let mut nodes = input_closure(plan, plan.node(graph)?.input_ids().iter().copied());
+        let before_decode = input_closure(plan, [decode_input]);
+        nodes.extend(input_closure(plan, [decoded]).difference(&before_decode));
+        Some(Self { nodes })
+    }
+
+    /// Adds [`STRING_VERTEX_MEMORY_REMEDY`] to a query memory cap failure of a
+    /// mapping node. A failure elsewhere in the plan, such as in the graph
+    /// algorithm or a result sort, keeps its message.
+    pub(super) fn with_memory_remedy(&self, error: Error) -> Error {
+        if error.code() != ErrorCode::QueryMemoryLimitExceeded {
+            return error;
+        }
+        // An operator records `node_id`; the pipeline task that ran it adds
+        // `plan_node_id`, which names the consuming task when the operator ran
+        // inside a fused frame stream. The operator is the failing node.
+        let failing = error.fact_value("node_id").or_else(|| error.fact_value("plan_node_id"));
+        if failing.is_some_and(|failing| self.nodes.iter().any(|node| node.to_string() == failing)) {
+            error.with_fact("remedy", STRING_VERTEX_MEMORY_REMEDY)
+        } else {
+            error
+        }
+    }
+}
+
+/// `roots` and every node they read, directly or transitively.
+fn input_closure(plan: &QueryPlan, roots: impl IntoIterator<Item = NodeId>) -> BTreeSet<NodeId> {
+    let mut closure = BTreeSet::new();
+    let mut pending = roots.into_iter().collect::<Vec<_>>();
+    while let Some(node) = pending.pop() {
+        if closure.insert(node)
+            && let Some(node) = plan.node(node)
+        {
+            pending.extend_from_slice(node.input_ids());
+        }
+    }
+    closure
 }
 
 pub(super) struct LogicalMappingPlan {
@@ -62,7 +130,8 @@ pub(super) fn add_logical_mapping_plan(
     predicate_nodes: Vec<NodeId>,
     predicate_schemas: Vec<SchemaRef>,
 ) -> Result<LogicalMappingPlan> {
-    let logical_type = edge_vertex_domain(spec, &edge_schema)?.output_data_type();
+    let domain = edge_vertex_domain(spec, &edge_schema)?;
+    let logical_type = domain.output_data_type();
     let native_type = spec.algorithm.native_vertex_id_type();
     let row_number = match native_type {
         DataType::Int32 => WindowFunction::row_number_i32(NATIVE_VERTEX_COLUMN),
@@ -142,7 +211,7 @@ pub(super) fn add_logical_mapping_plan(
             ),
         )
         .map_err(native_plan_error)?;
-    let codebook = VertexCodebook { node: codebook_node, logical_type };
+    let codebook = VertexCodebook { node: codebook_node, logical_type, string_vertices: domain.is_string_logical() };
 
     let (encoded_edge, encoded_edge_schema) = encode_relation_columns(
         builder,

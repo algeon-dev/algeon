@@ -61,6 +61,7 @@ use crate::{
         CugraphVertexIdDomain,
         exec::{
             input::{StagedCugraphSource, execute_edge_source_to_gpu, stage_cugraph_inputs},
+            lowering::cugraph_query_plan_with_vertex_mapping,
             residency::{graph_residency_matches_edge_schema, native_graph_spec_for_residency},
         },
         result_schema_for_params, result_schema_for_vertex_domain,
@@ -996,6 +997,85 @@ fn string_pagerank_plan_restores_subsumed_top_k_order_after_decode() {
     assert_eq!(post_decode_sort.input, decode.id);
     assert_eq!(post_decode_sort.spec, result_options.subsumed_top_k_sort.unwrap());
     assert_eq!(plan.output_schema().field(0), &Field::new("vertex", DataType::Utf8, false));
+}
+
+/// The surrogate-id remedy names the cause of a memory cap failure only in the
+/// nodes that map string vertices. The graph node and the result sort of the
+/// same plan, and the Int64 codebook of an Int32-only algorithm, fail without it.
+#[test]
+fn memory_cap_remedy_covers_only_the_string_vertex_mapping_nodes() {
+    let mut result_options = CugraphResultPlanOptions::new(None, Some(3));
+    result_options.subsumed_top_k_sort = Some(SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]));
+    let (plan, mapping) = cugraph_query_plan_with_vertex_mapping(&CugraphPlanDefinition {
+        spec: pagerank_utf8_spec(),
+        edge_schema: string_edge_schema(),
+        predicate_schemas: Vec::new(),
+        predicate_row_upper_bounds: Vec::new(),
+        result_options,
+        edge_normalize_inserted: false,
+        edge_row_upper_bound: None,
+        edge_vertex_upper_bound: None,
+    })
+    .expect("string PageRank GPU plan should build");
+    let mapping = mapping.expect("a string-vertex call maps its vertices");
+    let node = |kind: fn(&PlanNode) -> bool| {
+        plan.nodes().iter().find(|node| kind(&node.kind)).expect("the string PageRank plan holds the node").id
+    };
+    let null_filter = node(|kind| matches!(kind, PlanNode::Filter(_)));
+    let codebook = node(|kind| matches!(kind, PlanNode::Window(_)));
+    let graph = node(|kind| matches!(kind, PlanNode::GraphAlgorithm(_)));
+    let PlanNode::Sort(post_decode_sort) = &plan.root_node().kind else {
+        panic!("the string PageRank top-k root restores ordering after decode");
+    };
+    let decode = post_decode_sort.input;
+    let cap_failure = || Error::new(ErrorCode::QueryMemoryLimitExceeded, "query_engine.filter.execute", "cap");
+    let remedy = |error: Error| mapping.with_memory_remedy(error).fact_value("remedy").map(str::to_string);
+
+    for (case, error) in [
+        ("edge null filter", cap_failure().with_fact("node_id", null_filter)),
+        ("codebook task", cap_failure().with_fact("plan_node_id", codebook)),
+        ("decode join", cap_failure().with_fact("node_id", decode)),
+        (
+            "operator fact over the task fact",
+            cap_failure().with_fact("node_id", null_filter).with_fact("plan_node_id", graph),
+        ),
+    ] {
+        assert!(remedy(error).is_some_and(|remedy| remedy.contains("Int64 surrogate ids")), "{case}");
+    }
+    for (case, error) in [
+        ("graph algorithm", cap_failure().with_fact("node_id", graph)),
+        ("result sort", cap_failure().with_fact("plan_node_id", plan.root_id())),
+        ("no node fact", cap_failure()),
+        (
+            "physical device exhaustion",
+            Error::new(ErrorCode::DeviceOutOfMemory, "query_engine.filter.execute", "oom")
+                .with_fact("node_id", null_filter),
+        ),
+    ] {
+        assert_eq!(remedy(error), None, "{case}");
+    }
+
+    let algorithm = CugraphAlgorithm::MinimumSpanningTree;
+    let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None).expect("native defaults are total");
+    let (_, int64_mapping) = cugraph_query_plan_with_vertex_mapping(&CugraphPlanDefinition {
+        spec: CugraphAlgorithmSpec {
+            algorithm,
+            has_weight: true,
+            has_edge_id: false,
+            graph_options: algorithm.effective_default_graph_options(&CugraphGraphOptions::default()),
+            output_schema: result_schema_for_vertex_domain(algorithm, &params, Some(&CugraphVertexIdDomain::Int64)),
+            params,
+        },
+        edge_schema: edge_schema(),
+        predicate_schemas: Vec::new(),
+        predicate_row_upper_bounds: Vec::new(),
+        result_options: CugraphResultPlanOptions::default(),
+        edge_normalize_inserted: false,
+        edge_row_upper_bound: Some(3),
+        edge_vertex_upper_bound: None,
+    })
+    .expect("Int64 MST GPU plan should build");
+    assert!(int64_mapping.is_none(), "an Int64 codebook needs no surrogate ids");
 }
 
 #[test]
