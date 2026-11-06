@@ -278,8 +278,36 @@ fn materialize_prepared_regexp_replace_projection(
     let prepared_by_field: std::collections::HashMap<String, cudf::SeriesPreparedReplaceWithBackrefs> =
         prepared.components.into_iter().map(|component| (component.output_field, component.prepared)).collect();
 
-    // Materialize each prepared regexp component first (consumes its handle),
-    // then evaluate remaining projection exprs against the augmented frame.
+    // The other outputs resolve columns by name and run before any replacement
+    // is attached, because a replacement named like its input column would
+    // otherwise replace that column for them. Prepared handles already hold
+    // their input series.
+    let lower_exprs = node
+        .outputs
+        .iter()
+        .filter(|output| {
+            !matches!(
+                classify_regexp_replace_preflight_expr(&output.expr),
+                RegexpReplacePreflightClass::DirectColumn { .. }
+            )
+        })
+        .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
+        .collect::<Result<Vec<_>>>()?;
+
+    if !lower_exprs.is_empty() {
+        frame = budgeted_value(
+            token.run("dataframe::with_columns", |exec| frame.on(exec).with_columns(lower_exprs)).map_err(|error| {
+                cudf_query_error(
+                    "query_engine.projection.execute",
+                    "failed to execute bounded algeon native projection non-regexp expressions",
+                    error,
+                )
+            })?,
+            metrics,
+            "query_engine.projection.execute",
+        );
+    }
+
     let mut remaining = prepared_by_field;
     for output in &node.outputs {
         if let Some(handle) = remaining.remove(output.field.name().as_str()) {
@@ -312,32 +340,6 @@ fn materialize_prepared_regexp_replace_projection(
                 "query_engine.projection.execute",
             );
         }
-    }
-
-    let lower_exprs = node
-        .outputs
-        .iter()
-        .filter(|output| {
-            !matches!(
-                classify_regexp_replace_preflight_expr(&output.expr),
-                RegexpReplacePreflightClass::DirectColumn { .. }
-            )
-        })
-        .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
-        .collect::<Result<Vec<_>>>()?;
-
-    if !lower_exprs.is_empty() {
-        frame = budgeted_value(
-            token.run("dataframe::with_columns", |exec| frame.on(exec).with_columns(lower_exprs)).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.projection.execute",
-                    "failed to execute bounded algeon native projection non-regexp expressions",
-                    error,
-                )
-            })?,
-            metrics,
-            "query_engine.projection.execute",
-        );
     }
 
     let mut output_columns = node.output_fields().map(|field| field.name().clone()).collect::<Vec<_>>();

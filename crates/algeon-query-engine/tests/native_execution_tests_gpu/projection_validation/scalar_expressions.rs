@@ -414,9 +414,13 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 
+    // The replacement takes its input column's name, and later outputs still
+    // read the scanned column.
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
-        Field::new("domain", DataType::Utf8, true),
+        Field::new("referer", DataType::Utf8, true),
+        Field::new("upper_referer", DataType::Utf8, true),
+        Field::new("raw_referer", DataType::Utf8, true),
     ]));
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -426,7 +430,9 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
     let projection = vec![
         Expr::column("id"),
         Expr::regexp_replace(Expr::column("referer"), r"^https?://(?:www\.)?([^/]+)/.*$", "\\1", DataType::Utf8)
-            .alias("domain"),
+            .alias("referer"),
+        Expr::upper(Expr::column("referer")),
+        Expr::column("referer"),
     ];
 
     let mut builder = QueryPlanBuilder::new();
@@ -443,6 +449,14 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
     assert_eq!(string_array(batch, 1).value(1), "rapids.ai");
     assert_eq!(string_array(batch, 1).value(2), "mailto:plain");
     assert!(string_array(batch, 1).is_null(3));
+    let upper = string_array(batch, 2);
+    assert_eq!(upper.value(0), "HTTPS://WWW.EXAMPLE.COM/PATH");
+    assert_eq!(upper.value(2), "MAILTO:PLAIN");
+    assert!(upper.is_null(3));
+    let raw = string_array(batch, 3);
+    assert_eq!(raw.value(0), "https://www.example.com/path");
+    assert_eq!(raw.value(1), "http://rapids.ai/docs");
+    assert!(raw.is_null(3));
 
     fs::remove_dir_all(dir).unwrap();
 }
