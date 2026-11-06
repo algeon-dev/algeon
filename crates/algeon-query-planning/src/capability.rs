@@ -46,7 +46,7 @@ pub use aggregate::{
 pub(crate) use edge::input_role;
 pub(crate) use expr::{
     require_expression_capability, validate_aggregate_expr_capability, validate_column_expr_capability,
-    validate_general_expr_capability,
+    validate_projection_output_expr_capability,
 };
 pub use join::KeyedHashJoinStrategyOptions;
 #[doc(hidden)]

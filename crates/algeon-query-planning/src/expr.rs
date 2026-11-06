@@ -358,6 +358,47 @@ impl Expr {
         children.into_iter()
     }
 
+    /// Mutable direct child expressions, in [`Self::children`] order.
+    pub(crate) fn children_mut(&mut self) -> impl Iterator<Item = &mut Expr> {
+        let children: Vec<&mut Expr> = match self {
+            Self::Column(_) | Self::Literal(_) => Vec::new(),
+            Self::Not(expr)
+            | Self::IsNull(expr)
+            | Self::IsNotNull(expr)
+            | Self::Cast { expr, .. }
+            | Self::TryCast { expr, .. }
+            | Self::Like { expr, .. }
+            | Self::Substring { expr, .. }
+            | Self::Lower(expr)
+            | Self::Upper(expr)
+            | Self::Trim { expr, .. }
+            | Self::LTrim { expr, .. }
+            | Self::RTrim { expr, .. }
+            | Self::StringContains { expr, .. }
+            | Self::StartsWith { expr, .. }
+            | Self::EndsWith { expr, .. }
+            | Self::StringLength { expr, .. }
+            | Self::RegexpReplace { expr, .. }
+            | Self::Abs(expr)
+            | Self::UnaryMath { expr, .. }
+            | Self::Round { expr, .. }
+            | Self::Extract { expr, .. }
+            | Self::DateTrunc { expr, .. }
+            | Self::Alias { expr, .. } => vec![expr.as_mut()],
+            Self::Binary { left, right, .. }
+            | Self::IsDistinctFrom { left, right }
+            | Self::IsNotDistinctFrom { left, right } => vec![left.as_mut(), right.as_mut()],
+            Self::Concat(exprs) => exprs.iter_mut().collect(),
+            Self::InList { expr, list, .. } => std::iter::once(expr.as_mut()).chain(list).collect(),
+            Self::Case { branches, else_expr } => branches
+                .iter_mut()
+                .flat_map(|branch| [&mut branch.when, &mut branch.then])
+                .chain(std::iter::once(else_expr.as_mut()))
+                .collect(),
+        };
+        children.into_iter()
+    }
+
     /// Whether `predicate` holds for this expression or any expression below
     /// it, visited depth first.
     pub fn any(&self, mut predicate: impl FnMut(&Expr) -> bool) -> bool {
@@ -638,6 +679,27 @@ impl Expr {
     /// replace-with-backrefs via the owning cudf output-size contract.
     pub fn contains_regexp_replace(&self) -> bool {
         self.any(|expr| matches!(expr, Self::RegexpReplace { .. }))
+    }
+
+    /// The input column, pattern and replacement when this expression is,
+    /// below any aliases, a `REGEXP_REPLACE` whose input is a bare or aliased
+    /// column. A native projection sizes a replacement from its input column
+    /// before running it, so it evaluates a replacement only in this shape.
+    #[doc(hidden)]
+    pub fn regexp_replace_over_column(&self) -> Option<(&ColumnRef, &str, &str)> {
+        match self {
+            Self::Alias { expr, .. } => expr.regexp_replace_over_column(),
+            Self::RegexpReplace { expr, pattern, replacement, .. } => {
+                alias_wrapped_column(expr).map(|column| (column, pattern.as_str(), replacement.as_str()))
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether a native projection evaluates every `REGEXP_REPLACE` in this
+    /// output expression: it holds none, or is exactly one over a column.
+    pub(crate) fn projection_evaluates_regexp_replace(&self) -> bool {
+        self.regexp_replace_over_column().is_some() || !self.contains_regexp_replace()
     }
 }
 

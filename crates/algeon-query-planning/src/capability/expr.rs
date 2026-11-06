@@ -125,6 +125,24 @@ pub(crate) fn validate_column_expr_capability(expr: &Expr) -> std::result::Resul
     }
 }
 
+/// Whether a native projection evaluates `expr` as one output. The general
+/// rule applies, and every `REGEXP_REPLACE` must sit where the projection
+/// sizes it from an input column; `QueryPlanBuilder::add_projection` moves
+/// other placements into earlier projections.
+pub(crate) fn validate_projection_output_expr_capability(
+    expr: &Expr,
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
+    validate_general_expr_capability(expr)?;
+    if expr.projection_evaluates_regexp_replace() {
+        Ok(())
+    } else {
+        Err(ExpressionCapabilityRejection {
+            reason: "projection_regexp_replace_requires_column_output",
+            expression_family: "regexp_replace",
+        })
+    }
+}
+
 /// Whether the general expression evaluator (filters, projections, aggregate
 /// filters) runs `expr`. An interval literal is admitted only as one operand of
 /// a datetime `+`/`-`; `IN` lists must be non-empty, literal, and null-free
@@ -146,8 +164,11 @@ pub(crate) fn validate_general_expr_capability(expr: &Expr) -> std::result::Resu
         | Expr::StringContains { expr, .. }
         | Expr::StartsWith { expr, .. }
         | Expr::EndsWith { expr, .. }
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. } => validate_general_expr_capability(expr),
+        | Expr::StringLength { expr, .. } => validate_general_expr_capability(expr),
+        Expr::RegexpReplace { expr, replacement, .. } => {
+            validate_general_expr_capability(expr)?;
+            validate_regexp_replace_replacement_capability(replacement)
+        },
         Expr::Extract { field, expr } => {
             validate_general_expr_capability(expr)?;
             validate_extract_field_capability(*field)
@@ -324,9 +345,12 @@ pub(super) fn validate_post_join_residual_expr_capability(
         | Expr::StartsWith { expr, .. }
         | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
         | Expr::UnaryMath { expr, .. } => validate_post_join_residual_expr_capability(expr),
+        Expr::RegexpReplace { expr, replacement, .. } => {
+            validate_post_join_residual_expr_capability(expr)?;
+            validate_regexp_replace_replacement_capability(replacement)
+        },
         Expr::Extract { field, expr } => {
             validate_post_join_residual_expr_capability(expr)?;
             validate_post_join_extract_field_capability(*field)
@@ -381,6 +405,21 @@ pub(super) fn validate_post_join_residual_expr_capability(
             reason: "post_join_residual_expression_family_not_supported",
             expression_family: expr_family(expr),
         }),
+    }
+}
+
+/// Native `REGEXP_REPLACE` runs libcudf's back-reference replacement, which
+/// rejects an empty replacement template.
+fn validate_regexp_replace_replacement_capability(
+    replacement: &str,
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
+    if replacement.is_empty() {
+        Err(ExpressionCapabilityRejection {
+            reason: "regexp_replace_replacement_must_not_be_empty",
+            expression_family: "regexp_replace",
+        })
+    } else {
+        Ok(())
     }
 }
 

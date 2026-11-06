@@ -447,6 +447,71 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+fn native_query_executes_regexp_replace_nested_in_projection_expressions() {
+    let dir = unique_temp_dir("query-engine-native-execution-regexp-replace-nested");
+    let path = dir.join("referers.parquet");
+    let context = backend_context();
+    let input_schema = Arc::new(Schema::new(vec![Field::new("referer", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![Arc::new(StringArray::from(vec![
+            Some("https://www.Example.com/path"),
+            Some("http://rapids.ai/docs"),
+            Some("mailto:plain"),
+            None,
+        ]))],
+    )
+    .unwrap();
+    let file = File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&input_schema), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let domain =
+        || Expr::regexp_replace(Expr::column("referer"), r"^https?://(?:www\.)?([^/]+)/.*$", "\\1", DataType::Utf8);
+    let null_utf8 = || Expr::literal(LiteralValue::Null(DataType::Utf8));
+    let projection = vec![
+        Expr::lower(domain()),
+        Expr::case(vec![CaseWhen::new(Expr::like(Expr::column("referer"), "http://%"), domain())], null_utf8()),
+        Expr::case(
+            vec![CaseWhen::new(Expr::binary(domain(), BinaryOp::Eq, Expr::column("referer")), null_utf8())],
+            domain(),
+        ),
+        Expr::regexp_replace(Expr::upper(Expr::column("referer")), "^MAILTO:(.*)$", "\\1", DataType::Utf8),
+    ];
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("lower_domain", DataType::Utf8, true),
+        Field::new("http_domain", DataType::Utf8, true),
+        Field::new("changed_domain", DataType::Utf8, true),
+        Field::new("upper_stripped", DataType::Utf8, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["referer".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let column = |index: usize| {
+        let values = string_array(batch, index);
+        (0..values.len()).map(|row| values.is_valid(row).then(|| values.value(row))).collect::<Vec<_>>()
+    };
+    assert_eq!(column(0), [Some("example.com"), Some("rapids.ai"), Some("mailto:plain"), None]);
+    assert_eq!(column(1), [None, Some("rapids.ai"), None, None]);
+    assert_eq!(column(2), [Some("Example.com"), Some("rapids.ai"), None, None]);
+    assert_eq!(column(3), [Some("HTTPS://WWW.EXAMPLE.COM/PATH"), Some("HTTP://RAPIDS.AI/DOCS"), Some("PLAIN"), None]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
     let path = Path::new("/missing/scalar-validation.parquet");
@@ -763,6 +828,10 @@ fn scalar_expressions_cases_2() {
         (
             "projection_validation::scalar_expressions::native_query_executes_regexp_replace_projection_with_backrefs",
             native_query_executes_regexp_replace_projection_with_backrefs,
+        ),
+        (
+            "projection_validation::scalar_expressions::native_query_executes_regexp_replace_nested_in_projection_expressions",
+            native_query_executes_regexp_replace_nested_in_projection_expressions,
         ),
         (
             "projection_validation::scalar_expressions::native_query_executes_bitwise_scalar_expressions",
@@ -1270,12 +1339,62 @@ fn native_query_decimal_casts_fail_the_query_outside_the_target_precision() {
     }
 }
 
+fn native_query_casts_a_float_quotient_to_decimal_rounding_half_away_from_zero() {
+    let input = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, true), Field::new("y", DataType::Float64, true)])),
+        vec![
+            Arc::new(Float64Array::from(vec![
+                Some(7.0),
+                Some(1.0),
+                Some(2.0),
+                Some(-1.0),
+                Some(1.0),
+                Some(-1.0),
+                None,
+                Some(5.0),
+            ])),
+            Arc::new(Float64Array::from(vec![
+                Some(2.0),
+                Some(3.0),
+                Some(3.0),
+                Some(8.0),
+                Some(4.0),
+                Some(4.0),
+                Some(2.0),
+                None,
+            ])),
+        ],
+    )
+    .unwrap();
+    let target = DataType::Decimal128(5, 1);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("out", target.clone(), true)]));
+    let quotient = Expr::binary(Expr::column("x"), BinaryOp::Divide, Expr::column("y"));
+
+    let batch = project_over_parquet(
+        "query-engine-native-decimal-cast-of-float-quotient",
+        input,
+        vec![Expr::cast(quotient, target.clone())],
+        output_schema,
+    )
+    .unwrap();
+
+    // The quotients 3.5, 1/3, 2/3, -1/8, 1/4, -1/4 round at one fractional
+    // digit as DataFusion's CAST does, with ties away from zero.
+    let out = decimal128_array(&batch, 0);
+    assert_eq!(out.data_type(), &target);
+    assert_eq!(out.iter().collect::<Vec<_>>(), [Some(35), Some(3), Some(7), Some(-1), Some(3), Some(-3), None, None]);
+}
+
 #[test]
 fn scalar_expressions_cases_1() {
     run_named_cases(&[
         (
             "projection_validation::scalar_expressions::native_query_decimal_casts_fail_the_query_outside_the_target_precision",
             native_query_decimal_casts_fail_the_query_outside_the_target_precision,
+        ),
+        (
+            "projection_validation::scalar_expressions::native_query_casts_a_float_quotient_to_decimal_rounding_half_away_from_zero",
+            native_query_casts_a_float_quotient_to_decimal_rounding_half_away_from_zero,
         ),
         (
             "projection_validation::scalar_expressions::native_query_floor_and_ceil_match_ieee_rounding",

@@ -647,6 +647,10 @@ fn grouped_cases_policy_1_2() {
             bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk,
         ),
         (
+            "aggregate_execution::grouped::bounded_native_query_orders_partitioned_final_merge_by_a_computed_projection_with_topk",
+            bounded_native_query_orders_partitioned_final_merge_by_a_computed_projection_with_topk,
+        ),
+        (
             "aggregate_execution::grouped::bounded_native_query_keeps_small_nullable_string_partials_on_libcudf_before_final_merge",
             bounded_native_query_keeps_small_nullable_string_partials_on_libcudf_before_final_merge,
         ),
@@ -1402,6 +1406,81 @@ fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
     assert_eq!(batch.num_rows(), 2);
     assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("url-039"), Some("url-038")]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[40, 39]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// `SELECT URL, 100.0 * COUNT(URL) / 80 AS pct ... GROUP BY URL ORDER BY pct DESC LIMIT 2`.
+fn bounded_native_query_orders_partitioned_final_merge_by_a_computed_projection_with_topk() {
+    let dir = unique_temp_dir("query-engine-bounded-partitioned-final-merge-computed-topk");
+    let path = dir.join("input.parquet");
+    let context = backend_context();
+    let input_schema = write_high_cardinality_url_count_parquet(&path);
+
+    let projected_schema = Arc::new(Schema::new(vec![Field::new("URL", DataType::Utf8, false)]));
+    let aggregated_schema =
+        Arc::new(Schema::new(vec![Field::new("URL", DataType::Utf8, false), Field::new("c", DataType::Int64, false)]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("URL", DataType::Utf8, false),
+        Field::new("pct", DataType::Float64, false),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![2 * 1024 * 1024; 13])
+                .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 13], vec![2 * 1024 * 1024; 13])
+                .with_row_group_rows([vec![64; 12], vec![52]].concat()),
+        ],
+        Arc::clone(&input_schema),
+        vec!["URL".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("URL")],
+        vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("URL"), "c")],
+    );
+    let pct = Expr::binary(
+        Expr::binary(
+            Expr::literal(LiteralValue::Float64(100.0)),
+            BinaryOp::Multiply,
+            Expr::cast(Expr::column("c"), DataType::Float64),
+        ),
+        BinaryOp::Divide,
+        Expr::literal(LiteralValue::Float64(80.0)),
+    )
+    .alias("pct");
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection =
+        builder.add_projection(source, projection_outputs(vec![Expr::column("URL")], projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let aggregate_projection =
+        builder.add_projection(aggregate, projection_outputs(vec![Expr::column("URL"), pct], output_schema)).unwrap();
+    let sort = builder
+        .add_sort(aggregate_projection, SortSpec::new(vec![SortExpr::new(Expr::column("pct"), true, false)]))
+        .unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let final_strategy = result
+        .metrics()
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("final_merge"))
+        .expect("partitioned final merge should record strategy facts");
+    assert_eq!(final_strategy.facts.get("selected_strategy").map(String::as_str), Some("partitioned_merge"));
+    // The projection computes `pct` after the merge; the merged partitions
+    // are not pruned on it.
+    assert_eq!(final_strategy.facts.get("partitioned_merge_topk_pruned").map(String::as_str), Some("false"));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("url-039"), Some("url-038")]);
+    assert_eq!(float64_array(batch, 1).values().as_ref(), &[50.0, 48.75]);
 
     fs::remove_dir_all(dir).unwrap();
 }

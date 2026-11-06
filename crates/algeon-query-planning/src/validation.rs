@@ -26,7 +26,7 @@ use crate::{
     backend::{AnalysisContext, ExpressionUse},
     capability::{
         require_expression_capability, validate_aggregate_expr_capability, validate_column_expr_capability,
-        validate_general_expr_capability,
+        validate_projection_output_expr_capability,
     },
     datatypes::{arrow_data_types_match_except_list_child_names, is_supported_arrow_implicit_cast},
     error::{QueryError, QueryErrorCode, QueryErrorKind, Result},
@@ -255,7 +255,7 @@ pub(crate) fn check_node(
             }
             for output in &projection.outputs {
                 ctx.backend().check_projection_output(output)?;
-                require_expression_capability(validate_general_expr_capability(&output.expr), &output.expr)?;
+                require_expression_capability(validate_projection_output_expr_capability(&output.expr), &output.expr)?;
             }
             // `outputs` is a public field, so a caller can change it after
             // construction derived the schema from it.
