@@ -21,7 +21,7 @@ use super::{
         AggregateGrouping, CapabilityDecision, NodeCapability, NodeOperator, OrderingRequirement, ResidualRequirement,
         SourceFormatCapability,
     },
-    rejection::{Reason, UnsupportedPart},
+    rejection::{Reason, Rejection, UnsupportedPart},
 };
 use crate::{
     backend::AnalysisContext,
@@ -215,10 +215,8 @@ fn algorithm_node_decision(
 }
 
 fn validation_error_facts(node_id: NodeId, error: &QueryError) -> BTreeMap<&'static str, String> {
-    let mut facts = error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
+    let mut facts = Rejection::validation_facts(error);
     facts.entry("node_id").or_insert_with(|| node_id.to_string());
-    facts.insert("validation_code", error.code().to_string());
-    facts.insert("validation_operation", error.operation().to_string());
     facts
 }
 
@@ -247,7 +245,7 @@ fn aggregate_node_executable_decision(
             Reason::UnsupportedAggregateGroupingSetsCapability,
             [
                 ("node_id", node_id.to_string()),
-                ("reason", reason.to_string()),
+                ("rule", reason.to_string()),
                 ("group_expr_count", aggregate.spec.group_exprs.len().to_string()),
                 ("grouping_set_count", grouping_sets.groups.len().to_string()),
             ],
@@ -263,7 +261,7 @@ fn aggregate_node_executable_decision(
             Reason::UnsupportedAggregateExpressionCapability,
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "median_floating_statistical_mixed_unsupported".to_string()),
+                ("rule", "median_floating_statistical_mixed_unsupported".to_string()),
                 ("expression_family", "aggregate".to_string()),
                 ("expression", "aggregate_spec".to_string()),
             ],
@@ -272,7 +270,7 @@ fn aggregate_node_executable_decision(
     let Some(input) = plan.node(aggregate.input) else {
         return CapabilityDecision::rejected(
             Reason::UnsupportedAggregateNodeCapability,
-            [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
+            [("node_id", node_id.to_string()), ("rule", "missing_input_node".to_string())],
         );
     };
     for expr in &aggregate.spec.group_exprs {
@@ -303,7 +301,7 @@ fn aggregate_node_executable_decision(
                     Reason::UnsupportedAggregateExpressionCapability,
                     [
                         ("node_id", node_id.to_string()),
-                        ("reason", "median_requires_column_input".to_string()),
+                        ("rule", "median_requires_column_input".to_string()),
                         ("expression_family", "aggregate".to_string()),
                         ("expression", aggregate_expr.expr.to_string()),
                     ],
@@ -314,7 +312,7 @@ fn aggregate_node_executable_decision(
                     Reason::UnsupportedAggregateExpressionCapability,
                     [
                         ("node_id", node_id.to_string()),
-                        ("reason", "unsupported_median_input_type".to_string()),
+                        ("rule", "unsupported_median_input_type".to_string()),
                         ("expression_family", "aggregate".to_string()),
                         ("expression", aggregate_expr.expr.to_string()),
                         ("data_type", format!("{data_type:?}")),
@@ -384,7 +382,7 @@ fn sort_node_executable_decision(node_id: NodeId, sort: &SortNode) -> Capability
     if sort.spec.expressions.is_empty() {
         return CapabilityDecision::rejected(
             Reason::UnsupportedSortNodeCapability,
-            [("node_id", node_id.to_string()), ("reason", "empty_sort_expressions".to_string())],
+            [("node_id", node_id.to_string()), ("rule", "empty_sort_expressions".to_string())],
         );
     }
     for sort_expr in &sort.spec.expressions {
@@ -453,7 +451,7 @@ fn graph_algorithm_node_executable_decision(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "unsupported_graph_directedness".to_string()),
+                ("rule", "unsupported_graph_directedness".to_string()),
                 ("algorithm", graph.spec.algorithm.as_str().to_string()),
                 ("directed", graph.spec.graph_options.directed.to_string()),
                 ("required_directed", required.to_string()),
@@ -463,7 +461,7 @@ fn graph_algorithm_node_executable_decision(
     let Some(input) = plan.node(graph.edge_input()) else {
         return CapabilityDecision::rejected(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
-            [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
+            [("node_id", node_id.to_string()), ("rule", "missing_input_node".to_string())],
         );
     };
     for (role, column) in [
@@ -475,7 +473,7 @@ fn graph_algorithm_node_executable_decision(
                 Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "missing_edge_column".to_string()),
+                    ("rule", "missing_edge_column".to_string()),
                     ("edge_column_role", role.to_string()),
                     ("column", column.to_string()),
                 ],
@@ -486,7 +484,7 @@ fn graph_algorithm_node_executable_decision(
                 Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "unsupported_vertex_type".to_string()),
+                    ("rule", "unsupported_vertex_type".to_string()),
                     ("edge_column_role", role.to_string()),
                     ("column", column.to_string()),
                     ("data_type", format!("{:?}", field.data_type())),
@@ -499,7 +497,7 @@ fn graph_algorithm_node_executable_decision(
                 Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "unsupported_vertex_dtype".to_string()),
+                    ("rule", "unsupported_vertex_dtype".to_string()),
                     ("algorithm", graph.spec.algorithm.as_str().to_string()),
                     ("edge_column_role", role.to_string()),
                     ("column", column.to_string()),
@@ -517,7 +515,7 @@ fn graph_algorithm_node_executable_decision(
                 Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "missing_edge_column".to_string()),
+                    ("rule", "missing_edge_column".to_string()),
                     ("edge_column_role", "weight".to_string()),
                     ("column", weight_col.to_string()),
                 ],
@@ -528,7 +526,7 @@ fn graph_algorithm_node_executable_decision(
                 Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "unsupported_weight_type".to_string()),
+                    ("rule", "unsupported_weight_type".to_string()),
                     ("edge_column_role", "weight".to_string()),
                     ("column", weight_col.to_string()),
                     ("data_type", format!("{:?}", field.data_type())),
@@ -543,7 +541,7 @@ fn graph_algorithm_node_executable_decision(
                 Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "missing_edge_column".to_string()),
+                    ("rule", "missing_edge_column".to_string()),
                     ("edge_column_role", "edge_id".to_string()),
                     ("column", edge_id_col.to_string()),
                 ],
@@ -559,7 +557,7 @@ fn graph_algorithm_node_executable_decision(
                 Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "edge_id_dtype_mismatch".to_string()),
+                    ("rule", "edge_id_dtype_mismatch".to_string()),
                     ("edge_column_role", "edge_id".to_string()),
                     ("column", edge_id_col.to_string()),
                     ("edge_id_type", format!("{:?}", field.data_type())),
@@ -577,7 +575,7 @@ fn graph_algorithm_node_executable_decision(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "missing_edge_id_binding".to_string()),
+                ("rule", "missing_edge_id_binding".to_string()),
                 ("predicate_role", "include_edge_ids".to_string()),
                 ("missing_binding", "edge_id_col".to_string()),
             ],
@@ -609,7 +607,7 @@ fn graph_algorithm_node_executable_decision(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "unexpected_output_schema".to_string()),
+                ("rule", "unexpected_output_schema".to_string()),
                 ("algorithm", graph.spec.algorithm.as_str().to_string()),
                 ("vertex_type", format!("{vertex_type:?}")),
                 ("schema_field_count", graph.output_schema().fields().len().to_string()),
@@ -631,7 +629,7 @@ fn graph_similarity_pair_input_decision(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "missing_vertex_pair_input_node".to_string()),
+                ("rule", "missing_vertex_pair_input_node".to_string()),
                 ("pair_input", pair_input.input.to_string()),
             ],
         );
@@ -641,7 +639,7 @@ fn graph_similarity_pair_input_decision(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "missing_vertex_pair_column".to_string()),
+                ("rule", "missing_vertex_pair_column".to_string()),
                 ("pair_column_role", "first".to_string()),
                 ("column", pair_input.first_column.clone()),
             ],
@@ -652,7 +650,7 @@ fn graph_similarity_pair_input_decision(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "missing_vertex_pair_column".to_string()),
+                ("rule", "missing_vertex_pair_column".to_string()),
                 ("pair_column_role", "second".to_string()),
                 ("column", pair_input.second_column.clone()),
             ],
@@ -663,7 +661,7 @@ fn graph_similarity_pair_input_decision(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "vertex_pair_dtype_mismatch".to_string()),
+                ("rule", "vertex_pair_dtype_mismatch".to_string()),
                 ("first_column", pair_input.first_column.clone()),
                 ("first_type", format!("{:?}", first.data_type())),
                 ("second_column", pair_input.second_column.clone()),
@@ -676,7 +674,7 @@ fn graph_similarity_pair_input_decision(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::DataType),
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "unsupported_vertex_pair_type".to_string()),
+                ("rule", "unsupported_vertex_pair_type".to_string()),
                 ("pair_column_role", "first".to_string()),
                 ("column", pair_input.first_column.clone()),
                 ("data_type", format!("{:?}", first.data_type())),
@@ -688,7 +686,7 @@ fn graph_similarity_pair_input_decision(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
-                ("reason", "vertex_pair_graph_vertex_dtype_mismatch".to_string()),
+                ("rule", "vertex_pair_graph_vertex_dtype_mismatch".to_string()),
                 ("first_column", pair_input.first_column.clone()),
                 ("pair_type", format!("{:?}", first.data_type())),
                 ("vertex_type", format!("{vertex_type:?}")),
@@ -709,7 +707,7 @@ fn edge_normalize_node_executable_decision(
     let Some(input) = plan.node(edge_normalize.input) else {
         return CapabilityDecision::rejected(
             Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
-            [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
+            [("node_id", node_id.to_string()), ("rule", "missing_input_node".to_string())],
         );
     };
     for (role, column) in [
@@ -721,7 +719,7 @@ fn edge_normalize_node_executable_decision(
                 Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "missing_edge_column".to_string()),
+                    ("rule", "missing_edge_column".to_string()),
                     ("edge_column_role", role.to_string()),
                     ("column", column.to_string()),
                 ],
@@ -732,7 +730,7 @@ fn edge_normalize_node_executable_decision(
                 Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "unsupported_vertex_type".to_string()),
+                    ("rule", "unsupported_vertex_type".to_string()),
                     ("edge_column_role", role.to_string()),
                     ("column", column.to_string()),
                     ("data_type", format!("{:?}", field.data_type())),
@@ -748,7 +746,7 @@ fn edge_normalize_node_executable_decision(
     {
         return CapabilityDecision::rejected(
             Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
-            [("node_id", node_id.to_string()), ("reason", "weight_combiner_without_weight_column".to_string())],
+            [("node_id", node_id.to_string()), ("rule", "weight_combiner_without_weight_column".to_string())],
         );
     }
 
@@ -758,7 +756,7 @@ fn edge_normalize_node_executable_decision(
                 Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "missing_edge_column".to_string()),
+                    ("rule", "missing_edge_column".to_string()),
                     ("edge_column_role", "weight".to_string()),
                     ("column", weight_col.to_string()),
                 ],
@@ -769,7 +767,7 @@ fn edge_normalize_node_executable_decision(
                 Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "unsupported_weight_type".to_string()),
+                    ("rule", "unsupported_weight_type".to_string()),
                     ("edge_column_role", "weight".to_string()),
                     ("column", weight_col.to_string()),
                     ("data_type", format!("{:?}", field.data_type())),
@@ -784,7 +782,7 @@ fn edge_normalize_node_executable_decision(
                 Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "missing_edge_column".to_string()),
+                    ("rule", "missing_edge_column".to_string()),
                     ("edge_column_role", "edge_id".to_string()),
                     ("column", edge_id_col.to_string()),
                 ],
@@ -795,7 +793,7 @@ fn edge_normalize_node_executable_decision(
                 Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
-                    ("reason", "unsupported_edge_id_type".to_string()),
+                    ("rule", "unsupported_edge_id_type".to_string()),
                     ("edge_column_role", "edge_id".to_string()),
                     ("column", edge_id_col.to_string()),
                     ("data_type", format!("{:?}", field.data_type())),

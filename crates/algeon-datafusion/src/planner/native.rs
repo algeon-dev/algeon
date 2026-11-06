@@ -129,12 +129,13 @@ pub(crate) fn final_plan_requirement_error(
         if let Some(admission) = detail.admission_rejection() {
             // The admission rejection names the contract the candidate missed;
             // a validator refusal carries its own code, operation, and facts.
-            // Its facts can name caller columns, so they stay ordinary facts.
+            // Its facts can name caller columns, so they stay ordinary facts,
+            // except `rule`, whose values are the planner's rule identifiers.
             error = error
                 .with_log_safe_fact("capability_rejection_reason", admission.reason.as_str())
                 .with_log_safe_fact("capability_rejection_boundary", admission.boundary());
             for (key, value) in &admission.facts {
-                error = error.with_fact(key, value);
+                error = if *key == "rule" { error.with_log_safe_fact(key, value) } else { error.with_fact(key, value) };
             }
         }
         if let Some(blocking) = detail.blocking() {

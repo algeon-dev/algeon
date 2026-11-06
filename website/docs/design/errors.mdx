@@ -126,7 +126,7 @@ and tests compare each surface on its own terms, never as equal strings.
 
 | Surface | Raw facts | Log-safe facts | Blocking text and column names | Non-ASCII text | Source chain |
 | --- | --- | --- | --- | --- | --- |
-| Flight status message | No. | No. | Yes, in full. | Kept. | No. Narrowed kinds get static text. |
+| Flight status message | Only `native_message`, for the kinds metadata projects it for. | No. | Yes, in full. | Kept. | No. Narrowed kinds get static text. |
 | gRPC metadata | Only the [projected facts](#projected-facts). | Selection ignores `with_log_safe_fact`. | Yes, as `x-algeon-blocking-subject` and the `unsupported_column` keys. | Omitted and listed under `x-algeon-omitted-facts`. | No. It is retained locally. |
 | Operational logs and adapter `Debug` | No. `with_fact` stays hidden. | Yes, sanitized and truncated as defense in depth. | No. Only `blocking_kind` and `reason`. | Sanitized. | Only bounded cause diagnostics. |
 | `GetQueryStats` structured error | No. Log-safe facts plus caller-visible schema details, as `fact.<name>`. | Yes. | Yes, as `fact.blocking_subject` and `fact.unsupported_column`. | Kept, without wire limits. | Capped source diagnostics. |
@@ -145,7 +145,13 @@ and tests compare each surface on its own terms, never as equal strings.
   memory failure, when they parse as integers, and `rapids_library`, whose
   value each RAPIDS library wrapper writes from a closed vocabulary.
 - `Error::message()` never carries blocking text or caller column names.
-  `blocking_kind` is a log-safe fact next to `reason`.
+  `blocking_kind` is a log-safe fact next to `reason`, and so is the `rule`
+  of a plan-validation rejection.
+- For the kinds whose metadata carries `native_message`, a status message
+  that is the error message gets `: <native_message>` appended; the logged
+  `client_message` does not. A message that already quotes the native message
+  is not extended, and a fixed sentence such as a source failure's stays
+  fixed.
 - DataFusion's own text for a statement it rejected reaches the status message
   and query stats as `ClientDetail::DataFusionText`, never the log. The adapter
   message of such a failure is a fixed sentence for its code.
@@ -173,7 +179,7 @@ error carries them:
 
 | Facts | Condition |
 | --- | --- |
-| `unsupported_column`, `unsupported_column_type`, `unsupported_column_role`, `blocking_kind`, `blocking_subject`, `predicate_role`, `reason`, `required_option` | Always when present. |
+| `unsupported_column`, `unsupported_column_type`, `unsupported_column_role`, `blocking_kind`, `blocking_subject`, `predicate_role`, `reason`, `rule`, `required_option` | Always when present. |
 | `algorithm`, `iterations`, `max_iterations`, `epsilon` | Always when present. |
 | `native_message` | Only for cancellation, not-found, permission, auth, planning, invalid-input and unsupported kinds. |
 | `native_operation`, `budget_operation`, `requested_allocation_bytes`, `budget_bytes`, `budget_current_bytes`, `budget_peak_bytes` | Only for the resource-exhausted kind. |
@@ -182,6 +188,11 @@ error carries them:
   `-`, for example `x-algeon-requested-allocation-bytes`.
 - Operation values are code identifiers. Byte values are re-rendered from a
   parsed integer, and a fact that is not a number is omitted.
+- `rule` names the planner check that refused a plan, such as
+  `regexp_replace_replacement_must_not_be_empty`. Planning records a
+  validator's own `reason` fact under that key in its rejection facts, so
+  `reason` on a `final_plan_requirement_unsatisfied` error is the capability
+  reason code.
 - Internal, dependency, invariant, and execution failures never expose raw
   native text in metadata, regardless of what appears in their status messages.
 - A cuGraph precondition failure is invalid input. Its `native_message` ends

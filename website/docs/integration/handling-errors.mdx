@@ -143,13 +143,17 @@ no public Algeon identity.
 
 | Error kind | gRPC code | Client message |
 | --- | --- | --- |
-| `cancelled` | `CANCELLED` | The error message. |
-| `not_found`, `permission_denied`, `unauthenticated` | `NOT_FOUND`, `PERMISSION_DENIED`, `UNAUTHENTICATED` | The error message, or fixed text for a source failure. |
-| `planning`, `invalid_input` | `INVALID_ARGUMENT` | The error message. |
-| `unsupported` | `UNIMPLEMENTED` | The error message. |
+| `cancelled` | `CANCELLED` | The error message and native message. |
+| `not_found`, `permission_denied`, `unauthenticated` | `NOT_FOUND`, `PERMISSION_DENIED`, `UNAUTHENTICATED` | The error message and native message, or fixed text for a source failure. |
+| `planning`, `invalid_input` | `INVALID_ARGUMENT` | The error message and native message. |
+| `unsupported` | `UNIMPLEMENTED` | The error message and native message. |
 | `resource_exhausted` | `RESOURCE_EXHAUSTED` | Text naming the change the request needs. |
 | `execution`, `dependency_failure`, `invariant_violation`, `internal` | `INTERNAL` | Static text pointing at `GetQueryStats`. |
 
+- When the native engine reported the failure, `: ` and the native message,
+  the `x-algeon-native-message` value, follow the error message, as in
+  `native cuGraph SQL GPU-resident query execution failed: exact betweenness requires explicit seeds or k above the configured vertex threshold`.
+  An error message that already quotes the native message is not extended.
 - `invalid_configuration` has kind `invalid_input`. `algorithm_did_not_converge`
   returns `FAILED_PRECONDITION`.
 - A query that names an unknown table or column fails in DataFusion's planner,
@@ -246,6 +250,11 @@ That status carries `x-algeon-blocking-kind`, from a fixed vocabulary such as
 column), and `x-algeon-blocking-subject`, the text before the instruction. Each
 surface carries these names under its own [disclosure rules](../design/errors.mdx#disclosure-model).
 
+When plan validation refused the candidate, `x-algeon-reason` is the
+capability reason, such as `unsupported_expression`, and `x-algeon-rule` names
+the check that refused it, such as
+`regexp_replace_replacement_must_not_be_empty`.
+
 A rejected Parquet scan carries kind `source`. Its `x-algeon-reason` is the
 capability reason, for example `native_source_remote_footer_unavailable` when
 planning found no cached footer for an `s3://` object, and the subject reads
@@ -301,7 +310,7 @@ INFO algeon_datafusion.flight_sql.query{query_id="d4b0794e-1560-43f7-9ff8-709894
 | `client_message` | The status text when it differs from `error_message`, still without caller schema names. |
 | `error_cause` | The deepest cause when it adds text the message lacks, such as libcugraph's or the object store's reason. DataFusion, schema, SQL parser and Arrow errors contribute no cause. |
 | `error_source_path` | The input path of a read failure. |
-| `error_facts` | The log-safe facts as `key=value` pairs: `native_*` classification, `rapids_library`, `reason`, `blocking_kind` and memory byte counts. |
+| `error_facts` | The log-safe facts as `key=value` pairs: `native_*` classification, `rapids_library`, `reason`, `rule`, `blocking_kind` and memory byte counts. |
 | `error_facts_truncated`, `error_diagnostics_truncated` | Present as `true` when a bound shortened the facts or the cause. |
 
 A failure with status `persistent`, such as `device_fault`, logs at `ERROR`,

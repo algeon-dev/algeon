@@ -59,6 +59,10 @@ pub const PREDICATE_ROLE_METADATA_KEY: &str = "x-algeon-predicate-role";
 ///
 /// Included only when the corresponding client-safe error projection provides it.
 pub const REASON_METADATA_KEY: &str = "x-algeon-reason";
+/// Flight status metadata key for the planner check that refused a plan, beside the capability reason.
+///
+/// Included only when the corresponding client-safe error projection provides it.
+pub const RULE_METADATA_KEY: &str = "x-algeon-rule";
 /// Flight status metadata key for the SQL option needed to satisfy the failed capability contract.
 ///
 /// Included only when the corresponding client-safe error projection provides it.
@@ -590,6 +594,7 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
     }
     insert_fact_metadata(status.metadata_mut(), PREDICATE_ROLE_METADATA_KEY, error, "predicate_role", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), REASON_METADATA_KEY, error, "reason", &mut omitted);
+    insert_fact_metadata(status.metadata_mut(), RULE_METADATA_KEY, error, "rule", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), BLOCKING_KIND_METADATA_KEY, error, "blocking_kind", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), REQUIRED_OPTION_METADATA_KEY, error, "required_option", &mut omitted);
     if client_actionable_kind(error) {
@@ -1730,6 +1735,10 @@ mod tests {
 
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_error_metadata(&status, "invalid_execution_plan", "planning", "permanent");
+        assert_eq!(
+            status.message(),
+            "native cuGraph SQL GPU-resident query execution failed: exact betweenness requires explicit seeds or k above the configured vertex threshold"
+        );
         assert_metadata_value(
             &status,
             NATIVE_MESSAGE_METADATA_KEY,
@@ -1738,6 +1747,36 @@ mod tests {
         assert_metadata_value(&status, REASON_METADATA_KEY, "exact_betweenness_vertex_threshold_exceeded");
         assert_metadata_value(&status, REQUIRED_OPTION_METADATA_KEY, "seeds_or_k");
         assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn client_actionable_status_text_carries_the_native_message_once() {
+        let native = "SSSP source vertex is not in the graph";
+        let invalid_input = || QueryError::new(QueryErrorCode::RapidsInvalidInput, "query_engine.test.sssp", native);
+        let adapter = Error::from_native(TEST_OPERATION, "Algeon native query execution failed", invalid_input());
+        let status = adapter_error_to_status(&adapter);
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(status.message(), format!("Algeon native query execution failed: {native}"));
+        assert_metadata_value(&status, NATIVE_MESSAGE_METADATA_KEY, native);
+        assert_eq!(client_message(&adapter).logged, "Algeon native query execution failed");
+
+        let composed = Error::from_native_with_blocking_diagnostics(
+            TEST_OPERATION,
+            "native cuGraph SQL query execution failed",
+            invalid_input(),
+        );
+        let message = adapter_error_to_status(&composed).message().to_string();
+        assert_eq!(message.matches(native).count(), 1, "{message}");
+
+        let source = Error::from_native(
+            TEST_OPERATION,
+            "Algeon native query execution failed",
+            QueryError::new(QueryErrorCode::SourceObjectNotFound, "query_engine.test.footer", "footer object missing"),
+        );
+        assert_eq!(
+            adapter_error_to_status(&source).message(),
+            "source object storage object was not found while processing the request"
+        );
     }
 
     fn strict_rejection_error(column: &str, column_type: &str) -> Error {

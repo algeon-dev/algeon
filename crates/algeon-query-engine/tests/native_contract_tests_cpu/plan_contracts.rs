@@ -288,7 +288,7 @@ fn aggregate_node_capability_rejects_mixed_median_and_floating_statistical_funct
         panic!("mixed median/statistical aggregate should reject, got {:?}", node.executable);
     };
     assert_eq!(*reason, Reason::UnsupportedAggregateExpressionCapability);
-    assert_eq!(facts.get("reason").map(String::as_str), Some("median_floating_statistical_mixed_unsupported"));
+    assert_eq!(facts.get("rule").map(String::as_str), Some("median_floating_statistical_mixed_unsupported"));
     assert_eq!(facts.get("expression_family").map(String::as_str), Some("aggregate"));
 }
 
@@ -312,7 +312,7 @@ fn aggregate_node_capability_rejects_decimal_median_input_type() {
         panic!("Decimal median aggregate should reject, got {:?}", node.executable);
     };
     assert_eq!(*reason, Reason::UnsupportedAggregateExpressionCapability);
-    assert_eq!(facts.get("reason").map(String::as_str), Some("unsupported_median_input_type"));
+    assert_eq!(facts.get("rule").map(String::as_str), Some("unsupported_median_input_type"));
     assert_eq!(facts.get("data_type").map(String::as_str), Some("Decimal128(15, 2)"));
 }
 

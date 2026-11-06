@@ -753,12 +753,16 @@ mod tests {
         dynamic_filter::DynamicFilterExecutionOptions,
         expr::{AggregateFunction, Expr, SortExpr},
         optimizer::SemijoinReductionOptions,
-        plan::{WindowFunction, WindowSpec},
+        plan::{ProjectionOutput, WindowFunction, WindowSpec},
         source::LiteralBatchSource,
     };
 
     use super::*;
-    use crate::{native::NativeLoweringResult, native_exec::SourceChunking};
+    use crate::{
+        native::NativeLoweringResult,
+        native_exec::SourceChunking,
+        planner::{FinalPlanDisposition, native::final_plan_requirement_error},
+    };
 
     /// Plan validation refuses a cumulative COUNT window, which the engine has
     /// no scan kernel for. Every operator of the DataFusion candidate lowered,
@@ -816,6 +820,60 @@ mod tests {
         assert_eq!(*capability_reason, CapabilityReason::UnsupportedOperator);
         let blocking = detail.blocking().expect("the refusal names a subject");
         assert_eq!(blocking.kind(), "compiled_contract", "{}", blocking.text());
+    }
+
+    /// The `native_required` error copies the admission facts, which name the
+    /// refused rule. `reason` must stay the capability reason clients read
+    /// from `x-algeon-reason`, and the rule travels as the log-safe `rule`.
+    #[test]
+    fn strict_rejection_reports_the_capability_reason_and_the_refused_rule_apart() {
+        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+        let projection = builder
+            .add_projection(
+                source,
+                vec![ProjectionOutput::new(
+                    Expr::regexp_replace(Expr::column("s"), "b", "", DataType::Utf8),
+                    Field::new("s", DataType::Utf8, true),
+                )],
+            )
+            .unwrap();
+        let native_plan =
+            builder.finish_with_host_sink(projection).unwrap().clone_with_deferred_host_materialization_sink();
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"));
+        let AdmissionDecision::Rejected(rejection) =
+            native_admission_decision(&native_plan, &execution_config).expect("the candidate is decidable")
+        else {
+            panic!("an empty REGEXP_REPLACE replacement has no native form");
+        };
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+        let lowering =
+            NativeLoweringResult { plan: None, report: PlanningReport::new(), source_diagnostics: Vec::new() };
+        let attempt = rejected_attempt(
+            Arc::clone(&plan),
+            GpuCandidate::new("ProjectionExec", 1),
+            (&native_plan, &rejection),
+            NativeOptimizerDiagnostics::default(),
+            lowering,
+            &execution_config,
+        )
+        .unwrap();
+        let [CandidateOutcome::NotSupported { capability_reason, .. }] = attempt.report.outcomes() else {
+            panic!("the candidate is not supported: {:?}", attempt.report.outcomes());
+        };
+
+        let error =
+            final_plan_requirement_error(plan.as_ref(), FinalPlanDisposition::DataFusion, Some(&attempt.report));
+
+        assert_eq!(error.fact_value("reason"), Some(capability_reason.code()));
+        assert_eq!(error.fact_value("rule"), Some("regexp_replace_replacement_must_not_be_empty"));
+        assert_eq!(error.fact_value("fact_collision_keys"), None);
+        let logs = error.facts().log_safe_projection();
+        let logged = logs.rendered().unwrap_or_default();
+        assert!(logged.contains(&format!("reason={}", capability_reason.code())), "{logged}");
+        assert!(logged.contains("rule=regexp_replace_replacement_must_not_be_empty"), "{logged}");
     }
 
     #[test]

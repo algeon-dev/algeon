@@ -183,14 +183,11 @@ impl AdmissionRejection {
     }
 
     fn validation(error: QueryError) -> Self {
-        let mut facts = error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
-        facts.insert("validation_code", error.code().as_str().to_string());
-        facts.insert("validation_operation", error.operation().to_string());
         Self {
             rejection: Rejection {
                 owner: RejectionOwner::Plan,
                 reason: Reason::PlanValidation(UnsupportedPart::from_code(error.code())),
-                facts,
+                facts: Rejection::validation_facts(&error),
             },
             pipeline: None,
             cause: RejectionCause::Validation(Arc::new(error)),

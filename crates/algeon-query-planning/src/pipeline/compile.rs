@@ -94,7 +94,7 @@ pub(crate) fn compile_pipeline_outcome(plan: &QueryPlan, analysis: &CapabilityAn
 }
 
 fn compile_rejection(reason: Reason, error: &QueryError) -> Rejection {
-    let mut facts = error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
+    let mut facts = Rejection::error_facts(error);
     facts.insert("pipeline_compile_error", error.message().to_string());
     Rejection { owner: RejectionOwner::Plan, reason, facts }
 }
