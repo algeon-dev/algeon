@@ -21,11 +21,11 @@ Scans prune unneeded data across multiple granularities:
 | --- | --- |
 | Files | Native lowering preserves the file set supplied by DataFusion's scan, including upstream partition pruning. An [Iceberg table](../integration/overview.mdx#iceberg-support) reaches lowering as a standard `s3://` Parquet scan, and Iceberg manifest pruning has already reduced its file set. |
 | Column chunks | Projection keeps only columns referenced by downstream operators and predicates. |
-| Row groups | Lowering evaluates footer statistics (min/max and null counts) and Bloom filters to prune row groups for supported predicates. An `s3://` scan prunes at planning time only when the session [holds its footers](#object-storage-and-libcurl). |
+| Row groups | Lowering evaluates footer statistics (min/max and null counts) to prune row groups for supported predicates. Bloom filters apply only inside the cuDF reader, to a predicate pushed into it. An `s3://` scan prunes at planning time only when the session [holds its footers](#object-storage-and-libcurl). |
 | Rows | Predicates evaluate within the cuDF reader or a downstream GPU filter, reducing output rows. |
 
-When a predicate is pushed into the cuDF reader, statistics filters reduce row
-groups before decompression. Footer pruning of `s3://` sources before admission
+When a predicate is pushed into the cuDF reader, its statistics and Bloom
+filters reduce row groups before decompression. Footer pruning of `s3://` sources before admission
 is an embedded-session setting, `AlgeonNativeExecutionConfig::with_lakehouse_footer_pruning`;
 Flight SQL server sessions do not expose object-store pruning options.
 
