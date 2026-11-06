@@ -11,6 +11,7 @@ use crate::{
     datatypes::arrow_decimal_scale_to_cudf_scale,
     error::{QueryError, QueryErrorCode, Result},
     expr::Expr,
+    parquet_stats::single_leaf_primitive_root_column_index,
     source::{
         LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetReaderDecimalType,
         ParquetReaderDecimalTypeId, ParquetSourceLocation,
@@ -231,7 +232,8 @@ pub fn parquet_reader_decimal_types(
             if !matches!(field.data_type(), DataType::Decimal128(_, _)) {
                 return None;
             }
-            let descriptor = metadata.file_metadata().schema_descr().columns().get(*file_index)?;
+            let schema = metadata.file_metadata().schema_descr();
+            let descriptor = schema.columns().get(single_leaf_primitive_root_column_index(schema, *file_index)?)?;
             let (_precision, scale) = parquet_decimal_precision_scale(descriptor)?;
             let type_id = parquet_reader_decimal_type_id(descriptor)?;
             Some(ParquetReaderDecimalType::new(column_name.clone(), type_id, arrow_decimal_scale_to_cudf_scale(scale)))
@@ -267,5 +269,39 @@ fn parquet_reader_decimal_type_id(descriptor: &ColumnDescriptor) -> Option<Parqu
             })
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Fields, Schema};
+    use parquet::arrow::ArrowWriter;
+
+    use super::parquet_reader_decimal_types;
+    use crate::source::{CredentialMode, LocalParquetFile, LocalParquetSource, ResolvedParquetSource};
+
+    #[test]
+    fn reader_decimal_types_address_the_leaf_after_a_nested_root() {
+        let payload =
+            Fields::from(vec![Field::new("x", DataType::Int32, true), Field::new("y", DataType::Int32, true)]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("payload", DataType::Struct(payload), true),
+            Field::new("amount", DataType::Decimal128(18, 4), true),
+        ]));
+        let writer = ArrowWriter::try_new(Vec::new(), Arc::clone(&schema), None).expect("test writer should open");
+        let metadata = writer.close().expect("test footer should be written");
+        let resolved =
+            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv);
+        let file = LocalParquetFile::from_resolved_parquet_source(resolved).unwrap().with_stable_id("part-0");
+        let source = LocalParquetSource::from_files(vec![file], schema, vec!["amount".to_string()]);
+
+        let types = parquet_reader_decimal_types(&metadata, &source);
+
+        assert_eq!(
+            types.iter().map(|dtype| (dtype.column_name.as_str(), dtype.cudf_scale)).collect::<Vec<_>>(),
+            vec![("amount", -4)]
+        );
     }
 }
