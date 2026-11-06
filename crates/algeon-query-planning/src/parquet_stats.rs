@@ -59,14 +59,24 @@ pub enum ColumnByteKind {
     Uncompressed,
 }
 
-/// Sums compressed or uncompressed bytes for the requested leaf column indexes.
+/// Sums compressed or uncompressed bytes over every leaf column of the
+/// requested top-level root columns. Returns `None` when a root index is
+/// outside the footer schema.
 pub fn row_group_column_bytes(
     row_group: &RowGroupMetaData,
-    column_indexes: &BTreeSet<usize>,
+    root_column_indexes: &BTreeSet<usize>,
     kind: ColumnByteKind,
 ) -> Option<u64> {
-    column_indexes.iter().try_fold(0u64, |total, column_index| {
-        let column = row_group.columns().get(*column_index)?;
+    let schema = row_group.schema_descr();
+    // A nested root before a requested root shifts that root's leaf index, so
+    // root indexes cannot address `RowGroupMetaData::columns` directly.
+    if root_column_indexes.last().is_some_and(|root_index| *root_index >= schema.root_schema().get_fields().len()) {
+        return None;
+    }
+    let mut leaf_indexes = (0..schema.num_columns())
+        .filter(|leaf_index| root_column_indexes.contains(&schema.get_column_root_idx(*leaf_index)));
+    leaf_indexes.try_fold(0u64, |total, leaf_index| {
+        let column = row_group.columns().get(leaf_index)?;
         let bytes = match kind {
             ColumnByteKind::Compressed => column.compressed_size(),
             ColumnByteKind::Uncompressed => column.uncompressed_size(),
@@ -176,7 +186,7 @@ pub fn row_group_i64_range_for_root_column(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::BTreeSet, sync::Arc};
 
     use parquet::{
         file::{
@@ -186,7 +196,10 @@ mod tests {
         schema::{parser::parse_message_type, types::SchemaDescriptor},
     };
 
-    use super::{I64StatisticsRange, row_group_i64_range, single_leaf_primitive_root_column_index};
+    use super::{
+        ColumnByteKind, I64StatisticsRange, row_group_column_bytes, row_group_i64_range,
+        single_leaf_primitive_root_column_index,
+    };
 
     fn row_group_with_statistics(schema_body: &str, statistics: Statistics) -> RowGroupMetaData {
         let parquet_type = parse_message_type(schema_body).expect("test Parquet schema should parse");
@@ -249,6 +262,46 @@ mod tests {
 
         assert_eq!(single_leaf_primitive_root_column_index(&schema, 0), None);
         assert_eq!(single_leaf_primitive_root_column_index(&schema, 1), Some(2));
+    }
+
+    #[test]
+    fn row_group_column_bytes_sums_root_leaves_after_a_nested_root() {
+        let parquet_type = parse_message_type(
+            "
+            message schema {
+              optional group payload {
+                optional int32 x;
+                optional int32 y;
+              }
+              optional int32 fact_key;
+            }
+            ",
+        )
+        .expect("test Parquet schema should parse");
+        let schema = Arc::new(SchemaDescriptor::new(Arc::new(parquet_type)));
+        let leaf_sizes = [(10, 100), (20, 200), (40, 400)];
+        let row_group = leaf_sizes
+            .iter()
+            .zip(schema.columns())
+            .fold(RowGroupMetaData::builder(Arc::clone(&schema)).set_num_rows(2), |builder, (sizes, column)| {
+                let (compressed, uncompressed) = *sizes;
+                builder.add_column_metadata(
+                    ColumnChunkMetaData::builder(Arc::clone(column))
+                        .set_total_compressed_size(compressed)
+                        .set_total_uncompressed_size(uncompressed)
+                        .build()
+                        .expect("test column metadata should build"),
+                )
+            })
+            .build()
+            .expect("test row-group metadata should build");
+
+        let fact_key = BTreeSet::from([1]);
+        let payload = BTreeSet::from([0]);
+        assert_eq!(row_group_column_bytes(&row_group, &fact_key, ColumnByteKind::Compressed), Some(40));
+        assert_eq!(row_group_column_bytes(&row_group, &fact_key, ColumnByteKind::Uncompressed), Some(400));
+        assert_eq!(row_group_column_bytes(&row_group, &payload, ColumnByteKind::Compressed), Some(30));
+        assert_eq!(row_group_column_bytes(&row_group, &BTreeSet::from([2]), ColumnByteKind::Compressed), None);
     }
 
     #[test]

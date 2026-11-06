@@ -47,7 +47,9 @@ pub(in crate::native) fn metadata_row_group_selections(
         .collect::<Option<Vec<_>>>()?;
     let selected_row_groups = selections.iter().map(|selection| selection.row_groups.len()).sum::<usize>();
     let total_row_groups = selections.iter().map(|selection| selection.total_row_groups).sum::<usize>();
-    if selected_row_groups > 0 && selected_row_groups < total_row_groups {
+    // Zero selected row groups stays an explicit empty selection per file;
+    // `None` would read every row group.
+    if selected_row_groups < total_row_groups {
         Some(selections.into_iter().map(|selection| selection.row_groups).collect())
     } else {
         None
