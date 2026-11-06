@@ -117,17 +117,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// Optional features of this binary beyond the library's engine features.
-const SERVER_FEATURES: &[&str] = &[
-    #[cfg(feature = "iceberg")]
-    "iceberg",
-];
-
 fn print_version() {
     let build = build_info();
-    let mut features = build.features.iter().chain(SERVER_FEATURES).copied().collect::<Vec<_>>();
-    features.sort_unstable();
-    let features = if features.is_empty() { "none".to_string() } else { features.join(",") };
+    let features = if build.features.is_empty() { "none".to_string() } else { build.features.join(",") };
     println!("algeon_server {}", build.version);
     println!("commit: {}", build.git_commit.unwrap_or("unknown"));
     println!("features: {features}");

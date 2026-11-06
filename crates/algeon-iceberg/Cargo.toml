@@ -14,7 +14,7 @@ build = "build.rs"
 workspace = true
 
 [dependencies]
-algeon-datafusion = { workspace = true, default-features = false, features = ["server"] }
+algeon-datafusion = { workspace = true, default-features = false, features = ["iceberg", "server"] }
 async-trait = { workspace = true }
 # Direct sys edge so build.rs bakes the native runtime path into test binaries.
 cudf-sys = { workspace = true }
