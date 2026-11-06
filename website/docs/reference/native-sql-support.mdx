@@ -62,6 +62,17 @@ other than `BIGINT`, and any cast from a timezone-aware timestamp. A cast to
 `CAST(next_view - event_time AS BIGINT)` over `TIMESTAMP(3)` columns is a
 millisecond difference.
 
+A `TIMESTAMP '...'` literal has nanosecond resolution. Subtracting timestamps of
+different units converts both to the finer unit, so a literal minus a
+`TIMESTAMP(6)` column casts the column to nanoseconds, and the query fails for
+any value outside the nanosecond range (years 1677 to 2262). Cast the literal
+to the column's unit first:
+
+```sql
+-- days since a password change, over a TIMESTAMP(6) column
+CAST(CAST(TIMESTAMP '2026-11-03 00:00:00' AS TIMESTAMP(6)) - pwd_changed AS BIGINT) / 86400000000
+```
+
 ### Scalar functions
 
 | Family | Functions and limits |
