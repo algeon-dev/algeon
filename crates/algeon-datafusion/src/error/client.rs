@@ -41,7 +41,10 @@ const BLOCKING_SUBJECT_POINTER: &str = "EXPLAIN GPU lists every blocking candida
 /// The texts a query caller sees for one failure.
 pub(crate) struct ClientMessage {
     /// The text without caller schema identifiers, which the boundary log may record.
-    #[cfg_attr(not(feature = "server"), expect(dead_code, reason = "only the Flight boundary logs the message"))]
+    #[cfg_attr(
+        all(not(feature = "server"), not(test)),
+        expect(dead_code, reason = "only the Flight boundary logs the message")
+    )]
     pub(crate) logged: String,
     /// The failure text a caller receives: `logged` plus the native
     /// diagnostic of a client-actionable failure and the caller schema detail
