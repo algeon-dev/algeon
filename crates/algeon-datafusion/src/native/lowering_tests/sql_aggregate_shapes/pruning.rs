@@ -70,6 +70,13 @@ fn pruning_tc_prune_cases_1() {
                 .expect("case runtime")
                 .block_on(direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadata())
         }),
+        ("direct_friendly_sql_filter_matching_no_row_group_selects_none_from_metadata", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(direct_friendly_sql_filter_matching_no_row_group_selects_none_from_metadata())
+        }),
         ("direct_friendly_sql_in_list_prunes_native_row_groups_from_metadata", || {
             TestRuntimeBuilder::new_current_thread()
                 .enable_all()
@@ -182,6 +189,36 @@ async fn direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadat
     assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
     let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[2, 3][..]));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+async fn direct_friendly_sql_filter_matching_no_row_group_selects_none_from_metadata() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-empty-row-group-pruning");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "
+        SELECT key, SUM(m00) AS sum_m00
+        FROM bench
+        WHERE payload >= 100
+        GROUP BY key
+        ORDER BY key ASC
+        LIMIT 10
+        ",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(0));
+    let source = native_local_parquet_source(result.selected_plan());
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[][..]));
+    assert_eq!(source.selected_row_group_count(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
