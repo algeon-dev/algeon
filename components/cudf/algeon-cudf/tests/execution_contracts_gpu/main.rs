@@ -15,7 +15,7 @@ mod tpch_pipeline_contract_tests;
 #[test]
 fn runtime_and_operator_binding_cases() {
     let cases = [
-        frame_contracts::same_provenance_tests::CASES,
+        frame_contracts::CASES,
         ops_contracts::datetime_execution_tests::CASES,
         ops_contracts::strings_execution_tests::CASES,
         runtime_contracts::device_guard_tests::CASES,

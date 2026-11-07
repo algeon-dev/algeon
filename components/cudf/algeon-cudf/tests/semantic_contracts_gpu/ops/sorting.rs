@@ -1,0 +1,764 @@
+use cudf::{
+    DataFrame, ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, SortOptions,
+    core::error::{FactKeyName, FactValue},
+    frame::dataframe::{DropDuplicatesOptions, InfoDetail},
+    ops::{sorting, stream_compaction::DuplicateKeepOption},
+    testing::prelude::*,
+};
+
+use crate::{
+    NamedCase,
+    common::{
+        assert_missing_column_error, column_from_slice, column_from_slice_nullable, dataframe_from_columns,
+        error_context_value, execution_budget_token, last_exec_mr_value, observed_exec_mr_values,
+        reset_exec_observation, sample_df, series, series_opt, with_test_runtime,
+    },
+};
+
+fn assert_sort_options_validation_error(
+    err: &cudf::Error,
+    operation: &str,
+    reason: &str,
+    remedy: &str,
+    actual_value: &str,
+) {
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), operation);
+    assert_eq!(error_context_value(err, "resource").as_deref(), Some("sort_options"));
+    assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
+    assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(1)));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(actual_value.parse().unwrap())));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(err.detail_value("actual_count"), None);
+    assert_eq!(error_context_value(err, "num_keys").as_deref(), None);
+    assert_eq!(error_context_value(err, "descending_len").as_deref(), None);
+    assert_eq!(error_context_value(err, "nulls_first_len").as_deref(), None);
+}
+
+fn assert_i32_column_eq(left: &DataFrame, right: &DataFrame, column: &str) {
+    assert_eq!(
+        left.series(column).unwrap().to_optional_vec::<i32>().unwrap(),
+        right.series(column).unwrap().to_optional_vec::<i32>().unwrap(),
+        "column {column} differed",
+    );
+}
+
+fn dataframe_device_allocated_size_bytes(df: &DataFrame) -> usize {
+    df.info_with(InfoDetail::DEVICE_ALLOCATED).unwrap().memory_accounting.unwrap().device_allocated_bytes.unwrap()
+}
+
+fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, lower_bound_bytes: usize) {
+    let high_water = report.allocator_high_water_bytes().expect("budget report should include allocator high-water");
+    assert!(high_water > 0, "allocator high-water should be positive: {report:?}");
+    assert!(
+        high_water >= lower_bound_bytes,
+        "allocator high-water should cover lower bound bytes: high_water={high_water}, lower_bound={lower_bound_bytes}, report={report:?}",
+    );
+    assert!(
+        high_water <= report.request().budget_bytes(),
+        "allocator high-water should stay within budget: high_water={high_water}, report={report:?}",
+    );
+    assert!(
+        report.allocator_peak_aligned_bytes().is_some_and(|bytes| bytes <= report.request().budget_bytes()),
+        "aligned allocator peak should stay within budget: {report:?}",
+    );
+}
+
+fn test_sort_values_single_column_ascending() {
+    let df = sample_df();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
+
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+    assert_eq!(sorted.column_names(), vec!["id", "score"]);
+}
+
+fn test_sort_values_single_column_descending() {
+    let df = sample_df();
+    let sorted = df.on(Exec::RETAINED).sort_values(["score"], SortOptions::new().with_descending(vec![true])).unwrap();
+
+    assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
+}
+
+fn test_sort_values_multi_column() {
+    // Sort by id ascending, then score descending within each id group.
+    let ids = series::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
+
+    let sorted = df
+        .on(Exec::RETAINED)
+        .sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true]))
+        .unwrap();
+
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 2, 2]);
+    assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
+}
+
+fn test_sort_values_multi_column_with_owned_string_keys() {
+    let ids = series::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
+    let tags = series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
+
+    let keys = vec!["id".to_string(), "score".to_string()];
+    let sorted =
+        df.on(Exec::RETAINED).sort_values(keys, SortOptions::new().with_descending(vec![false, true])).unwrap();
+
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 2, 2]);
+    assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
+    assert_eq!(sorted.series("tag").unwrap().to_vec_strict::<i32>().unwrap(), vec![300, 100, 400, 200]);
+}
+
+fn test_sort_values_stable_preserves_order() {
+    // All ids are the same; stable sort should preserve original row order.
+    let ids = series::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
+
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_stable(true)).unwrap();
+
+    // Tags should remain in original insertion order since all ids are equal.
+    assert_eq!(sorted.series("tag").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40]);
+}
+
+fn test_sort_values_rejects_mismatched_descending_length() {
+    let df = sample_df();
+    let result = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_descending(vec![true, false]));
+
+    let err = result.unwrap_err();
+    assert_sort_options_validation_error(
+        &err,
+        "dataframe::sort_values",
+        "descending_length_mismatch",
+        "provide either zero descending flags or exactly one flag per sort key",
+        "2",
+    );
+}
+
+fn test_sort_values_rejects_mismatched_nulls_first_length() {
+    let df = sample_df();
+    let result =
+        df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_nulls_first(vec![true, false, true]));
+
+    let err = result.unwrap_err();
+    assert_sort_options_validation_error(
+        &err,
+        "dataframe::sort_values",
+        "nulls_first_length_mismatch",
+        "provide either zero nulls_first flags or exactly one flag per sort key",
+        "3",
+    );
+}
+
+fn test_sort_values_preserves_schema() {
+    let df = sample_df();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
+
+    assert_eq!(sorted.column_names(), vec!["id", "score"]);
+    assert_eq!(sorted.column_index("id"), Some(0));
+    assert_eq!(sorted.column_index("score"), Some(1));
+}
+
+fn test_sort_values_nonexistent_column() {
+    let df = sample_df();
+    let result = df.on(Exec::RETAINED).sort_values(["missing"], SortOptions::new());
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_missing_column_error(&err, "missing");
+}
+
+fn test_sort_values_empty_options_means_defaults() {
+    let df = sample_df();
+    // Empty descending + empty nulls_first → all ascending, nulls last.
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
+
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_descending(vec![false])).unwrap();
+    assert_eq!(
+        sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(),
+        expected.series("id").unwrap().to_vec_strict::<i32>().unwrap(),
+    );
+}
+
+fn test_sort_values_nulls_first() {
+    let ids = column_from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
+    let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
+    let df =
+        dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
+
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_nulls_first(vec![true])).unwrap();
+
+    let id_vals = sorted.series("id").unwrap().to_optional_vec::<i32>().unwrap();
+    // Nulls should appear first (their host value is 0, but they're null).
+    // Then the non-null values in ascending order: 1, 2.
+    // The null positions have undefined data values, but the validity mask marks them null.
+    // The test checks that non-null values appear at the end in ascending order.
+    assert_eq!(id_vals[2], Some(1));
+    assert_eq!(id_vals[3], Some(2));
+}
+
+fn test_sort_values_descending_null_placement() {
+    let ids = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]);
+    let vals = column_from_slice(&[10i32, 20, 30, 40, 50]);
+    let df =
+        dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
+
+    let nulls_first = df
+        .on(Exec::RETAINED)
+        .sort_values(["id"], SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![true]))
+        .unwrap();
+    assert_eq!(
+        nulls_first.series("id").unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![None, None, Some(3), Some(2), Some(1)]
+    );
+    assert_eq!(nulls_first.series("val").unwrap().to_vec_strict::<i32>().unwrap()[2..], [30, 20, 50]);
+
+    let nulls_last = df
+        .on(Exec::RETAINED)
+        .sort_values(["id"], SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![false]))
+        .unwrap();
+    assert_eq!(
+        nulls_last.series("id").unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![Some(3), Some(2), Some(1), None, None]
+    );
+    assert_eq!(nulls_last.series("val").unwrap().to_vec_strict::<i32>().unwrap()[..3], [30, 20, 50]);
+}
+
+fn test_sort_values_default_places_nulls_last() {
+    let ids = column_from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
+    let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
+    let df =
+        dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
+
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
+    let id_col = sorted.series("id").unwrap();
+    let id_vals = id_col.to_optional_vec::<i32>().unwrap();
+
+    assert_eq!(id_vals[0], Some(1));
+    assert_eq!(id_vals[1], Some(2));
+    assert_eq!(id_col.testing_view().unwrap().to_host_validity().unwrap().unwrap(), vec![true, true, false, false]);
+}
+
+fn test_sort_values_unstable_by_default() {
+    let df = sample_df();
+    // Default unstable sort should still produce correct ordering.
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
+
+    let ids = sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap();
+    for w in ids.windows(2) {
+        assert!(w[0] <= w[1], "unstable sort produced incorrect order: {:?}", ids);
+    }
+}
+
+fn test_sort_values_explicit_ascending() {
+    let df = sample_df();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_descending(vec![false])).unwrap();
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+}
+
+fn test_prepare_sort_values_single_key_matches_sort_values() {
+    let df = sample_df();
+    let options = SortOptions::new();
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], options.clone()).unwrap();
+
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], options).unwrap();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
+
+    assert_eq!(prepared.output_rows(), df.num_rows());
+    assert_i32_column_eq(&actual, &expected, "id");
+}
+
+fn test_prepare_sort_values_multi_key_descending_matches_sort_values() {
+    let ids = series::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = series::<i32>("score", &[20, 10, 40, 30]).unwrap();
+    let tags = series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
+    let options = SortOptions::new().with_descending(vec![false, true]);
+    let expected = df.on(Exec::RETAINED).sort_values(["id", "score"], options.clone()).unwrap();
+
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id", "score"], options).unwrap();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
+
+    assert_i32_column_eq(&actual, &expected, "id");
+    assert_i32_column_eq(&actual, &expected, "score");
+    assert_i32_column_eq(&actual, &expected, "tag");
+}
+
+fn test_prepare_sort_values_descending_null_placement_matches_sort_values() {
+    let ids = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]);
+    let vals = column_from_slice(&[10i32, 20, 30, 40, 50]);
+    let df =
+        dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
+    let options = SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![true]);
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], options.clone()).unwrap();
+
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], options).unwrap();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
+
+    assert_i32_column_eq(&actual, &expected, "id");
+    assert_i32_column_eq(&actual, &expected, "val");
+}
+
+fn test_prepare_sort_values_stable_matches_sort_values_for_ties() {
+    let ids = series::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
+    let options = SortOptions::new().with_stable(true);
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], options.clone()).unwrap();
+
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], options).unwrap();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
+
+    assert_i32_column_eq(&actual, &expected, "id");
+    assert_i32_column_eq(&actual, &expected, "tag");
+
+    let identity = df
+        .on(Exec::RETAINED)
+        .prepare_sort_values(Vec::<&str>::new(), SortOptions::new().with_stable(true))
+        .unwrap()
+        .materialize(Exec::RETAINED)
+        .unwrap();
+    assert_i32_column_eq(&identity, &df, "id");
+    assert_i32_column_eq(&identity, &df, "tag");
+}
+
+fn test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties() {
+    let df = DataFrame::from_series([
+        (
+            "src",
+            series_opt(
+                "src",
+                &[
+                    Some(0i64),
+                    Some(1),
+                    Some(0),
+                    Some(1),
+                    None,
+                    None,
+                    Some(2),
+                    Some(2),
+                    Some(3),
+                    Some(3),
+                    Some(4),
+                    Some(4),
+                ],
+            )
+            .unwrap(),
+        ),
+        (
+            "dst",
+            series_opt(
+                "dst",
+                &[
+                    Some(1i64),
+                    Some(0),
+                    Some(1),
+                    Some(0),
+                    Some(7),
+                    Some(7),
+                    None,
+                    None,
+                    Some(4),
+                    Some(4),
+                    Some(5),
+                    Some(5),
+                ],
+            )
+            .unwrap(),
+        ),
+        (
+            "weight",
+            series_opt(
+                "weight",
+                &[
+                    Some(0.0f64),
+                    Some(-0.0),
+                    Some(-0.0),
+                    Some(0.0),
+                    None,
+                    Some(2.0),
+                    Some(f64::NAN),
+                    Some(f64::NAN),
+                    Some(f64::INFINITY),
+                    Some(1.0),
+                    Some(f64::NEG_INFINITY),
+                    Some(1.0),
+                ],
+            )
+            .unwrap(),
+        ),
+        ("edge_id", series("edge_id", &(0..12i32).collect::<Vec<_>>()).unwrap()),
+    ])
+    .unwrap();
+    let reverse = DataFrame::from_series([
+        ("src", df.series("dst").unwrap()),
+        ("dst", df.series("src").unwrap()),
+        ("weight", df.series("weight").unwrap()),
+        ("edge_id", df.series("edge_id").unwrap()),
+    ])
+    .unwrap();
+    let df = df.on(Exec::RETAINED).concat_many(&[&reverse]).unwrap();
+    for nulls_first in [false, true] {
+        let options = SortOptions::new().with_stable(true).with_nulls_first(vec![nulls_first; 3]);
+        for keep in [DuplicateKeepOption::KeepFirst, DuplicateKeepOption::KeepLast, DuplicateKeepOption::KeepNone] {
+            for subset in [&["src", "dst"][..], &["src", "dst", "weight"][..]] {
+                let dedup = DropDuplicatesOptions::builder().subset(subset).keep(keep).build();
+                let expected = df
+                    .on(Exec::RETAINED)
+                    .sort_values(["src", "dst", "weight"], options.clone())
+                    .unwrap()
+                    .on(Exec::RETAINED)
+                    .drop_duplicates(dedup.clone())
+                    .unwrap()
+                    .on(Exec::RETAINED)
+                    .sort_values(["src", "dst", "weight", "edge_id"], SortOptions::new().with_stable(true))
+                    .unwrap();
+                let actual = df
+                    .on(Exec::RETAINED)
+                    .prepare_sort_values(["src", "dst", "weight"], options.clone())
+                    .unwrap()
+                    .materialize_drop_consecutive_duplicates(dedup, Exec::RETAINED)
+                    .unwrap()
+                    .on(Exec::RETAINED)
+                    .sort_values(["src", "dst", "weight", "edge_id"], SortOptions::new().with_stable(true))
+                    .unwrap();
+                for column in ["src", "dst"] {
+                    assert_eq!(
+                        actual.series(column).unwrap().to_optional_vec::<i64>().unwrap(),
+                        expected.series(column).unwrap().to_optional_vec::<i64>().unwrap(),
+                        "{column}, {keep:?}, {subset:?}, nulls_first={nulls_first}"
+                    );
+                }
+                assert_i32_column_eq(&actual, &expected, "edge_id");
+                let bits = |frame: &DataFrame| {
+                    frame
+                        .series("weight")
+                        .unwrap()
+                        .to_optional_vec::<f64>()
+                        .unwrap()
+                        .into_iter()
+                        .map(|value| value.map(f64::to_bits))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(bits(&actual), bits(&expected), "{keep:?}, {subset:?}, nulls_first={nulls_first}");
+            }
+        }
+    }
+}
+
+fn test_prepared_sort_unique_gathers_only_retained_payload_under_cap() {
+    let rows = 262_144usize;
+    let mut columns = vec![
+        ("src".to_string(), series("src", &(0..rows).map(|row| (row % 1024) as i32).collect::<Vec<_>>()).unwrap()),
+        ("dst".to_string(), series("dst", &vec![0i32; rows]).unwrap()),
+    ];
+    for ordinal in 0..16 {
+        let name = format!("payload_{ordinal}");
+        columns.push((name.clone(), series(name, &(0..rows as i64).collect::<Vec<_>>()).unwrap()));
+    }
+    let df = DataFrame::from_series(columns).unwrap();
+    let cap = 12 * 1024 * 1024;
+    assert!(dataframe_device_allocated_size_bytes(&df) > cap);
+    let token = with_test_runtime(|runtime| {
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(cap).with_boundary("sort_unique")).unwrap()
+    });
+    reset_exec_observation();
+    let outcome = token
+        .run("sort_unique", |exec| {
+            df.on(exec)
+                .prepare_sort_values(["src", "dst"], SortOptions::new().with_stable(true))?
+                .materialize_drop_consecutive_duplicates(
+                    DropDuplicatesOptions::builder()
+                        .subset(&["src", "dst"][..])
+                        .keep(DuplicateKeepOption::KeepLast)
+                        .build(),
+                    exec,
+                )
+        })
+        .unwrap();
+    let actual = outcome.value();
+    assert_eq!(actual.num_rows(), 1024);
+    let payload = actual.series("payload_0").unwrap().to_optional_vec::<i64>().unwrap();
+    assert_eq!(payload, ((rows - 1024) as i64..rows as i64).map(Some).collect::<Vec<_>>());
+    let routed_mr = token.memory_resource().testing_raw_handle_value();
+    assert_eq!(actual.series("payload_0").unwrap().as_column().testing_execution_domain_mr_value(), routed_mr);
+    assert!(observed_exec_mr_values().into_iter().all(|value| value == routed_mr));
+    assert!(outcome.report().allocator_high_water_bytes().unwrap() <= cap);
+}
+
+fn test_sorted_order_reservation_matches_retained_prepared_sort_allocation() {
+    let df = sample_df();
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], SortOptions::new()).unwrap();
+    let expected = sorting::sorted_order_reservation_size_bytes_for_len(prepared.output_rows()).unwrap();
+
+    assert_eq!(expected, prepared.sorted_order_reservation_size_bytes().unwrap());
+    assert_eq!(expected, prepared.retained_sorted_order_device_allocated_size_bytes().unwrap());
+    assert_eq!(expected, prepared.output_rows() * std::mem::size_of::<i32>());
+}
+
+fn test_sorted_order_reservation_rejects_rows_above_cudf_size_type() {
+    let output_rows = i32::MAX as usize + 1;
+
+    sorting::sorted_order_reservation_size_bytes_for_len(output_rows)
+        .expect_err("sorted-order reservation must reject rows above cudf::size_type");
+}
+
+fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output() {
+    let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
+    let vals = series::<i32>("val", &[30, 10, 20]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("val", vals)]).unwrap();
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], SortOptions::new()).unwrap();
+
+    let reservation = prepared.materialized_output_reservation_size_bytes(Exec::RETAINED).unwrap();
+    let materialized = prepared.materialize(Exec::RETAINED).unwrap();
+
+    assert_eq!(reservation, dataframe_device_allocated_size_bytes(&materialized));
+    assert_eq!(materialized.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order() {
+    let df = sample_df();
+    let token = with_test_runtime(|runtime| {
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort"))
+            .unwrap()
+    });
+
+    reset_exec_observation();
+    let outcome = token
+        .run("dataframe::prepare_sort_values", |exec| df.on(exec).prepare_sort_values(["id"], SortOptions::new()))
+        .unwrap();
+    let prepared = outcome.value();
+    let report = outcome.report();
+    let expected_order_bytes = prepared.sorted_order_reservation_size_bytes().unwrap();
+
+    assert_eq!(report.request().boundary(), "final_sort");
+    assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
+    assert_eq!(report.retained_bytes(), Some(expected_order_bytes));
+    assert_eq!(report.output_bytes(), None);
+    assert_budget_report_high_water(report, expected_order_bytes);
+    assert_eq!(
+        prepared.sorted_order().as_column().testing_execution_domain_mr_value(),
+        token.memory_resource().testing_raw_handle_value(),
+        "prepared sorted-order output should retain the device manager resource",
+    );
+    assert_eq!(
+        last_exec_mr_value(),
+        token.memory_resource().testing_raw_handle_value(),
+        "prepared sort execution should route through the device manager resource",
+    );
+}
+
+fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties() {
+    let ids = series::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
+    let options = SortOptions::new().with_stable(true);
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], options.clone()).unwrap();
+    let token = with_test_runtime(|runtime| {
+        execution_budget_token(
+            runtime,
+            ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("stable_final_sort"),
+        )
+        .unwrap()
+    });
+
+    reset_exec_observation();
+    let outcome =
+        token.run("dataframe::prepare_sort_values", |exec| df.on(exec).prepare_sort_values(["id"], options)).unwrap();
+    let prepare_exec_mrs = observed_exec_mr_values();
+    let prepared = outcome.value();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
+    let manager_mr = token.memory_resource().testing_raw_handle_value();
+
+    assert_i32_column_eq(&actual, &expected, "id");
+    assert_i32_column_eq(&actual, &expected, "tag");
+    assert_eq!(actual.series("tag").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40]);
+    assert_eq!(
+        prepared.sorted_order().as_column().testing_execution_domain_mr_value(),
+        manager_mr,
+        "stable prepared sorted-order output should retain the device manager resource",
+    );
+    assert!(
+        !prepare_exec_mrs.is_empty(),
+        "stable prepared sort must execute with the device manager resource; got {prepare_exec_mrs:?}",
+    );
+    assert!(
+        prepare_exec_mrs.iter().all(|&observed| observed == manager_mr),
+        "stable prepared sort execution must route through the device manager resource; got {prepare_exec_mrs:?}, expected {manager_mr}",
+    );
+    assert_eq!(outcome.report().request().boundary(), "stable_final_sort");
+    assert_eq!(outcome.report().retained_bytes(), Some(prepared.sorted_order_reservation_size_bytes().unwrap()));
+}
+
+fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator() {
+    let df = sample_df();
+    let prepared = {
+        let prepare_token = with_test_runtime(|runtime| {
+            execution_budget_token(
+                runtime,
+                ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_order"),
+            )
+            .unwrap()
+        });
+        prepare_token
+            .run("dataframe::prepare_sort_values", |exec| df.on(exec).prepare_sort_values(["id"], SortOptions::new()))
+            .unwrap()
+            .into_value()
+    };
+    let materialize_token = with_test_runtime(|runtime| {
+        execution_budget_token(
+            runtime,
+            ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_output"),
+        )
+        .unwrap()
+    });
+
+    reset_exec_observation();
+    let outcome = prepared.materialize_with_budget(&materialize_token).unwrap();
+    let sorted = outcome.value();
+    let report = outcome.report();
+    let output_bytes = dataframe_device_allocated_size_bytes(sorted);
+
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
+    assert_eq!(report.request().boundary(), "final_sort_output");
+    assert_eq!(report.retained_bytes(), Some(prepared.retained_sorted_order_device_allocated_size_bytes().unwrap()));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_budget_report_high_water(report, output_bytes);
+    assert_eq!(
+        sorted.testing_execution_domain_mr_value(),
+        materialize_token.memory_resource().testing_raw_handle_value(),
+        "materialized output should retain the device manager resource",
+    );
+    assert_eq!(
+        last_exec_mr_value(),
+        materialize_token.memory_resource().testing_raw_handle_value(),
+        "materialize execution should route through the device manager resource",
+    );
+}
+
+fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
+    let df = sample_df();
+    let token = with_test_runtime(|runtime| {
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("final_sort")).unwrap()
+    });
+
+    let err = token
+        .run("dataframe::prepare_sort_values", |exec| df.on(exec).prepare_sort_values(["id"], SortOptions::new()))
+        .expect_err("one-byte budget should not cover prepared sort allocations");
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "final_sort");
+    assert_eq!(
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
+        1
+    );
+    assert_eq!(err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").peak_bytes, 0);
+    assert_eq!(err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").current_bytes, 0);
+    assert_eq!(
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").failed_allocation_count,
+        1
+    );
+    assert!(
+        err.budget_exhaustion()
+            .and_then(|budget| budget.usage())
+            .expect("member usage")
+            .largest_failed_allocation_bytes
+            > 0
+    );
+}
+
+pub(super) const CASES: &[(&str, fn())] = &[
+    ("dataframe_sort_values_tests::test_sort_values_single_column_ascending", test_sort_values_single_column_ascending),
+    (
+        "dataframe_sort_values_tests::test_sort_values_single_column_descending",
+        test_sort_values_single_column_descending,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_multi_column", test_sort_values_multi_column),
+    (
+        "dataframe_sort_values_tests::test_sort_values_multi_column_with_owned_string_keys",
+        test_sort_values_multi_column_with_owned_string_keys,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_stable_preserves_order", test_sort_values_stable_preserves_order),
+    (
+        "dataframe_sort_values_tests::test_sort_values_rejects_mismatched_descending_length",
+        test_sort_values_rejects_mismatched_descending_length,
+    ),
+    (
+        "dataframe_sort_values_tests::test_sort_values_rejects_mismatched_nulls_first_length",
+        test_sort_values_rejects_mismatched_nulls_first_length,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_preserves_schema", test_sort_values_preserves_schema),
+    ("dataframe_sort_values_tests::test_sort_values_nonexistent_column", test_sort_values_nonexistent_column),
+    (
+        "dataframe_sort_values_tests::test_sort_values_empty_options_means_defaults",
+        test_sort_values_empty_options_means_defaults,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_nulls_first", test_sort_values_nulls_first),
+    (
+        "dataframe_sort_values_tests::test_sort_values_descending_null_placement",
+        test_sort_values_descending_null_placement,
+    ),
+    (
+        "dataframe_sort_values_tests::test_sort_values_default_places_nulls_last",
+        test_sort_values_default_places_nulls_last,
+    ),
+    ("dataframe_sort_values_tests::test_sort_values_unstable_by_default", test_sort_values_unstable_by_default),
+    ("dataframe_sort_values_tests::test_sort_values_explicit_ascending", test_sort_values_explicit_ascending),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_single_key_matches_sort_values",
+        test_prepare_sort_values_single_key_matches_sort_values,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_multi_key_descending_matches_sort_values",
+        test_prepare_sort_values_multi_key_descending_matches_sort_values,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_descending_null_placement_matches_sort_values",
+        test_prepare_sort_values_descending_null_placement_matches_sort_values,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_stable_matches_sort_values_for_ties",
+        test_prepare_sort_values_stable_matches_sort_values_for_ties,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties",
+        test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_unique_gathers_only_retained_payload_under_cap",
+        test_prepared_sort_unique_gathers_only_retained_payload_under_cap,
+    ),
+    (
+        "dataframe_sort_values_tests::test_sorted_order_reservation_matches_retained_prepared_sort_allocation",
+        test_sorted_order_reservation_matches_retained_prepared_sort_allocation,
+    ),
+    (
+        "dataframe_sort_values_tests::test_sorted_order_reservation_rejects_rows_above_cudf_size_type",
+        test_sorted_order_reservation_rejects_rows_above_cudf_size_type,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output",
+        test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order",
+        test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties",
+        test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator",
+        test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly",
+        test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly,
+    ),
+];
+
+pub(crate) const TABLES: &[&[NamedCase]] = &[CASES];

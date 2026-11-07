@@ -11,12 +11,10 @@ use tokio::runtime::Builder as TestRuntimeBuilder;
 #[path = "../../tests/support/support_core.rs"]
 mod support_core;
 
-mod bounded_join;
-mod exec_plans;
-
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
+    path::Path,
     sync::{Arc, mpsc},
     time::Duration,
 };
@@ -28,6 +26,7 @@ use arrow::{
 use datafusion::{
     common::{DataFusionError, config::ConfigOptions},
     execution::context::TaskContext,
+    parquet::file::reader::{FileReader, SerializedFileReader},
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
@@ -37,14 +36,15 @@ use datafusion::{
         projection::{ProjectionExec, ProjectionExpr},
         sorts::sort::SortExec,
     },
-    prelude::SessionContext,
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use exec_plans::*;
-use futures::StreamExt;
+use futures::{StreamExt, executor::block_on};
+use query_engine::rapids_backend::rapids_analysis_context;
 use query_planning::{
-    pipeline::{PipelineTaskKind, compile_pipeline},
-    plan::QueryPlanBuilder,
-    source::{GpuResidentSource, SourceNode},
+    pipeline::{CompiledPipeline, PipelineTaskKind, compile_pipeline},
+    plan::{QueryPlan, QueryPlanBuilder},
+    policy::PlanningPolicy,
+    source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
 use support_core::*;
 
@@ -372,7 +372,6 @@ async fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
 
 async fn native_host_output_memory_pool_accounting_releases_on_stream_eof() {
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-    use futures::StreamExt;
 
     let dir = unique_temp_dir("algeon-datafusion-native-host-output-memory-pool-eof");
     let path = dir.join("input.parquet");
@@ -519,4 +518,166 @@ async fn native_optimizer_property_checked_ilike_boundary_honors_pre_execution_c
     assert_eq!(adapter_error(&error).code(), ErrorCode::Cancelled);
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-bounded-join-aggregate");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_parquet_file(&left);
+    write_parquet_file(&right);
+    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
+    let fixture = backend_fixture();
+    let rule = AlgeonNativePhysicalOptimizerRule::new(template_optimizer_config());
+
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
+
+    let native = optimized
+        .downcast_ref::<AlgeonNativeExec>()
+        .expect("single-join post-root pipeline should optimize to AlgeonNativeExec");
+    let pipeline = compile_pipeline(
+        native.native_plan(),
+        &native.native_plan().capability_analysis(rapids_analysis_context(PlanningPolicy::default())),
+    )
+    .expect("lowered single-join post-root pipeline should compile");
+    assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Aggregate), 1);
+    assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::FinalSort), 1);
+    assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Limit), 1);
+    let report = diagnostics.expect("native optimizer should record planning diagnostics").report;
+    assert_eq!(report.selected_count(), 1);
+    assert_eq!(report.not_selected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
+
+    let admitted = admitted_plan(&fixture, Arc::clone(&optimized));
+    let batches = collect(admitted, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].num_rows(), 2);
+    assert_eq!(batches[0].num_columns(), 2);
+    assert_eq!(int32_array(&batches[0], 0).values().as_ref(), &[1, 2]);
+    assert_eq!(int64_array(&batches[0], 1).values().as_ref(), &[303, 202]);
+
+    let metrics = optimized.metrics().expect("native execution should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
+    // The native plan executes to a deferred host sink; the adapter's host
+    // materialization counts as the pipeline's sink task.
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_tasks_executed").unwrap().as_usize(), pipeline.tasks().len() + 1);
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_host_arrow_sinks").unwrap().as_usize(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> usize {
+    pipeline.tasks().iter().filter(|task| task.kind() == kind).count()
+}
+
+fn join_aggregate_sort_limit_sql_plan(left: &Path, right: &Path) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(
+        SessionConfig::new()
+            .with_repartition_file_scans(false)
+            .with_repartition_joins(false)
+            .with_repartition_aggregations(false)
+            .with_repartition_sorts(false)
+            .with_target_partitions(1),
+    );
+    block_on(ctx.register_parquet("left_input", left.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    block_on(ctx.register_parquet("right_input", right.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    let sql = "
+SELECT l.key, SUM(l.m00 + r.m01) AS sum_x00
+FROM left_input l
+JOIN right_input r ON l.key = r.key
+WHERE l.payload >= 10 AND r.payload >= 10
+GROUP BY l.key
+ORDER BY sum_x00 DESC, l.key ASC
+LIMIT 2
+";
+    let df = block_on(ctx.sql(sql)).unwrap();
+    block_on(df.create_physical_plan()).unwrap()
+}
+
+fn host_sink_plan() -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+    builder.finish_with_host_sink(source).unwrap()
+}
+
+fn gpu_resident_plan() -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+    builder.finish_gpu_resident(source).unwrap()
+}
+
+fn local_parquet_gpu_resident_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
+    let source = local_parquet_source_with_exact_metadata(
+        path,
+        schema,
+        vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    builder.finish_gpu_resident(source).unwrap()
+}
+
+fn local_parquet_host_sink_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
+    let source = local_parquet_source_with_exact_metadata(
+        path,
+        schema,
+        vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    builder.finish_with_host_sink(source).unwrap()
+}
+
+fn local_parquet_source_with_exact_metadata(
+    path: &std::path::Path,
+    schema: Arc<Schema>,
+    read_columns: Vec<String>,
+) -> LocalParquetSource {
+    LocalParquetSource::from_files(vec![exact_local_parquet_file(path)], schema, read_columns)
+}
+
+fn exact_local_parquet_file(path: &std::path::Path) -> LocalParquetFile {
+    let reader = SerializedFileReader::try_from(path).unwrap_or_else(|error| {
+        panic!("written native fixture must be readable as Parquet: {}: {error}", path.display())
+    });
+    let metadata = reader.metadata();
+    let file_size = std::fs::metadata(path)
+        .unwrap_or_else(|error| panic!("written native fixture must be stat-able: {}: {error}", path.display()))
+        .len();
+    let row_group_rows = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.num_rows()).expect("fixture row count fits u64"))
+        .collect::<Vec<_>>();
+    let row_group_bytes = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.compressed_size()).expect("fixture compressed bytes fit u64"))
+        .collect::<Vec<_>>();
+    let projected_uncompressed_bytes = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.total_byte_size()).expect("fixture uncompressed bytes fit u64"))
+        .collect::<Vec<_>>();
+    LocalParquetFile::new(path)
+        .with_file_size_bytes(file_size)
+        .with_row_groups((0..metadata.num_row_groups()).collect())
+        .with_row_group_rows(row_group_rows)
+        .with_row_group_bytes(row_group_bytes.clone())
+        .with_projected_row_group_bytes(row_group_bytes, projected_uncompressed_bytes)
+}
+
+fn gpu_resident_host_sink_plan(input_name: &str, schema: Arc<Schema>) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
+    builder.finish_with_host_sink(source).unwrap()
+}
+
+fn local_parquet_source() -> LocalParquetSource {
+    LocalParquetSource::new("/tmp/algeon-datafusion-native-exec-test.parquet", schema(), vec!["key".to_string()])
+}
+
+fn schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]))
 }
