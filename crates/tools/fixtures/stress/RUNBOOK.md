@@ -523,8 +523,8 @@ load experiments or supply measurements for the retired cases.
 | Feature-off cuGraph traffic beside relational load | [Feature-off SQL tests](../../../algeon-datafusion/tests/contract_tests_cpu/cugraph_sql_feature_off_tests.rs) |
 | Live OTLP collector/export runs | [Operability evidence tests](../../src/single_node_multi_gpu_validate/operability.rs) |
 | Nsight memory and CUDA overlap calibration | [Trace/artifact contracts](../../src/single_node_multi_gpu_validate/artifact.rs) and [sampling tests](../../src/single_node_multi_gpu_validate/timeseries.rs) |
-| Telemetry on/off comparison | [Runtime metrics tests](../../../algeon-query-runtime/src/observability/metrics_summary/tests.rs) |
-| Distinct graph population and churn | [Resident graph cache tests](../../../algeon-query-runtime/src/runtime/cache/resident_graph/tests.rs) |
+| Telemetry on/off comparison | [Runtime metrics tests](../../../algeon-query-runtime/src/observability/metrics_summary.rs) |
+| Distinct graph population and churn | [Resident graph cache tests](../../../algeon-query-runtime/src/runtime/cache/resident_graph.rs) |
 | Cancellation/deadline storms and slow completion sinks | [Runner probe contracts](../../src/single_node_multi_gpu_validate/tests.rs) and [release tests](../../../algeon-query-runtime/src/runtime/query_service/tests/release_commit.rs) |
 
 Retain non-qualifying artifacts and their process exit status. Change load or
