@@ -1421,6 +1421,27 @@ fn whole_input_aggregate_windows_match_datafusion() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// Each `ORDER BY` key list ends in keys that make every output row of a tie
+/// equal, so the native rows must match DataFusion's in order. The keys are
+/// not in the output and the file is not stored in key order, so the rows are
+/// in order only if the native plan keeps the sort.
+#[test]
+fn sort_by_keys_outside_the_output_matches_datafusion_row_order() {
+    let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-hidden-order-key");
+    for query in [
+        "SELECT x FROM input ORDER BY p, o, x",
+        "SELECT x + 0 AS k FROM input ORDER BY x DESC, p, o",
+        "SELECT x FROM input ORDER BY p DESC, o, x OFFSET 19000",
+        "SELECT p FROM input GROUP BY p ORDER BY SUM(x), p",
+        "SELECT a.x FROM input a JOIN (SELECT p, MAX(o) AS m FROM input GROUP BY p) b ON a.p = b.p \
+         ORDER BY b.m, a.p, a.o, a.x",
+    ] {
+        let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+        assert_eq!(actual, expected, "{query}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// At four partitions DataFusion merges sorted partitions by an expression
 /// key, and plans a `UNION ALL` of joins that share the grouping key's hash
 /// partitioning as an `InterleaveExec`. Each query lowers whole under

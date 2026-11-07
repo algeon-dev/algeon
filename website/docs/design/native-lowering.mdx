@@ -200,6 +200,15 @@ before the window operator when the input is a join, aggregate, union or
 GPU-resident relation, and it drops a sort without a `fetch` below an operator
 that does not read row order, such as a join input.
 
+The client reads the root's rows in order, and a limit keeps the first rows of
+its input. Both read the order that a sort or an ordered scan gave the rows,
+through any operators between them that keep their input's order. That holds
+even when a projection removed an `ORDER BY` key and
+DataFusion reports no ordering for the root, as in
+`SELECT id FROM t ORDER BY b OFFSET 10`. Lowering keeps such a sort, and the
+optimized plan must still read it at the root, since no sort over the output
+columns can reproduce it.
+
 The native host-output wrapper exposes one bounded output partition. When
 native fragments sit under CPU operators, the adapter verifies the parent's
 schema, ordering and distribution requirements, including co-partitioned join

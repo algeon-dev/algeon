@@ -198,8 +198,8 @@ fn with_merge_fetch(sorted: NormalizedNativeInput<'_>, fetch: Option<NativeLimit
 
 /// `spec` applied to `input`: folded into a sort's fetch or an inner limit,
 /// otherwise a new limit node named after `operator`. `input_ordered` says
-/// whether DataFusion reports an ordering for the limit's input, whose first
-/// rows the limit then keeps.
+/// whether the limit's input rows are ordered (`plan_rows_are_ordered`), so
+/// the limit keeps the first rows in that order.
 fn with_limit<'a>(
     operator: &'static str,
     input: NormalizedNativeInput<'a>,
@@ -222,6 +222,23 @@ fn with_limit<'a>(
             input_ordered,
             input: Box::new(input),
         }),
+    }
+}
+
+/// Whether the rows `plan` emits follow an ordering that an operator on its
+/// order-preserving chain established, such as a sort or a scan with a
+/// declared ordering. DataFusion drops an ordering from the plan properties
+/// once a projection removes one of its keys, while the rows keep that order.
+/// In `SELECT id FROM t ORDER BY b OFFSET 10`, neither the root nor the limit
+/// reports an ordering, yet the client reads the rows by `b` and the offset
+/// skips the first ten by `b`.
+pub(super) fn plan_rows_are_ordered(plan: &dyn ExecutionPlan) -> bool {
+    if plan.output_ordering().is_some() {
+        return true;
+    }
+    match (plan.children().as_slice(), plan.maintains_input_order().as_slice()) {
+        ([input], [true]) => plan_rows_are_ordered(input.as_ref()),
+        _ => false,
     }
 }
 
@@ -291,7 +308,7 @@ fn normalize_native_input(
             "LocalLimitExec",
             input,
             NativeLimitSpec::fetch(limit.fetch()),
-            limit.input().output_ordering().is_some(),
+            plan_rows_are_ordered(limit.input().as_ref()),
         ));
     }
 
@@ -312,7 +329,7 @@ fn normalize_native_input(
                 "GlobalLimitExec",
                 normalized,
                 NativeLimitSpec::fetch(fetch),
-                filter.properties().output_ordering().is_some(),
+                plan_rows_are_ordered(filter),
             ));
         }
         return Ok(normalized);
@@ -359,12 +376,15 @@ fn normalize_native_input(
         }));
     }
     if let Some(limit) = plan.downcast_ref::<GlobalLimitExec>() {
+        // Below an aggregate or a join, which read no row order, only
+        // `input_ordered` keeps the sort an offset depends on. DataFusion 55
+        // removes that sort itself (apache/datafusion#26488); 56 keeps it.
         let input = normalize_native_input(limit.input().as_ref(), candidate, false)?;
         return Ok(with_limit(
             "GlobalLimitExec",
             input,
             NativeLimitSpec::new(limit.skip(), limit.fetch()),
-            limit.input().output_ordering().is_some(),
+            plan_rows_are_ordered(limit.input().as_ref()),
         ));
     }
     if let Some(aggregate) = plan.downcast_ref::<AggregateExec>() {

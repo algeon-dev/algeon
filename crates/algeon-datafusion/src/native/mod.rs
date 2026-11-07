@@ -49,7 +49,7 @@ pub(crate) use footers::{FooterCache, FooterScope};
 use lowering::lower_normalized_plan;
 use normalize::{
     NormalizedNativeAggregate, NormalizedNativeInput, NormalizedNativeLiteralSource,
-    make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan,
+    make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan, plan_rows_are_ordered,
 };
 pub(crate) use operator_support::first_join_operator;
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
@@ -311,7 +311,7 @@ fn lower_physical_plan_to_native_with_mode(
             })
         },
         Ok(normalized) => {
-            match lower_normalized_plan(&normalized, plan.properties().output_ordering().is_some(), source_reads) {
+            match lower_normalized_plan(&normalized, plan_rows_are_ordered(plan.as_ref()), source_reads) {
                 Err(LoweringFailure::Invalid(error)) => Err(Error::from_native(
                     "algeon_datafusion.native.lower",
                     "native lowering built a malformed native plan",
@@ -471,18 +471,50 @@ fn unsupported_column_detail(field: &ArrowFieldRef, role: &'static str) -> Unsup
     UnsupportedColumnDetail::new(field.name(), diagnostic_arrow_type(field.data_type()), role)
 }
 
+/// The row order a native plan's output must keep after the native optimizer.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NativeOutputOrdering<'a> {
+    /// The rows carry no order the output must keep.
+    Unordered,
+    /// DataFusion declares this ordering over the output columns.
+    Declared(&'a LexOrdering),
+    /// A sort orders the rows by keys a projection removed from the output.
+    /// No sort over the output columns reproduces it.
+    SortedByHiddenKeys,
+}
+
+impl<'a> NativeOutputOrdering<'a> {
+    /// The ordering `plan`'s output keeps, given `lowered`, the native plan
+    /// lowering built for `plan` before the native optimizer ran.
+    pub(crate) fn of(plan: &'a dyn ExecutionPlan, lowered: &NativeQueryPlan) -> Self {
+        match plan.properties().output_ordering() {
+            Some(ordering) => Self::Declared(ordering),
+            None if native_plan_output_is_sorted(lowered) => Self::SortedByHiddenKeys,
+            None => Self::Unordered,
+        }
+    }
+}
+
 /// Enforces the orderings an optimized native plan must keep: every
 /// order-sensitive operator reads ordered input, and the output reproduces
-/// the plan's declared ordering, by an appended sort when needed.
+/// the plan's declared ordering, by an appended sort when needed. An output
+/// sorted by hidden keys must still reach its sort.
 pub(crate) fn reestablish_declared_output_ordering_if_needed(
     native_plan: NativeQueryPlan,
-    ordering: Option<&LexOrdering>,
+    ordering: NativeOutputOrdering<'_>,
 ) -> std::result::Result<(NativeQueryPlan, bool), LoweringRejection> {
     if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
         return Err(unreproducible_ordering("window input ordering", None));
     }
-    let Some(ordering) = ordering else {
-        return Ok((native_plan, false));
+    let ordering = match ordering {
+        NativeOutputOrdering::Unordered => return Ok((native_plan, false)),
+        NativeOutputOrdering::SortedByHiddenKeys if native_plan_output_is_sorted(&native_plan) => {
+            return Ok((native_plan, false));
+        },
+        NativeOutputOrdering::SortedByHiddenKeys => {
+            return Err(unreproducible_ordering("output ordering by keys outside the output", None));
+        },
+        NativeOutputOrdering::Declared(ordering) => ordering,
     };
     if native_plan_reproduces_declared_output_ordering(&native_plan) {
         return Ok((native_plan, false));
@@ -570,6 +602,25 @@ fn source_diagnostics_for_native_plan(plan: &NativeQueryPlan) -> Vec<NativeSourc
 
 pub(crate) fn native_plan_reproduces_declared_output_ordering(plan: &NativeQueryPlan) -> bool {
     native_node_reproduces_declared_output_ordering(plan, plan.root_id(), &mut Vec::new())
+}
+
+/// Whether a sort orders the output rows, read through the operators that
+/// keep their input's order.
+fn native_plan_output_is_sorted(plan: &NativeQueryPlan) -> bool {
+    let mut node_id = plan.root_id();
+    let mut visited = Vec::new();
+    while !visited.contains(&node_id) {
+        visited.push(node_id);
+        node_id = match plan.node(node_id).map(|node| &node.kind) {
+            Some(NativePlanNode::Sort(_)) => return true,
+            Some(NativePlanNode::Filter(filter)) => filter.input,
+            Some(NativePlanNode::Projection(projection)) => projection.input,
+            Some(NativePlanNode::Limit(limit)) => limit.input,
+            Some(NativePlanNode::Window(window)) => window.input,
+            _ => return false,
+        };
+    }
+    false
 }
 
 fn native_plan_can_append_declared_output_ordering_sort(plan: &NativeQueryPlan) -> bool {
@@ -714,7 +765,7 @@ mod tests {
     };
 
     use super::{
-        CapabilityReason, NativePlanNode, declared_output_ordering_sort_spec,
+        CapabilityReason, NativeOutputOrdering, NativePlanNode, declared_output_ordering_sort_spec,
         native_plan_reproduces_declared_output_ordering, reestablish_declared_output_ordering_if_needed,
     };
 
@@ -774,8 +825,9 @@ mod tests {
             LexOrdering::new([PhysicalSortExpr::new(col("key", schema).unwrap(), ArrowSortOptions::new(false, false))])
                 .expect("test ordering should be non-empty");
 
-        let (plan, appended) = reestablish_declared_output_ordering_if_needed(plan, Some(&ordering))
-            .expect("a complete join output can be sorted before the host sink");
+        let (plan, appended) =
+            reestablish_declared_output_ordering_if_needed(plan, NativeOutputOrdering::Declared(&ordering))
+                .expect("a complete join output can be sorted before the host sink");
 
         assert!(appended);
         assert!(matches!(plan.root_node().kind, NativePlanNode::Sort(_)));
@@ -790,7 +842,7 @@ mod tests {
             LexOrdering::new([PhysicalSortExpr::new(col("key", schema).unwrap(), ArrowSortOptions::new(false, false))])
                 .expect("test ordering should be non-empty");
 
-        let rejection = reestablish_declared_output_ordering_if_needed(plan, Some(&ordering))
+        let rejection = reestablish_declared_output_ordering_if_needed(plan, NativeOutputOrdering::Declared(&ordering))
             .expect_err("a union cannot take an appended sort");
         let (reason, detail) = rejection.into_detail(None);
         let blocking = detail.blocking().expect("the rejection names its ordering");
@@ -798,6 +850,45 @@ mod tests {
         assert_eq!(reason, CapabilityReason::NativeOrderedOutputUnsupported);
         assert_eq!(blocking.kind(), "ordering");
         assert_eq!(blocking.text(), "declared output ordering `key ASC NULLS LAST`");
+    }
+
+    /// A scan reproduces the order of its file, not the order a sort by a
+    /// projected-away key gave the rows, so a plan whose output no longer
+    /// reaches that sort is rejected.
+    #[test]
+    fn output_sorted_by_hidden_keys_needs_its_sort_after_optimization() {
+        let project_key = |builder: &mut QueryPlanBuilder, input| {
+            builder
+                .add_projection(
+                    input,
+                    vec![ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::UInt32, false))],
+                )
+                .unwrap()
+        };
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let sort =
+            builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("key"), true, false)])).unwrap();
+        let projection = project_key(&mut builder, sort);
+        let sorted = builder.finish_with_host_sink(projection).unwrap();
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let projection = project_key(&mut builder, source);
+        let unsorted = builder.finish_with_host_sink(projection).unwrap();
+
+        let (_, appended) =
+            reestablish_declared_output_ordering_if_needed(sorted, NativeOutputOrdering::SortedByHiddenKeys)
+                .expect("the output still reads its sort");
+        assert!(!appended);
+        let rejection =
+            reestablish_declared_output_ordering_if_needed(unsorted, NativeOutputOrdering::SortedByHiddenKeys)
+                .expect_err("the scan does not reproduce the sort");
+        let (reason, detail) = rejection.into_detail(None);
+        assert_eq!(reason, CapabilityReason::NativeOrderedOutputUnsupported);
+        assert_eq!(
+            detail.blocking().expect("the rejection names its ordering").text(),
+            "output ordering by keys outside the output"
+        );
     }
 
     fn order_reproduction_audit_accepts_literal_batch_source() {

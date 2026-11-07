@@ -42,10 +42,10 @@ use crate::{
     capability::CapabilityReason,
     error::{Error, ErrorCode, Result},
     native::{
-        FooterScope, NativeLoweringResult, first_join_operator, floating_statistical_aggregate_input_is_partitioned,
-        lower_count_only_physical_plan_to_native, lower_physical_plan_to_native,
-        native_plan_reproduces_declared_output_ordering, reestablish_declared_output_ordering_if_needed,
-        wrap_candidate_with_declared_output_ordering_sort,
+        FooterScope, NativeLoweringResult, NativeOutputOrdering, first_join_operator,
+        floating_statistical_aggregate_input_is_partitioned, lower_count_only_physical_plan_to_native,
+        lower_physical_plan_to_native, native_plan_reproduces_declared_output_ordering,
+        reestablish_declared_output_ordering_if_needed, wrap_candidate_with_declared_output_ordering_sort,
     },
     native_exec::{
         AlgeonNativeExec, AlgeonNativeExecutionConfig, NativeOutput, gpu_resident_producer,
@@ -287,6 +287,10 @@ pub(super) fn replace_lowered_root_or_keep_plan_for_sink(
         .single_selected_candidate()
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
+    // Read before the optimizer runs: a scan counts as reproducing its file
+    // order, so an optimized plan that lost a sort by hidden keys would look
+    // ordered.
+    let output_ordering = NativeOutputOrdering::of(plan.as_ref(), &lowered_plan);
     let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)?;
     let optimizer_result = optimize_query_plan(
         lowered_plan,
@@ -303,30 +307,33 @@ pub(super) fn replace_lowered_root_or_keep_plan_for_sink(
     })?;
     let native_optimizer = optimizer_result.diagnostics;
     let shared_resident_producers = optimizer_result.shared_resident_producers;
-    let ordered_output_sort_needed = plan.properties().output_ordering().is_some()
+    let ordered_output_sort_needed = matches!(output_ordering, NativeOutputOrdering::Declared(_))
         && !native_plan_reproduces_declared_output_ordering(&optimizer_result.plan);
-    let (native_plan, appended_declared_output_sort) = match reestablish_declared_output_ordering_if_needed(
-        optimizer_result.plan,
-        plan.properties().output_ordering(),
-    ) {
-        Ok(native_plan) => native_plan,
-        Err(rejection) => {
-            let candidate = if ordered_output_sort_needed {
-                wrap_candidate_with_declared_output_ordering_sort(candidate_before_declared_output_sort)
-            } else {
-                candidate_before_declared_output_sort
-            };
-            let (reason, detail) = rejection.into_detail(None);
-            return Ok(NativeOptimizationAttempt {
-                plan,
-                report: native_execution_rejection_report_for_candidate(candidate, reason, detail, &lowering.report),
-                native_optimizer,
-                source_diagnostics: lowering.source_diagnostics,
-                capability_contract: NativeCapabilityContractDiagnostics::default(),
-                rewritten: false,
-            });
-        },
-    };
+    let (native_plan, appended_declared_output_sort) =
+        match reestablish_declared_output_ordering_if_needed(optimizer_result.plan, output_ordering) {
+            Ok(native_plan) => native_plan,
+            Err(rejection) => {
+                let candidate = if ordered_output_sort_needed {
+                    wrap_candidate_with_declared_output_ordering_sort(candidate_before_declared_output_sort)
+                } else {
+                    candidate_before_declared_output_sort
+                };
+                let (reason, detail) = rejection.into_detail(None);
+                return Ok(NativeOptimizationAttempt {
+                    plan,
+                    report: native_execution_rejection_report_for_candidate(
+                        candidate,
+                        reason,
+                        detail,
+                        &lowering.report,
+                    ),
+                    native_optimizer,
+                    source_diagnostics: lowering.source_diagnostics,
+                    capability_contract: NativeCapabilityContractDiagnostics::default(),
+                    rewritten: false,
+                });
+            },
+        };
     if appended_declared_output_sort {
         lowering.report.wrap_selected_candidates_with_outer_operator("SortExec");
     }

@@ -90,9 +90,10 @@ pub(in crate::native) struct Demand {
     /// also emit fields the parent does not read. This avoids adding a
     /// projection that only drops them.
     pub(super) extra_fields_allowed: bool,
-    /// The parent reads the input's rows in the order DataFusion reports for
-    /// the input. A scan of several sorted runs, which native lowering reads
-    /// one after another, does not reproduce that order.
+    /// The parent reads the input's rows in their order, including an order
+    /// whose keys a projection inside the input removed, which DataFusion no
+    /// longer reports. A scan of several sorted runs, which native lowering
+    /// reads one after another, does not reproduce that order.
     pub(in crate::native) ordered: bool,
 }
 

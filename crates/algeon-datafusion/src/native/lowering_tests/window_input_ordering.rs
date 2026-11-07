@@ -8,7 +8,7 @@ use datafusion::{parquet::arrow::ArrowWriter, physical_plan::displayable};
 use query_planning::plan::{WindowFrame, WindowFunction, WindowNode};
 
 use super::*;
-use crate::native::{ParquetReadStrategyConfig, reestablish_declared_output_ordering_if_needed};
+use crate::native::{NativeOutputOrdering, ParquetReadStrategyConfig, reestablish_declared_output_ordering_if_needed};
 
 const FACT_ROWS: i64 = 5_000;
 const DIMENSION_ROWS: i64 = 997;
@@ -149,6 +149,102 @@ async fn ordered_join_output_sorts_once_at_the_root() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// A projection that drops an `ORDER BY` key leaves DataFusion no ordering to
+/// report for the root, yet the rows the client reads, and the rows an
+/// `OFFSET` skips, are still in sort order. Lowering keeps that sort.
+#[tokio::test]
+async fn sort_by_keys_outside_the_output_stays_in_the_native_plan() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-hidden-order-key");
+    write_window_join_tables(&dir);
+
+    for (sql, expected_keys) in [
+        ("SELECT id FROM t ORDER BY b, id", ["b", "id"].as_slice()),
+        ("SELECT id FROM t ORDER BY b, id OFFSET 7", ["b", "id"].as_slice()),
+        ("SELECT id + 0 AS k FROM t ORDER BY id DESC", ["id"].as_slice()),
+        ("SELECT t.id FROM t JOIN u ON t.k = u.k ORDER BY u.w, t.id", ["w", "id"].as_slice()),
+    ] {
+        let plan = window_join_sql_plan(&dir, sql).await;
+        assert!(plan.properties().output_ordering().is_none(), "the root reports no ordering:\n{sql}");
+
+        let (report, native_plan) = optimize_with_native_rule(plan);
+
+        assert!(
+            matches!(report.outcomes(), [CandidateOutcome::Selected { .. }]),
+            "{sql}\noutcomes={:?}",
+            report.outcomes()
+        );
+        let native_plan = native_plan.expect("the rule keeps the native plan");
+        let mut node_id = native_plan.root_id();
+        let sort = loop {
+            node_id = match native_plan.node(node_id).map(|node| &node.kind) {
+                Some(PlanNode::Sort(sort)) => break sort,
+                Some(PlanNode::Projection(projection)) => projection.input,
+                Some(PlanNode::Limit(limit)) => limit.input,
+                _ => panic!("the output reads a sort:\n{sql}\n{native_plan}"),
+            };
+        };
+        let keys = sort
+            .spec
+            .expressions
+            .iter()
+            .map(|key| match &key.expr {
+                Expr::Column(column) => column.name().to_string(),
+                other => panic!("sort key is a column: {other}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(keys, expected_keys, "{sql}\n{native_plan}");
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// An aggregate does not read row order, but the `OFFSET` below it keeps the
+/// rows after the first ones in sort order. DataFusion 55 drops such a sort
+/// itself (apache/datafusion#26488); from 56 on it keeps the sort below a
+/// projection that hides its key, which is the plan built here.
+#[tokio::test]
+async fn offset_below_an_aggregate_keeps_its_sort_by_hidden_keys() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-offset-below-aggregate");
+    write_window_join_tables(&dir);
+    let offset = window_join_sql_plan(&dir, "SELECT a, v FROM t ORDER BY b, id OFFSET 7").await;
+    let limit = offset.downcast_ref::<GlobalLimitExec>().expect("DataFusion plans the offset as a global limit");
+    assert!(limit.input().properties().output_ordering().is_none(), "the limit's input reports no ordering");
+    let schema = offset.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("a", &schema).unwrap(), "a".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("v", &schema).unwrap()])
+        .schema(Arc::clone(&schema))
+        .alias("sum_v")
+        .build()
+        .unwrap();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(AggregateMode::Single, group_by, vec![Arc::new(sum)], vec![None], offset, schema)
+            .unwrap(),
+    );
+
+    let lowering = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    let native_plan = lowering.selected_plan();
+    let limit = native_plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Limit(limit) => Some(limit),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the native plan keeps the offset:\n{native_plan}"));
+    let mut node_id = limit.input;
+    while let Some(PlanNode::Projection(projection)) = native_plan.node(node_id).map(|node| &node.kind) {
+        node_id = projection.input;
+    }
+    assert!(
+        matches!(native_plan.node(node_id).map(|node| &node.kind), Some(PlanNode::Sort(_))),
+        "the offset reads a sort:\n{native_plan}"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// A sort the plan already carries below the window stays the window's only
 /// sort.
 #[tokio::test]
@@ -184,8 +280,11 @@ async fn lowered_windows_satisfy_the_input_ordering_audit_over_order_breaking_in
         let lowering = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
         assert_eq!(lowering.selected_count(), 1, "{sql}\noutcomes={:?}", lowering.report.outcomes());
-        reestablish_declared_output_ordering_if_needed(lowering.selected_plan().clone(), None)
-            .unwrap_or_else(|_| panic!("the audit rejects the lowered window:\n{sql}\n{}", lowering.selected_plan()));
+        reestablish_declared_output_ordering_if_needed(
+            lowering.selected_plan().clone(),
+            NativeOutputOrdering::Unordered,
+        )
+        .unwrap_or_else(|_| panic!("the audit rejects the lowered window:\n{sql}\n{}", lowering.selected_plan()));
     }
 
     fs::remove_dir_all(dir).unwrap();

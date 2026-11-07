@@ -52,7 +52,8 @@ use crate::{
 
 /// Lowers a normalized native tree into the DataFusion-free query IR. The
 /// root output is the host sink in the frontend schema; `ordered` says whether
-/// the plan declares an output ordering.
+/// the plan's rows are ordered, including by keys the output no longer
+/// carries.
 pub(super) fn lower_normalized_plan(
     normalized: &NormalizedNativePlan<'_>,
     ordered: bool,
@@ -135,7 +136,10 @@ fn lower_native_input(
         // not read row order gets nothing from it. DataFusion places such a
         // sort below a join when it pushes a window's ordering requirement
         // through the join's probe side; the native join does not keep that
-        // order.
+        // order. The host sink and a limit do read row order, also when a
+        // projection removed the sort key and DataFusion reports no ordering
+        // (`SELECT id FROM t ORDER BY b`), so their demand comes from
+        // `plan_rows_are_ordered`.
         NormalizedNativeInput::Sort(sort) if sort.fetch.is_none() && !demand.ordered => {
             lower_native_input(&sort.input, builder, demand, source_reads)
         },

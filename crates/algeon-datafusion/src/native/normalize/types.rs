@@ -161,8 +161,8 @@ pub(in crate::native) struct NormalizedNativeLimit<'a> {
     /// The DataFusion operator the limit came from, for the candidate shape.
     pub(in crate::native) operator: &'static str,
     pub(in crate::native) spec: LimitSpec,
-    /// DataFusion reports an ordering for the limit's input, so the limit
-    /// keeps the first rows in that order.
+    /// The limit's input rows are ordered, so the limit keeps the first rows
+    /// in that order. The ordering may be by keys a projection removed.
     pub(in crate::native) input_ordered: bool,
     pub(in crate::native) input: Box<NormalizedNativeInput<'a>>,
 }
