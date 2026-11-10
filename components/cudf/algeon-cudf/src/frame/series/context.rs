@@ -25,7 +25,7 @@ use crate::{
         copying::gather_impl,
         datetime::{self, DatetimeComponent},
         factorization,
-        filter::{apply_boolean_mask_impl, validate_boolean_mask},
+        filter::{MaskFilterOutput, apply_boolean_mask_impl, validate_boolean_mask},
         groupby::{
             AggregationRequest, GroupByAgg, GroupByAggregationOutput, groupby_aggregate_impl,
             value_counts_result_columns,
@@ -425,9 +425,15 @@ impl Series {
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;
         let exec_options = output_domain.enter_execution()?;
-        let result = apply_boolean_mask_impl(&ttv, &mask_cv, &output_domain, exec_options.options(), operation)?;
-        let mut cols = result.into_columns()?;
-        Series::from_column(cols.remove(0))
+        match apply_boolean_mask_impl(&ttv, &mask_cv, &output_domain, exec_options.options(), operation)? {
+            MaskFilterOutput::AllRowsPass => {
+                Series::from_column_arc(Series::clone_or_copy_into_domain(&self.column, &output_domain, operation)?)
+            },
+            MaskFilterOutput::Filtered(result) => {
+                let mut cols = result.into_columns()?;
+                Series::from_column(cols.remove(0))
+            },
+        }
     }
 
     pub(super) fn dropna_with_context(&self, ctx: Exec<'_>, operation: &'static str) -> Result<Series> {

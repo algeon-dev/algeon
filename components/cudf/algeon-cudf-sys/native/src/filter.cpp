@@ -5,10 +5,12 @@
 #include "shim_common.h"
 #include "test_support_internal.hpp"
 
+#include <cudf/aggregation.hpp>
 #include <cudf/ast/ast_operator.hpp>
 #include <cudf/ast/expressions.hpp>
 #include <cudf/column/column.hpp>
 #include <cudf/fixed_point/fixed_point.hpp>
+#include <cudf/reduction.hpp>
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/stream_compaction.hpp>
 #include <cudf/table/table.hpp>
@@ -132,31 +134,61 @@ namespace {
   }
   return *expr;
 }
+
+// A mask whose rows are all valid and true selects every input row, so the
+// caller can keep the input columns instead of receiving a copy of them.
+[[nodiscard]] bool mask_keeps_every_row(cudf::column_view const& mask,
+                                        rmm::cuda_stream_view stream,
+                                        rmm::device_async_resource_ref mr)
+{
+  if (mask.is_empty()) { return true; }
+  if (mask.has_nulls()) { return false; }
+  // A non-empty mask without nulls makes the ALL reduction valid.
+  auto const all =
+    cudf::reduce(mask, *cudf::make_all_aggregation<cudf::reduce_aggregation>(), mask.type(), stream, mr);
+  return static_cast<cudf::numeric_scalar<bool> const&>(*all).value(stream);
+}
+
+// Filters `input` by `mask` unless the mask keeps every row; then `*out` stays
+// null and `*out_all_rows_pass` is 1.
+void filter_by_mask_unless_all_rows_pass(cudf::table_view const& input,
+                                         cudf::column_view const& mask,
+                                         cudf_exec_context const& exec,
+                                         cudf_table_handle* out,
+                                         int32_t* out_all_rows_pass)
+{
+  if (mask_keeps_every_row(mask, exec.stream, *exec.mr)) {
+    *out_all_rows_pass = 1;
+    return;
+  }
+  auto result = cudf::apply_boolean_mask(input, mask, exec.stream, *exec.mr);
+  *out        = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(exec));
+}
 }  // namespace
 
 extern "C" {
 cudf_status_t cudf_apply_boolean_mask_ex(cudf_table_view_handle input,
                                          cudf_column_view_handle mask,
                                          cudf_table_handle* out,
+                                         int32_t* out_all_rows_pass,
                                          cudf_exec_options_t const* options)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(out_all_rows_pass, "out_all_rows_pass is null");
+  *out_all_rows_pass = 0;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(mask, "mask is null");
   CUDF_RUST_TRY
   {
-    cudf::rust::test_support::record_apply_boolean_mask();
     auto* view                      = reinterpret_cast<cudf::table_view*>(input);
     auto* mask_view                 = reinterpret_cast<cudf::column_view*>(mask);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    {
-      auto result = cudf::apply_boolean_mask(*view, *mask_view, exec->stream, *exec->mr);
-      *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
-    }
+    filter_by_mask_unless_all_rows_pass(*view, *mask_view, *exec, out, out_all_rows_pass);
+    if (*out_all_rows_pass == 0) { cudf::rust::test_support::record_apply_boolean_mask(); }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -167,10 +199,13 @@ cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
                                                int32_t num_nodes,
                                                int32_t root_index,
                                                cudf_table_handle* out,
+                                               int32_t* out_all_rows_pass,
                                                cudf_exec_options_t const* options)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(out_all_rows_pass, "out_all_rows_pass is null");
+  *out_all_rows_pass = 0;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(nodes, "nodes is null");
   CUDF_RUST_TRY
@@ -251,9 +286,8 @@ cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
         return CUDF_ERROR_TYPE;
       }
 
-      cudf::rust::test_support::record_row_predicate_final_filter();
-      auto result = cudf::apply_boolean_mask(*view, mask->view(), exec->stream, *exec->mr);
-      *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      filter_by_mask_unless_all_rows_pass(*view, mask->view(), *exec, out, out_all_rows_pass);
+      if (*out_all_rows_pass == 0) { cudf::rust::test_support::record_row_predicate_final_filter(); }
     }
     return CUDF_SUCCESS;
   }

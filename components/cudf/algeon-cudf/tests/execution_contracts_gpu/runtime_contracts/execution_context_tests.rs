@@ -725,8 +725,12 @@ fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
 
     obs_reset();
     let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_apply_boolean_mask_ex(table_view, mask_view, &mut out_table, &ctx) };
+    let mut all_rows_pass = -1;
+    let status = unsafe {
+        cudf_sys::cudf_apply_boolean_mask_ex(table_view, mask_view, &mut out_table, &mut all_rows_pass, &ctx)
+    };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_apply_boolean_mask_ex failed");
+    assert_eq!(all_rows_pass, 0);
     assert!(!out_table.is_null());
 
     assert_observed_stream(explicit_stream);

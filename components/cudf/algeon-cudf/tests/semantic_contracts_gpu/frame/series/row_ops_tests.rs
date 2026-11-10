@@ -19,7 +19,7 @@ use cudf::{
     },
 };
 
-use crate::common::{column_from_slice, error_context_value, nullable_series, series, series_opt};
+use crate::common::{column_from_slice, error_context_value, nullable_series, series, series_device_ptr, series_opt};
 
 fn test_head_basic() {
     let s = series::<i32>("x", &[10, 20, 30, 40]).unwrap();
@@ -46,6 +46,15 @@ fn test_filter_drops_false_and_null_mask_rows() {
 
     let filtered = values.on(Exec::RETAINED).filter(&mask).unwrap();
     assert_eq!(filtered.to_vec_strict::<i32>().unwrap(), vec![10, 40]);
+}
+
+fn test_filter_all_true_mask_shares_input_buffer() {
+    let values = series::<i32>("x", &[10, 20, 30]).unwrap();
+    let mask = series::<bool>("mask", &[true, true, true]).unwrap();
+
+    let filtered = values.on(Exec::RETAINED).filter(&mask).unwrap();
+    assert_eq!(series_device_ptr(&filtered), series_device_ptr(&values));
+    assert_eq!(filtered.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 fn test_gather_out_of_bounds_nullifies_rows() {
@@ -288,6 +297,7 @@ pub(super) const CASES: &[(&str, fn())] = &[
     ("row_ops_tests::test_tail_clamps_to_len", test_tail_clamps_to_len),
     ("row_ops_tests::test_slice_preserves_unnamed_series", test_slice_preserves_unnamed_series),
     ("row_ops_tests::test_filter_drops_false_and_null_mask_rows", test_filter_drops_false_and_null_mask_rows),
+    ("row_ops_tests::test_filter_all_true_mask_shares_input_buffer", test_filter_all_true_mask_shares_input_buffer),
     ("row_ops_tests::test_gather_out_of_bounds_nullifies_rows", test_gather_out_of_bounds_nullifies_rows),
     ("row_ops_tests::test_dropna_removes_null_rows", test_dropna_removes_null_rows),
     ("row_ops_tests::test_drop_duplicates_returns_unique_values", test_drop_duplicates_returns_unique_values),

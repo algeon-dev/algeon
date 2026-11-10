@@ -305,7 +305,9 @@ impl FrameOps<'_> {
     /// row-predicate path supports those expressions directly.
     ///
     /// The predicate must evaluate to a row-aligned `Bool8`. Rows where the
-    /// predicate is `false` or null are dropped.
+    /// predicate is `false` or null are dropped. When every row is kept, the
+    /// output shares the input's column buffers unless the
+    /// [`Exec`](crate::Exec) selects a different stream or memory resource.
     pub fn filter_expr(&self, predicate: Expr) -> Result<DataFrame> {
         self.df.filter_expr_in_context(predicate, self.ctx)
     }
@@ -764,9 +766,17 @@ impl FrameOps<'_> {
         fn gather(indices: &Series) -> Result<DataFrame> => gather_in_context;
 
         /// Filter rows.
+        ///
+        /// When every row is kept, the output shares the input's column
+        /// buffers unless the [`Exec`](crate::Exec) selects a different
+        /// stream or memory resource.
         fn filter(mask: &Series) -> Result<DataFrame> => filter_in_context;
 
         /// Filter rows to those where `column` values appear in a `Series`.
+        ///
+        /// When every row is kept, the output shares the input's column
+        /// buffers unless the [`Exec`](crate::Exec) selects a different
+        /// stream or memory resource.
         fn filter_isin(column: &str, values: &Series) -> Result<DataFrame> => filter_isin_in_context;
 
         /// Concatenate two DataFrames row-wise.

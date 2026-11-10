@@ -1659,20 +1659,22 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Apply a boolean mask with explicit execution options.\n\n Rows where the mask is `true` are kept; rows where the mask is `false` or\n null are dropped. The mask must be a BOOL8 column with the same number of\n rows as the table.\n\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
+    #[doc = " Apply a boolean mask with explicit execution options.\n\n Rows where the mask is `true` are kept; rows where the mask is `false` or\n null are dropped. The mask must be a BOOL8 column with the same number of\n rows as the table.\n\n When every mask row is valid and `true`, including an empty mask, the call\n builds no table: `*out` is NULL and `*out_all_rows_pass` is 1, and the\n caller keeps the input rows. Otherwise `*out` receives the filtered table\n and `*out_all_rows_pass` is 0.\n\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
     pub fn cudf_apply_boolean_mask_ex(
         input: cudf_table_view_handle,
         mask: cudf_column_view_handle,
         out: *mut cudf_table_handle,
+        out_all_rows_pass: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Evaluate a validated row predicate with explicit execution options.\n\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
+    #[doc = " Evaluate a validated row predicate with explicit execution options.\n\n The predicate mask is applied as `cudf_apply_boolean_mask_ex` applies a\n mask, with the same `*out` and `*out_all_rows_pass` results.\n\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
     pub fn cudf_filter_rows_by_predicate_ex(
         input: cudf_table_view_handle,
         nodes: *const cudf_row_predicate_node_t,
         num_nodes: i32,
         root_index: i32,
         out: *mut cudf_table_handle,
+        out_all_rows_pass: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
     #[doc = " Probe whether the cuFile driver can be opened by this process.\n\n This is a deployment capability probe. It does not register any file or\n buffer, and it closes the driver before returning on success."]

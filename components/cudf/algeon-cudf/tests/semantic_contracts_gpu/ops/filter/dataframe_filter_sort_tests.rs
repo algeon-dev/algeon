@@ -6,10 +6,10 @@ use cudf::{
 };
 
 use crate::common::{
-    assert_missing_column_error, column_from_slice, column_from_slice_nullable, dataframe_from_columns,
-    dependency_wait_call_count_for_stream, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    lock_event_observation, reset_dependency_observation, reset_exec_observation, reset_sync_observation, sample_df,
-    sample_runtime, series,
+    assert_missing_column_error, column_from_slice, column_from_slice_nullable, dataframe_device_ptr,
+    dataframe_from_columns, dependency_wait_call_count_for_stream, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, lock_event_observation, reset_dependency_observation, reset_exec_observation,
+    reset_sync_observation, sample_df, sample_runtime, series,
 };
 
 fn test_filter_basic() {
@@ -58,6 +58,7 @@ fn test_filter_isin_all_match() {
     let filtered = df.on(Exec::RETAINED).filter_isin("id", &values).unwrap();
 
     assert_eq!(filtered.num_rows(), 5);
+    assert_eq!(dataframe_device_ptr(&filtered, "score"), dataframe_device_ptr(&df, "score"));
 }
 
 fn test_filter_isin_preserves_schema() {

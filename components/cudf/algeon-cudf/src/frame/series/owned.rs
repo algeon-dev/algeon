@@ -286,7 +286,7 @@ impl Series {
         Ok(series)
     }
 
-    fn clone_or_copy_into_domain(
+    pub(super) fn clone_or_copy_into_domain(
         column: &Arc<Column>,
         output_domain: &Arc<ExecutionDomain>,
         operation: &'static str,
@@ -343,7 +343,9 @@ impl SeriesOps<'_> {
     /// Filter rows using a BOOL8 mask.
     ///
     /// Rows where `mask` is `true` are kept; `false` and null mask rows are
-    /// dropped.
+    /// dropped. When every row is kept, the output shares the input's buffer
+    /// unless the [`Exec`](crate::Exec) selects a different stream or memory
+    /// resource.
     pub fn filter(&self, mask: &Series) -> Result<Series> {
         self.series.filter_with_context(mask, self.ctx, "series::filter")
     }

@@ -2,9 +2,9 @@
 use cudf::{DataFrame, ErrorCode, ErrorKind, Exec, testing::prelude::*};
 
 use crate::common::{
-    dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, lock_event_observation, reset_dependency_observation, reset_exec_observation,
-    reset_sync_observation, sample_df, sample_runtime, series,
+    dataframe_device_ptr, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
+    reset_exec_observation, reset_sync_observation, sample_df, sample_runtime, series,
 };
 
 fn test_filter_series_mask_basic() {
@@ -53,6 +53,8 @@ fn test_filter_series_mask_all_true() {
     let filtered = df.on(Exec::RETAINED).filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 5);
+    assert_eq!(filtered.testing_execution_domain_id(), df.testing_execution_domain_id());
+    assert_eq!(dataframe_device_ptr(&filtered, "id"), dataframe_device_ptr(&df, "id"));
 }
 
 fn test_filter_series_mask_all_false() {
