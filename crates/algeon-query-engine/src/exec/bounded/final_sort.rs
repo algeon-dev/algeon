@@ -178,8 +178,10 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_committed_with_retr
 }
 
 /// Full sort of a raw frame with no limit, serially on the coordinator. Chunk-local sorts
-/// cannot replace a global sort; no lane fan-out applies. There is no shrinking retry
-/// without a limit: a query-cap rejection returns with `retry_attempts_exhausted` facts.
+/// cannot replace a global sort; no lane fan-out applies. Consumes `input`, so its columns
+/// are released one by one as their sorted copies are gathered. There is no shrinking
+/// retry without a limit: a query-cap rejection returns with `retry_attempts_exhausted`
+/// facts.
 pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -191,7 +193,7 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
     // Full sorts without a limit stay serial on the coordinator: chunk-local
     // sorts cannot replace a global sort, so no lane fan-out applies here.
     let mut final_sort = FinalSortExecutor { execution, dispatch: None, node_id, sort, max_attempts };
-    let result = final_sort.full_sort_limit_attempt_from_frame(None, &input_frame, 1);
+    let result = final_sort.full_sort_limit_attempt_from_frame(None, input_frame, 1);
 
     match result {
         Ok(output) => {

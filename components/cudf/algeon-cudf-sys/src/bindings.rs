@@ -1425,14 +1425,6 @@ unsafe extern "C" {
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return the exact device allocation size of gathering `input` by\n `gather_map`.\n\n This executes libcudf gather through the selected stream/memory resource,\n observes the resulting table allocation size, and releases the temporary\n table before returning. The value is therefore the same allocation size\n that `cudf_gather_ex` would retain for the materialized output.\n `options` must name an explicit valid device and non-NULL stream/MR."]
-    pub fn cudf_gather_device_allocated_size_ex(
-        input: cudf_table_view_handle,
-        gather_map: cudf_column_view_handle,
-        bounds_policy: cudf_out_of_bounds_policy_t,
-        out: *mut usize,
-        options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
     #[doc = " Scatter rows from `source` into `target` by index with explicit execution\n options.\n\n `scatter_map` must be a non-nullable integral column. libcudf rejects null\n maps, but duplicate or out-of-bounds indices are undefined behavior and\n must be validated by safe callers before using this C entry point.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned table."]
     pub fn cudf_scatter_ex(
         source: cudf_table_view_handle,

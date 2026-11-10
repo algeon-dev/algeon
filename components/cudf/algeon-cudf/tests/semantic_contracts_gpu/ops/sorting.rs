@@ -488,6 +488,51 @@ fn test_prepared_sort_unique_gathers_only_retained_payload_under_cap() {
     assert!(outcome.report().allocator_high_water_bytes().unwrap() <= cap);
 }
 
+fn test_prepared_sort_materialize_with_budget_releases_sole_owned_input_columns() {
+    let rows = 262_144usize;
+    let reversed_keys = (0..rows as i32).rev().collect::<Vec<_>>();
+    let values = (0..rows as i64).collect::<Vec<_>>();
+    let nullable_values = values.iter().map(|&value| (value % 3 != 0).then_some(value)).collect::<Vec<_>>();
+    let mut columns = vec![
+        ("key".to_string(), series("key", &reversed_keys).unwrap()),
+        ("nullable".to_string(), series_opt("nullable", &nullable_values).unwrap()),
+    ];
+    for ordinal in 0..8 {
+        let name = format!("payload_{ordinal}");
+        columns.push((name.clone(), series(name, &values).unwrap()));
+    }
+    let df = DataFrame::from_series(columns).unwrap();
+    let input_bytes = dataframe_device_allocated_size_bytes(&df);
+    let order_bytes = rows * std::mem::size_of::<i32>();
+    // The input, the order and the whole sorted output exceed this cap; the input, the
+    // order and one sorted column fit it.
+    let cap = input_bytes + order_bytes + input_bytes / 2;
+    let token = with_test_runtime(|runtime| {
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(cap).with_boundary("final_sort")).unwrap()
+    });
+    let prepared = token
+        .run("dataframe::prepare_sort_values", |exec| {
+            let owned = df.on(exec).head(rows)?;
+            owned.on(exec).prepare_sort_values(["key"], SortOptions::new())
+        })
+        .unwrap()
+        .into_value();
+
+    let outcome = prepared.materialize_with_budget(&token).unwrap();
+
+    let sorted = outcome.value();
+    assert_eq!(sorted.series("key").unwrap().to_vec_strict::<i32>().unwrap(), (0..rows as i32).collect::<Vec<_>>());
+    assert_eq!(
+        sorted.series("payload_7").unwrap().to_vec_strict::<i64>().unwrap(),
+        values.iter().rev().copied().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        sorted.series("nullable").unwrap().to_optional_vec::<i64>().unwrap(),
+        nullable_values.iter().rev().copied().collect::<Vec<_>>()
+    );
+    assert!(outcome.report().allocator_high_water_bytes().unwrap() <= cap);
+}
+
 fn test_sorted_order_reservation_matches_retained_prepared_sort_allocation() {
     let df = sample_df();
     let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], SortOptions::new()).unwrap();
@@ -503,19 +548,6 @@ fn test_sorted_order_reservation_rejects_rows_above_cudf_size_type() {
 
     sorting::sorted_order_reservation_size_bytes_for_len(output_rows)
         .expect_err("sorted-order reservation must reject rows above cudf::size_type");
-}
-
-fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output() {
-    let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
-    let vals = series::<i32>("val", &[30, 10, 20]).unwrap();
-    let df = DataFrame::from_series([("id", ids), ("val", vals)]).unwrap();
-    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], SortOptions::new()).unwrap();
-
-    let reservation = prepared.materialized_output_reservation_size_bytes(Exec::RETAINED).unwrap();
-    let materialized = prepared.materialize(Exec::RETAINED).unwrap();
-
-    assert_eq!(reservation, dataframe_device_allocated_size_bytes(&materialized));
-    assert_eq!(materialized.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order() {
@@ -616,6 +648,8 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
         .unwrap()
     });
 
+    let retained_order_bytes = prepared.retained_sorted_order_device_allocated_size_bytes().unwrap();
+
     reset_exec_observation();
     let outcome = prepared.materialize_with_budget(&materialize_token).unwrap();
     let sorted = outcome.value();
@@ -624,7 +658,7 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
 
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
     assert_eq!(report.request().boundary(), "final_sort_output");
-    assert_eq!(report.retained_bytes(), Some(prepared.retained_sorted_order_device_allocated_size_bytes().unwrap()));
+    assert_eq!(report.retained_bytes(), Some(retained_order_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_budget_report_high_water(report, output_bytes);
     assert_eq!(
@@ -740,10 +774,6 @@ pub(super) const CASES: &[(&str, fn())] = &[
         test_sorted_order_reservation_rejects_rows_above_cudf_size_type,
     ),
     (
-        "dataframe_sort_values_tests::test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output",
-        test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output,
-    ),
-    (
         "dataframe_sort_values_tests::test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order",
         test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order,
     ),
@@ -754,6 +784,10 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "dataframe_sort_values_tests::test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator",
         test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_materialize_with_budget_releases_sole_owned_input_columns",
+        test_prepared_sort_materialize_with_budget_releases_sole_owned_input_columns,
     ),
     (
         "dataframe_sort_values_tests::test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly",

@@ -7,14 +7,15 @@ use super::{
 };
 use crate::{
     core::{
-        column::{Column, position_sequence_in_domain},
+        column::{Column, ColumnView, position_sequence_in_domain},
         error::{self, Result},
         table::TableView,
     },
     frame::series::Series,
-    hash::FastIndexMap,
+    hash::{FastIndexMap, fast_index_map_with_capacity},
     internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
     ops::{
+        copying,
         groupby::{GroupByScanRequest, NullPolicy, groupby_scan_sorted},
         join::MergeOptions,
         reduction::ScanAgg,
@@ -28,8 +29,6 @@ use crate::{
 };
 
 const SORT_KEY_INLINE_CAPACITY: usize = 4;
-const PREPARED_SORT_MATERIALIZED_OUTPUT_RESERVATION_CONTRACT: &str =
-    "prepared_sort_materialized_output_reservation_size_bytes";
 
 fn unique_temp_column_name(df: &DataFrame, base: &str) -> String {
     if !df.contains(base) {
@@ -48,11 +47,11 @@ fn unique_temp_column_name(df: &DataFrame, base: &str) -> String {
 
 /// Retained DataFrame-level sorted-order plan.
 ///
-/// This type owns the input [`DataFrame`] and retains a device-side INT32
-/// sorted-order column. It enables query engines to split sorting into explicit
-/// phases: reserving and retaining the sorted-order row-index column, reserving
-/// exact materialized output bytes through the gather sizing path, and gathering
-/// the retained input into the sorted DataFrame.
+/// This type owns the input [`DataFrame`] and a device-side INT32 sorted-order
+/// column, so a query engine can split a sort into two phases: computing the
+/// order, then gathering the input into the sorted DataFrame. The order is a
+/// permutation of the input rows, so each sorted column holds the values of
+/// its input column in a new row order.
 ///
 /// This contract covers the retained sorted-order column and the materialized
 /// gather output.
@@ -123,25 +122,11 @@ impl DataFramePreparedSort {
         })
     }
 
-    /// Return exact bytes retained by the materialized sorted DataFrame.
-    ///
-    /// This uses the same lower-level gather device-allocation sizing path as
-    /// join-index materialization. For non-empty inputs it executes the gather
-    /// sizing contract and releases any temporary result before returning. The
-    /// result does not include the retained sorted-order column and does not
-    /// include libcudf sort temporary workspace.
-    pub fn materialized_output_reservation_size_bytes(&self, ctx: Exec<'_>) -> Result<usize> {
-        self.materialized_output_reservation_size_bytes_in_context(
-            ctx,
-            "dataframe::prepared_sort::materialized_output_reservation_size_bytes",
-        )
-    }
-
     /// Gather the retained input DataFrame using the retained sorted order.
+    ///
+    /// The input stays retained, so it coexists with the sorted copy.
     pub fn materialize(&self, ctx: Exec<'_>) -> Result<DataFrame> {
-        self.input
-            .gather_in_context(&self.sorted_order, ctx)
-            .map_err(|error| error.reanchor("dataframe::prepared_sort::materialize"))
+        gather_by_permutation(self.input.clone(), &self.sorted_order, ctx, "dataframe::prepared_sort::materialize")
     }
 
     /// Materialize rows after removing consecutive duplicate keys in the
@@ -181,41 +166,86 @@ impl DataFramePreparedSort {
         self.input.gather_in_context(&selected, ctx).map_err(|error| error.reanchor(operation))
     }
 
-    /// Gather the retained input DataFrame using a hard budget token.
+    /// Gather the retained input DataFrame under a hard budget token,
+    /// consuming this prepared sort.
     ///
-    /// The gathered output allocation is routed through the token's
-    /// stream-bound reservation. The returned report records the retained
-    /// sorted-order bytes and exact materialized output bytes.
-    pub fn materialize_with_budget(&self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<DataFrame>> {
+    /// The gathered output is allocated through the token's stream-bound
+    /// reservation. Columns are gathered one at a time, and each input column
+    /// is released once its sorted copy is enqueued. When no other owner holds
+    /// the input columns, the device peak is the input, the sorted order and
+    /// the largest output column, rather than the input plus the whole output.
+    /// The report records the sorted-order bytes and the output's allocated
+    /// bytes, read from the output's metadata.
+    pub fn materialize_with_budget(self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<DataFrame>> {
         let operation = "dataframe::prepared_sort::materialize_with_budget";
-        let ctx = token.exec();
         let retained_bytes = self
             .retained_sorted_order_device_allocated_size_bytes()
             .map_err(|error| token.annotate_error(error, operation))?;
-        let output_bytes = self
-            .materialized_output_reservation_size_bytes(ctx)
+        let Self { input, sorted_order } = self;
+        let output = gather_by_permutation(input, &sorted_order, token.exec(), operation)
             .map_err(|error| token.annotate_error(error, operation))?;
-        let output = self.materialize(ctx).map_err(|error| token.annotate_error(error, operation))?;
+        let output_bytes =
+            output.device_allocated_size_bytes().map_err(|error| token.annotate_error(error, operation))?;
         let report =
             token.reservation_enforced_report().with_retained_bytes(retained_bytes).with_output_bytes(output_bytes);
 
         Ok(BudgetedExecutionOutcome::new(output, report))
     }
+}
 
-    fn materialized_output_reservation_size_bytes_in_context(
-        &self,
-        ctx: Exec<'_>,
-        operation: &'static str,
-    ) -> Result<usize> {
-        self.input
-            .gather_device_allocated_size_in_context(
-                &self.sorted_order,
-                ctx,
-                operation,
-                PREPARED_SORT_MATERIALIZED_OUTPUT_RESERVATION_CONTRACT,
-            )
-            .map_err(|error| error.reanchor(operation))
+/// Gathers every column of `input` by `sorted_order`, a permutation of its rows.
+///
+/// A permutation never reads out of bounds, so the gather skips bounds checks
+/// and allocates a null mask only for a nullable input column. Each input
+/// column is dropped after its gather's completion fence is recorded and
+/// before the next column is gathered, which frees it when `input` held the
+/// last reference.
+fn gather_by_permutation(
+    input: DataFrame,
+    sorted_order: &Series,
+    ctx: Exec<'_>,
+    operation: &'static str,
+) -> Result<DataFrame> {
+    let output_domain = ctx.resolve_output_domain(&input.domain)?;
+    let row_order = sorted_order.view()?;
+    let mut sorted = fast_index_map_with_capacity(input.columns.len());
+    for (name, column) in input.columns {
+        let output = gather_column_by_permutation(&column, &row_order, &output_domain, operation)
+            .map_err(|error| error.with_column(name.clone()))?;
+        sorted.insert(name, Arc::new(output));
     }
+
+    Ok(DataFrame::from_raw_parts(sorted, sorted_order.len(), output_domain))
+}
+
+/// One column of [`gather_by_permutation`]. The resolution drops before this
+/// returns, so a foreign input stream waits for the gather before the caller
+/// can release `column`.
+fn gather_column_by_permutation(
+    column: &Column,
+    row_order: &ColumnView<'_>,
+    output_domain: &Arc<ExecutionDomain>,
+    operation: &'static str,
+) -> Result<Column> {
+    let execution = ResolvedExecution::with_output_domain(
+        Arc::clone(output_domain),
+        [column.execution_domain(), row_order.execution_domain()],
+        operation,
+    )?;
+    let input = TableView::from_borrowed_column_views_in_domain(vec![column.view()?], None, operation)?;
+    let gathered = copying::gather_impl(
+        &input,
+        row_order,
+        cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
+        "dont_check",
+        execution.output_domain(),
+        execution.exec_options(),
+        operation,
+    )?;
+    gathered
+        .into_columns()?
+        .pop()
+        .ok_or_else(|| error::invariant_violation(operation, "single-column gather returned no column"))
 }
 
 impl DataFrame {

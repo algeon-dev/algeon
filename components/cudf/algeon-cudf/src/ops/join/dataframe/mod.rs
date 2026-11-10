@@ -27,7 +27,6 @@ use crate::{
     runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
-const MATERIALIZE_JOIN_INDICES_RESERVATION_CONTRACT: &str = "materialize_join_indices_reservation_size_bytes";
 const PROJECTED_CROSS_JOIN_RESERVATION_CONTRACT: &str = "projected_cross_join_reservation_size_bytes";
 
 struct JoinSplitKeys<'a, 'key> {

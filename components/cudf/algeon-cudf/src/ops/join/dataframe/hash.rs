@@ -296,28 +296,6 @@ impl DataFrame {
         selected.gather_in_context(indices.indices(), ctx).map_err(|e| e.reanchor(operation))
     }
 
-    pub(crate) fn materialize_join_indices_reservation_size_bytes_in_context<I, S>(
-        &self,
-        indices: &DataFrameJoinIndices,
-        columns: I,
-        ctx: Exec<'_>,
-        operation: &'static str,
-    ) -> Result<usize>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let selected = self.select(columns).map_err(|e| e.reanchor(operation))?;
-        selected
-            .gather_device_allocated_size_in_context(
-                indices.indices(),
-                ctx,
-                operation,
-                MATERIALIZE_JOIN_INDICES_RESERVATION_CONTRACT,
-            )
-            .map_err(|e| e.reanchor(operation))
-    }
-
     fn join_split_on_impl_with_null_eq_and_context(
         &self,
         right: &DataFrame,
