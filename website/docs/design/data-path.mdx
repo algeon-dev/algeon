@@ -159,11 +159,14 @@ different part of the next read.
 
 - The OS page cache holds file pages from buffered `pread`. A hit skips the
   NVMe read; host staging, the device copy and decoding still run.
-- Algeon's source chunk planner caches Parquet footer metadata within one
-  planning pass, and each query plan reads local footers again. Remote footers
-  come from the session's DataFusion file metadata cache, which outlives the
-  query and is keyed by object path without the bucket
-  ([Object storage](#object-storage-and-libcurl)).
+- Planning looks up local and remote Parquet footers in the session's
+  DataFusion file metadata cache, which outlives the query and is keyed by
+  object path without the bucket
+  ([Object storage](#object-storage-and-libcurl)). DataFusion fills it while
+  it infers a table's schema and statistics. A local footer missing there is
+  parsed once per planning pass and put back for the session's next query; a
+  remote one is unavailable. The cache holds
+  `datafusion.runtime.metadata_cache_limit` bytes, 50 MB by default.
 - Decoded local-Parquet sources and constructed graphs can stay on the device
   under `cache_cap_bytes` ([Admission settings](../integration/configuration.mdx#admission)).
   The default is `0`, so queries share nothing on the GPU unless a server sets
