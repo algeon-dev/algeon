@@ -498,9 +498,10 @@ fn source_chunk_planning_expands_all_row_groups_from_parquet_metadata() {
     assert_eq!(plan.chunks[0].row_group_indexes, vec![0, 1]);
     assert_eq!(plan.chunks[1].row_group_indexes, vec![2]);
     assert_eq!(plan.chunks[0].stable_id, path.display().to_string());
-    assert_eq!(plan.chunks[0].source_file_row_group_rows, Some(vec![2, 2, 2]));
+    assert_eq!(plan.chunks[0].source_file.row_group_rows, Some(vec![2, 2, 2]));
     assert!(plan.chunks.iter().all(|chunk| chunk.known_row_group_bytes.unwrap() > 0));
-    assert!(plan.chunks.iter().all(|chunk| chunk.source_file_row_group_bytes.as_ref().unwrap().len() == 3));
+    assert!(plan.chunks.iter().all(|chunk| chunk.source_file.row_group_bytes.as_ref().unwrap().len() == 3));
+    assert!(Arc::ptr_eq(&plan.chunks[0].source_file, &plan.chunks[1].source_file));
     assert!(plan.chunks.iter().all(|chunk| !chunk.reads_all_row_groups));
 
     fs::remove_dir_all(dir).unwrap();
@@ -533,11 +534,12 @@ fn source_chunk_planning_merges_supplied_row_group_bytes_with_footer_metadata() 
     assert_eq!(plan.metadata_load_count, 1);
     assert_eq!(plan.chunks[0].known_row_group_bytes, Some(333));
     assert_eq!(plan.chunks[1].known_row_group_bytes, Some(333));
-    assert_eq!(plan.chunks[0].source_file_row_group_bytes, Some(supplied_row_group_bytes.clone()));
-    assert_eq!(plan.chunks[1].source_file_row_group_bytes, Some(supplied_row_group_bytes));
-    assert_eq!(plan.chunks[0].source_file_row_group_rows, Some(vec![2, 2, 2]));
+    assert_eq!(plan.chunks[0].source_file.row_group_bytes, Some(supplied_row_group_bytes.clone()));
+    assert_eq!(plan.chunks[1].source_file.row_group_bytes, Some(supplied_row_group_bytes));
+    assert_eq!(plan.chunks[0].source_file.row_group_rows, Some(vec![2, 2, 2]));
     let projected_uncompressed = plan.chunks[0]
-        .source_file_projected_uncompressed_bytes
+        .source_file
+        .projected_uncompressed_bytes
         .as_ref()
         .expect("footer metadata should fill projected uncompressed bytes");
     assert_eq!(projected_uncompressed.len(), 3);
@@ -572,7 +574,7 @@ fn source_chunk_planning_loads_warm_local_cache_footer_metadata() {
     assert_eq!(plan.metadata_unavailable_files, 0);
     assert_eq!(plan.chunks[0].row_group_indexes, vec![0, 1]);
     assert_eq!(plan.chunks[1].row_group_indexes, vec![2]);
-    assert_eq!(plan.chunks[0].source_file_row_group_rows, Some(vec![2, 2, 2]));
+    assert_eq!(plan.chunks[0].source_file.row_group_rows, Some(vec![2, 2, 2]));
     assert!(plan.chunks.iter().all(|chunk| !chunk.reads_all_row_groups));
 
     fs::remove_dir_all(dir).unwrap();
@@ -603,7 +605,7 @@ fn source_chunk_planning_keeps_local_cache_miss_conservative() {
     assert_eq!(plan.metadata_unavailable_files, 1);
     assert!(plan.chunks[0].reads_all_row_groups);
     assert!(plan.chunks[0].row_group_indexes.is_empty());
-    assert_eq!(plan.chunks[0].source_file_row_group_rows, None);
+    assert_eq!(plan.chunks[0].source_file.row_group_rows, None);
 
     fs::remove_dir_all(dir).unwrap();
 }

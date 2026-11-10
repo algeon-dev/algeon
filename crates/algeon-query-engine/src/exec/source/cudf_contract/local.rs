@@ -470,9 +470,9 @@ pub(in crate::exec::source) fn cudf_local_parquet_file_for_chunk(
     if let Some(file_size_bytes) = chunk.known_file_bytes {
         cudf_file = cudf_file.with_file_size_bytes(file_size_bytes);
     }
-    cudf_file = cudf_file.with_row_groups(chunk.source_file_row_groups.clone());
+    cudf_file = cudf_file.with_row_groups(chunk.source_file.row_groups.clone());
     if let (Some(row_group_bytes), Some(row_group_rows)) =
-        (chunk.source_file_row_group_bytes.as_ref(), chunk.source_file_row_group_rows.as_ref())
+        (chunk.source_file.row_group_bytes.as_ref(), chunk.source_file.row_group_rows.as_ref())
     {
         cudf_file =
             cudf_file.with_row_group_metadata(row_group_bytes.clone(), row_group_rows.clone()).map_err(|error| {
@@ -488,7 +488,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_file_for_chunk(
             })?;
     }
     if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
-        (&chunk.source_file_projected_compressed_bytes, &chunk.source_file_projected_uncompressed_bytes)
+        (&chunk.source_file.projected_compressed_bytes, &chunk.source_file.projected_uncompressed_bytes)
     {
         cudf_file = cudf_file
             .with_projected_row_group_bytes(compressed_bytes.clone(), uncompressed_bytes.clone())
@@ -505,7 +505,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_file_for_chunk(
             })?;
     }
     if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
-        (&chunk.source_file_pure_filter_compressed_bytes, &chunk.source_file_pure_filter_uncompressed_bytes)
+        (&chunk.source_file.pure_filter_compressed_bytes, &chunk.source_file.pure_filter_uncompressed_bytes)
     {
         cudf_file = cudf_file
             .with_pure_filter_row_group_bytes(compressed_bytes.clone(), uncompressed_bytes.clone())

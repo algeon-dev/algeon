@@ -58,6 +58,7 @@ mod tests {
     use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
     use cudf::testing::run_named_cases;
     use query_planning::{
+        chunk::SourceFileRowGroupFacts,
         execution_contracts::SourceChunkPlanningMode,
         plan::NodeId,
         source::{
@@ -222,15 +223,15 @@ mod tests {
             estimated_column_elements: Some(10),
             max_column_elements: u64::MAX,
             exact_source_read_preflight_bytes: Some(1024),
-            source_file_row_groups: None,
-            source_file_row_group_bytes: Some(vec![1024]),
-            source_file_projected_compressed_bytes: Some(vec![512]),
-            source_file_projected_uncompressed_bytes: Some(vec![1024]),
-            source_file_pure_filter_compressed_bytes: Some(vec![0]),
-            source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
-            source_file_row_group_decoded_bytes: None,
-            source_file_row_group_column_elements: None,
-            source_file_row_group_rows: Some(vec![10]),
+            source_file: Arc::new(SourceFileRowGroupFacts {
+                row_group_bytes: Some(vec![1024]),
+                projected_compressed_bytes: Some(vec![512]),
+                projected_uncompressed_bytes: Some(vec![1024]),
+                pure_filter_compressed_bytes: Some(vec![0]),
+                pure_filter_uncompressed_bytes: Some(vec![0]),
+                row_group_rows: Some(vec![10]),
+                ..Default::default()
+            }),
             reader_decimal_types: Vec::new(),
             reader_decimal_types_footer_verified: false,
             read_columns: vec!["c0".to_string(), "c1".to_string()],

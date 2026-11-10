@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use crate::{
     execution_contracts::SourceChunkPlanningMode,
@@ -122,24 +122,9 @@ pub struct SourceChunk {
     pub max_column_elements: u64,
     /// Exact cudf source-read budget in bytes for fixed-width projected columns.
     pub exact_source_read_preflight_bytes: Option<u64>,
-    /// Source-level selected row groups, before chunking.
-    pub source_file_row_groups: Option<Vec<usize>>,
-    /// Per-row-group read-column bytes for the full file, if available.
-    pub source_file_row_group_bytes: Option<Vec<u64>>,
-    /// Per-row-group projected-output compressed bytes for the full file, if available.
-    pub source_file_projected_compressed_bytes: Option<Vec<u64>>,
-    /// Per-row-group projected-output uncompressed bytes for the full file, if available.
-    pub source_file_projected_uncompressed_bytes: Option<Vec<u64>>,
-    /// Per-row-group pure-filter compressed bytes for the full file, if available.
-    pub source_file_pure_filter_compressed_bytes: Option<Vec<u64>>,
-    /// Per-row-group pure-filter uncompressed bytes for the full file, if available.
-    pub source_file_pure_filter_uncompressed_bytes: Option<Vec<u64>>,
-    /// Per-row-group decoded read-column estimates for the full file, if available.
-    pub source_file_row_group_decoded_bytes: Option<Vec<u64>>,
-    /// Per-row-group largest read-column element counts for the full file, if available.
-    pub source_file_row_group_column_elements: Option<Vec<u64>>,
-    /// Per-row-group row counts for the full file, if available.
-    pub source_file_row_group_rows: Option<Vec<u64>>,
+    /// Whole-file row-group facts, shared by every chunk cut from the same
+    /// source file so that copying a chunk does not copy per-row-group vectors.
+    pub source_file: Arc<SourceFileRowGroupFacts>,
     /// Per-read-column decimal storage types proven from Parquet metadata.
     pub reader_decimal_types: Vec<ParquetReaderDecimalType>,
     /// True when `reader_decimal_types` came from, or was checked against, the
@@ -185,14 +170,14 @@ impl SourceChunk {
         if !self.reads_all_row_groups {
             return Some(self.row_group_indexes.len());
         }
-        self.known_source_file_row_group_count()
+        self.source_file.row_group_count()
     }
 
     /// Returns true when this chunk explicitly selects every known row group
     /// in its file.
     pub fn selects_all_known_file_row_groups(&self) -> bool {
         let selected = self.row_group_indexes.iter().copied().collect::<std::collections::BTreeSet<_>>();
-        if let Some(file_row_groups) = &self.source_file_row_groups {
+        if let Some(file_row_groups) = &self.source_file.row_groups {
             if file_row_groups.is_empty() || selected.len() != file_row_groups.len() {
                 return false;
             }
@@ -200,7 +185,7 @@ impl SourceChunk {
             return selected == known;
         }
 
-        let Some(row_group_count) = self.known_source_file_row_group_count() else {
+        let Some(row_group_count) = self.source_file.row_group_count() else {
             return false;
         };
         if row_group_count == 0 || selected.len() != row_group_count {
@@ -208,16 +193,44 @@ impl SourceChunk {
         }
         selected == (0..row_group_count).collect::<std::collections::BTreeSet<_>>()
     }
+}
 
-    fn known_source_file_row_group_count(&self) -> Option<usize> {
+/// Per-row-group metadata of one source file, indexed by file row-group
+/// position. Each vector has the file's row-group length when present.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SourceFileRowGroupFacts {
+    /// Source-level selected row groups, before chunking.
+    pub row_groups: Option<Vec<usize>>,
+    /// Read-column bytes per row group.
+    pub row_group_bytes: Option<Vec<u64>>,
+    /// Projected-output compressed bytes per row group.
+    pub projected_compressed_bytes: Option<Vec<u64>>,
+    /// Projected-output uncompressed bytes per row group.
+    pub projected_uncompressed_bytes: Option<Vec<u64>>,
+    /// Pure-filter compressed bytes per row group.
+    pub pure_filter_compressed_bytes: Option<Vec<u64>>,
+    /// Pure-filter uncompressed bytes per row group.
+    pub pure_filter_uncompressed_bytes: Option<Vec<u64>>,
+    /// Decoded read-column estimates per row group.
+    pub row_group_decoded_bytes: Option<Vec<u64>>,
+    /// Largest read-column element count per row group.
+    pub row_group_column_elements: Option<Vec<u64>>,
+    /// Row count per row group.
+    pub row_group_rows: Option<Vec<u64>>,
+}
+
+impl SourceFileRowGroupFacts {
+    /// The file's row-group count when the present length-bearing vectors
+    /// agree on it; `None` when none is present or two disagree.
+    pub fn row_group_count(&self) -> Option<usize> {
         [
-            self.source_file_row_group_rows.as_ref().map(Vec::len),
-            self.source_file_row_group_bytes.as_ref().map(Vec::len),
-            self.source_file_projected_compressed_bytes.as_ref().map(Vec::len),
-            self.source_file_projected_uncompressed_bytes.as_ref().map(Vec::len),
-            self.source_file_pure_filter_compressed_bytes.as_ref().map(Vec::len),
-            self.source_file_pure_filter_uncompressed_bytes.as_ref().map(Vec::len),
-            self.source_file_row_group_decoded_bytes.as_ref().map(Vec::len),
+            self.row_group_rows.as_ref().map(Vec::len),
+            self.row_group_bytes.as_ref().map(Vec::len),
+            self.projected_compressed_bytes.as_ref().map(Vec::len),
+            self.projected_uncompressed_bytes.as_ref().map(Vec::len),
+            self.pure_filter_compressed_bytes.as_ref().map(Vec::len),
+            self.pure_filter_uncompressed_bytes.as_ref().map(Vec::len),
+            self.row_group_decoded_bytes.as_ref().map(Vec::len),
         ]
         .into_iter()
         .flatten()
