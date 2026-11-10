@@ -444,9 +444,12 @@ fn test_apply_boolean_mask_ex_uses_explicit_memory_resource() {
     let target_before = target_mr.allocation_count();
 
     let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_apply_boolean_mask_ex(input_view, mask_view, &mut out, &exec) };
+    let mut all_rows_pass = -1;
+    let status =
+        unsafe { cudf_sys::cudf_apply_boolean_mask_ex(input_view, mask_view, &mut out, &mut all_rows_pass, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(all_rows_pass, 0);
     assert!(!out.is_null());
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
     assert!(

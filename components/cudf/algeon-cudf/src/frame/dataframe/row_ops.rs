@@ -11,7 +11,10 @@ use crate::{
     },
     frame::series::Series,
     internal::resolve::missing_column_error,
-    ops::{self, copying, filter},
+    ops::{
+        self, copying,
+        filter::{self, MaskFilterOutput},
+    },
     runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
@@ -202,9 +205,23 @@ impl DataFrame {
 
         self.validate_mask_view(mask, operation)?;
         let tv = self.build_table_view()?;
-        let result_table =
-            filter::apply_boolean_mask_impl(&tv, mask, &output_domain, execution.exec_options(), operation)?;
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        let output = filter::apply_boolean_mask_impl(&tv, mask, &output_domain, execution.exec_options(), operation)?;
+        self.with_mask_filter_output(output, &output_domain, operation)
+    }
+
+    /// The filter result as a frame in `output_domain`. When every row passed,
+    /// the input columns are shared, or copied when `output_domain` has a
+    /// different stream or memory resource, as `Exec` requires.
+    pub(super) fn with_mask_filter_output(
+        &self,
+        output: MaskFilterOutput,
+        output_domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        match output {
+            MaskFilterOutput::AllRowsPass => self.in_domain(output_domain, operation),
+            MaskFilterOutput::Filtered(table) => Self::from_table_with_names(table, self.column_names_owned()),
+        }
     }
 
     #[cfg(any(test, feature = "test-hooks"))]

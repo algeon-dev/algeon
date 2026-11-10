@@ -26,7 +26,7 @@ use crate::{
     interop::arrow_host::{cudf_dtype_can_export_to_arrow_type, cudf_dtype_from_arrow_type},
     ops::{
         binary::{self, BinaryOperator},
-        filter,
+        filter::{self, MaskFilterOutput},
         reduction::{self, ReduceAgg},
         unary,
     },
@@ -306,21 +306,23 @@ fn fixed_size_list_width_bounds(
         let valid_rows_view = valid_rows.view().map_err(|error| error.reanchor_if_needed(operation))?;
         let widths_table =
             TableView::from_column_views(&[&widths_view]).map_err(|error| error.reanchor_if_needed(operation))?;
-        let mut columns = filter::apply_boolean_mask(&widths_table, &valid_rows_view)
-            .map_err(|error| error.reanchor(operation))?
-            .into_columns()
-            .map_err(|error| error.reanchor_if_needed(operation))?;
-        Some(columns.pop().ok_or_else(|| {
-            error::foreign_invariant_violation(
-                operation,
-                "filtering FixedSizeList widths returned no column",
-                "list_offsets",
-                "missing_filtered_fixed_size_list_widths",
-                "ensure cuDF preserves the single input column when filtering valid list rows",
-            )
-            .with_detail("field_name", field_name.to_string())
-            .with_detail("field_index", field_index.to_string())
-        })?)
+        match filter::apply_boolean_mask(&widths_table, &valid_rows_view).map_err(|error| error.reanchor(operation))? {
+            MaskFilterOutput::AllRowsPass => None,
+            MaskFilterOutput::Filtered(table) => {
+                let mut columns = table.into_columns().map_err(|error| error.reanchor_if_needed(operation))?;
+                Some(columns.pop().ok_or_else(|| {
+                    error::foreign_invariant_violation(
+                        operation,
+                        "filtering FixedSizeList widths returned no column",
+                        "list_offsets",
+                        "missing_filtered_fixed_size_list_widths",
+                        "ensure cuDF preserves the single input column when filtering valid list rows",
+                    )
+                    .with_detail("field_name", field_name.to_string())
+                    .with_detail("field_index", field_index.to_string())
+                })?)
+            },
+        }
     };
     let int32_type = DataType::new(TypeId::Int32);
     let (minimum, maximum) = if root_null_count == rows {

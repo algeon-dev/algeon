@@ -72,7 +72,7 @@ impl DataFrame {
         let _consumer_fence = ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         let exec_options = output_domain.enter_execution()?;
         let tv = self.build_table_view()?;
-        let result_table = filter::apply_row_predicate_impl(
+        let output = filter::apply_row_predicate_impl(
             &tv,
             &lowered.nodes,
             lowered.root_index,
@@ -81,7 +81,7 @@ impl DataFrame {
             exec_options.options(),
             operation,
         )?;
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        self.with_mask_filter_output(output, &output_domain, operation)
     }
 
     fn filter_expr_via_boolean_mask(
@@ -100,9 +100,9 @@ impl DataFrame {
         )?;
         let output_domain = Arc::clone(execution.output_domain());
         let tv = self.build_table_view()?;
-        let result_table =
+        let output =
             filter::apply_boolean_mask_impl(&tv, &mask_view, &output_domain, execution.exec_options(), operation)?;
-        Self::from_table_with_names(result_table, self.column_names_owned())
+        self.with_mask_filter_output(output, &output_domain, operation)
     }
 }
 

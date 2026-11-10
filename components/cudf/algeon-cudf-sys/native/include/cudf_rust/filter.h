@@ -19,11 +19,17 @@ extern "C" {
 /// null are dropped. The mask must be a BOOL8 column with the same number of
 /// rows as the table.
 ///
+/// When every mask row is valid and `true`, including an empty mask, the call
+/// builds no table: `*out` is NULL and `*out_all_rows_pass` is 1, and the
+/// caller keeps the input rows. Otherwise `*out` receives the filtered table
+/// and `*out_all_rows_pass` is 0.
+///
 /// `options` must be non-NULL and must carry an explicit device, stream, and
 /// memory resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_apply_boolean_mask_ex(cudf_table_view_handle input,
                                          cudf_column_view_handle mask,
                                          cudf_table_handle* out,
+                                         int32_t* out_all_rows_pass,
                                          cudf_exec_options_t const* options);
 
 /// Node kinds for a validated row-predicate AST.
@@ -48,6 +54,9 @@ typedef struct {
 
 /// Evaluate a validated row predicate with explicit execution options.
 ///
+/// The predicate mask is applied as `cudf_apply_boolean_mask_ex` applies a
+/// mask, with the same `*out` and `*out_all_rows_pass` results.
+///
 /// `options` must be non-NULL and must carry an explicit device, stream, and
 /// memory resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
@@ -55,6 +64,7 @@ cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
                                                int32_t num_nodes,
                                                int32_t root_index,
                                                cudf_table_handle* out,
+                                               int32_t* out_all_rows_pass,
                                                cudf_exec_options_t const* options);
 
 #ifdef __cplusplus

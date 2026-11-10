@@ -1,7 +1,9 @@
 //! Tests for high-level fused row-predicate filtering entry points.
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, Exec, ScalarValue, StringSliceOptions, TimestampResolution, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, Exec, Runtime, ScalarValue, StringSliceOptions, TimestampResolution,
+    TypeId,
     ops::expr::{col, lit},
+    runtime::CudaStream,
     testing::prelude::*,
 };
 
@@ -567,6 +569,87 @@ fn test_filter_expr_uses_fused_row_predicate_path_once() {
     assert_eq!(last_row_predicate_mask_api_calls(), 0);
 }
 
+fn test_filter_expr_all_rows_pass_shares_input_columns() {
+    let df = edge_df();
+    let original_ptr = dataframe_device_ptr(&df, "weight");
+
+    reset_row_predicate_observation();
+    let filtered = df.on(Exec::RETAINED).filter_expr(col("weight").ge(1i32)).unwrap();
+
+    assert_eq!(filtered.num_rows(), df.num_rows());
+    assert_eq!(filtered.column_names(), df.column_names());
+    assert_eq!(filtered.testing_execution_domain_id(), df.testing_execution_domain_id());
+    assert_eq!(dataframe_device_ptr(&filtered, "weight"), original_ptr);
+    assert_eq!(last_row_predicate_compute_mask_calls(), 1);
+    assert_eq!(last_row_predicate_final_filter_calls(), 0);
+}
+
+fn test_filter_expr_null_mask_row_is_not_all_rows_pass() {
+    let name = column_from_strs_nullable(&["alpha", "ignored", "gamma"], &[true, false, true]).unwrap();
+    let value = column_from_slice(&[10i32, 20, 30]).unwrap();
+    let df = dataframe_from_columns(vec!["name".into(), "value".into()], vec![name, value]).unwrap();
+
+    reset_row_predicate_observation();
+    let filtered = df.on(Exec::RETAINED).filter_expr(col("name").ne("")).unwrap();
+
+    assert_eq!(filtered.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 30]);
+    assert_eq!(last_row_predicate_final_filter_calls(), 1);
+}
+
+fn test_filter_expr_all_false_mask_is_not_all_rows_pass() {
+    let df = edge_df();
+
+    reset_row_predicate_observation();
+    let filtered = df.on(Exec::RETAINED).filter_expr(col("weight").gt(100i32)).unwrap();
+
+    assert_eq!(filtered.num_rows(), 0);
+    assert_eq!(filtered.column_names(), df.column_names());
+    assert_eq!(last_row_predicate_final_filter_calls(), 1);
+}
+
+fn test_filter_expr_empty_input_keeps_input() {
+    let df = edge_df().on(Exec::RETAINED).head(0).unwrap();
+
+    reset_row_predicate_observation();
+    let filtered = df.on(Exec::RETAINED).filter_expr(col("weight").ge(1i32)).unwrap();
+
+    assert_eq!(filtered.num_rows(), 0);
+    assert_eq!(filtered.column_names(), df.column_names());
+    assert_eq!(last_row_predicate_compute_mask_calls(), 1);
+    assert_eq!(last_row_predicate_final_filter_calls(), 0);
+}
+
+fn test_filter_expr_mask_fallback_all_rows_pass_shares_input_columns() {
+    let df = edge_df();
+    let original_ptr = dataframe_device_ptr(&df, "weight");
+
+    reset_row_predicate_observation();
+    let filtered = df.on(Exec::RETAINED).filter_expr(col("sourceId").str().like("%")).unwrap();
+
+    assert_eq!(filtered.num_rows(), df.num_rows());
+    assert_eq!(dataframe_device_ptr(&filtered, "weight"), original_ptr);
+    assert_eq!(last_row_predicate_filter_calls(), 0);
+    assert_eq!(last_row_predicate_mask_api_calls(), 0);
+}
+
+fn test_filter_expr_all_rows_pass_copies_into_a_different_stream() {
+    let df = edge_df();
+    let original_ptr = dataframe_device_ptr(&df, "weight");
+    let other = Runtime::builder().with_stream(CudaStream::new().unwrap()).build().unwrap();
+
+    reset_row_predicate_observation();
+    let filtered = df.on(other.exec()).filter_expr(col("weight").ge(1i32)).unwrap();
+
+    assert_eq!(last_row_predicate_final_filter_calls(), 0);
+    assert_ne!(filtered.testing_execution_domain_stream_value(), df.testing_execution_domain_stream_value());
+    assert_ne!(dataframe_device_ptr(&filtered, "weight"), original_ptr);
+    assert_eq!(filtered.series("weight").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(
+        filtered.series("sourceId").unwrap().to_strings_strict().unwrap(),
+        df.series("sourceId").unwrap().to_strings_strict().unwrap()
+    );
+}
+
 pub(super) const CASES: &[(&str, fn())] = &[
     (
         "dataframe_filter_expr_tests::test_filter_expr_matches_rfc_style_multi_condition_filtering",
@@ -655,5 +738,26 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "dataframe_filter_expr_tests::test_filter_expr_uses_fused_row_predicate_path_once",
         test_filter_expr_uses_fused_row_predicate_path_once,
+    ),
+    (
+        "dataframe_filter_expr_tests::test_filter_expr_all_rows_pass_shares_input_columns",
+        test_filter_expr_all_rows_pass_shares_input_columns,
+    ),
+    (
+        "dataframe_filter_expr_tests::test_filter_expr_null_mask_row_is_not_all_rows_pass",
+        test_filter_expr_null_mask_row_is_not_all_rows_pass,
+    ),
+    (
+        "dataframe_filter_expr_tests::test_filter_expr_all_false_mask_is_not_all_rows_pass",
+        test_filter_expr_all_false_mask_is_not_all_rows_pass,
+    ),
+    ("dataframe_filter_expr_tests::test_filter_expr_empty_input_keeps_input", test_filter_expr_empty_input_keeps_input),
+    (
+        "dataframe_filter_expr_tests::test_filter_expr_mask_fallback_all_rows_pass_shares_input_columns",
+        test_filter_expr_mask_fallback_all_rows_pass_shares_input_columns,
+    ),
+    (
+        "dataframe_filter_expr_tests::test_filter_expr_all_rows_pass_copies_into_a_different_stream",
+        test_filter_expr_all_rows_pass_copies_into_a_different_stream,
     ),
 ];

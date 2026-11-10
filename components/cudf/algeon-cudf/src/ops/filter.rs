@@ -65,18 +65,54 @@ pub(crate) fn validate_boolean_mask(
     Ok(())
 }
 
+/// Result of a native boolean-mask filter.
+pub(crate) enum MaskFilterOutput {
+    /// Every mask row was valid and `true`. The native call built no table,
+    /// so the caller keeps its input rows.
+    AllRowsPass,
+    /// The rows the mask kept, copied into a new table.
+    Filtered(Table),
+}
+
+impl MaskFilterOutput {
+    /// Adopts the native outputs of a successful filter call.
+    ///
+    /// # Safety
+    ///
+    /// `out` and `all_rows_pass` must come from a `cudf_*` filter entry point
+    /// that returned `CUDF_SUCCESS`, and `out` must not be adopted elsewhere.
+    unsafe fn from_native(
+        out: cudf_sys::cudf_table_handle,
+        all_rows_pass: i32,
+        output_domain: &Arc<ExecutionDomain>,
+    ) -> Result<Self> {
+        if all_rows_pass != 0 {
+            return Ok(Self::AllRowsPass);
+        }
+        unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }.map(Self::Filtered)
+    }
+}
+
 pub(crate) fn apply_boolean_mask_impl(
     input: &TableView<'_>,
     mask: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
     exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
-) -> Result<Table> {
+) -> Result<MaskFilterOutput> {
     let mut out = ptr::null_mut();
-    let status =
-        unsafe { cudf_sys::cudf_apply_boolean_mask_ex(input.raw_handle(), mask.raw_handle(), &mut out, exec_options) };
+    let mut all_rows_pass = 0;
+    let status = unsafe {
+        cudf_sys::cudf_apply_boolean_mask_ex(
+            input.raw_handle(),
+            mask.raw_handle(),
+            &mut out,
+            &mut all_rows_pass,
+            exec_options,
+        )
+    };
     error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
-    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
+    unsafe { MaskFilterOutput::from_native(out, all_rows_pass, output_domain) }
 }
 
 /// Filter rows of a table using a boolean mask column.
@@ -84,7 +120,7 @@ pub(crate) fn apply_boolean_mask_impl(
 /// Rows where the mask is `true` are kept; rows where the mask is `false`
 /// or null are dropped. The mask must be a `BOOL8` column with the same
 /// number of rows as the input table.
-pub(crate) fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<Table> {
+pub(crate) fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<MaskFilterOutput> {
     let input_rows = input.num_rows()?;
     validate_boolean_mask(mask, input_rows, "table row count", "filter::apply_boolean_mask")?;
 
@@ -112,9 +148,10 @@ pub(crate) fn apply_row_predicate_impl(
     output_domain: &Arc<ExecutionDomain>,
     exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
-) -> Result<Table> {
+) -> Result<MaskFilterOutput> {
     let _retained_scalars = retained_scalars;
     let mut out = ptr::null_mut();
+    let mut all_rows_pass = 0;
     let status = unsafe {
         cudf_sys::cudf_filter_rows_by_predicate_ex(
             input.raw_handle(),
@@ -122,6 +159,7 @@ pub(crate) fn apply_row_predicate_impl(
             error::usize_to_i32(nodes.len(), operation, "node_count")?,
             root_index,
             &mut out,
+            &mut all_rows_pass,
             exec_options,
         )
     };
@@ -134,5 +172,5 @@ pub(crate) fn apply_row_predicate_impl(
             ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
-    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
+    unsafe { MaskFilterOutput::from_native(out, all_rows_pass, output_domain) }
 }
