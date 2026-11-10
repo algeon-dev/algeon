@@ -382,10 +382,10 @@ fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     assert_eq!(batch.schema(), schema);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
     let event_ts = batch.column(1).as_primitive::<TimestampMicrosecondType>();
-    assert_eq!(event_ts.values().as_ref(), &[1_700_000_000_000_000, 0, 1_700_000_000_000_123]);
-    assert!(event_ts.is_valid(0));
-    assert!(!event_ts.is_valid(1));
-    assert!(event_ts.is_valid(2));
+    assert_eq!(
+        event_ts.iter().collect::<Vec<_>>(),
+        vec![Some(1_700_000_000_000_000), None, Some(1_700_000_000_000_123)]
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
