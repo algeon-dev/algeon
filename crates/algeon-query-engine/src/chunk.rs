@@ -39,7 +39,7 @@ mod tests {
         backend::BackendCapabilities,
         chunk::{
             PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
-            SourceTaskMemoryModel,
+            SourceFileRowGroupFacts, SourceTaskMemoryModel,
             decimal::validate_supplied_reader_decimal_types_match_footer,
             row_group::{RowGroupMetadata, source_row_group_metadata},
         },
@@ -84,15 +84,15 @@ mod tests {
             estimated_column_elements: Some(1),
             max_column_elements: u64::MAX,
             exact_source_read_preflight_bytes: Some(bytes),
-            source_file_row_groups: None,
-            source_file_row_group_bytes: Some(vec![bytes]),
-            source_file_projected_compressed_bytes: Some(vec![bytes]),
-            source_file_projected_uncompressed_bytes: Some(vec![bytes]),
-            source_file_pure_filter_compressed_bytes: Some(vec![0]),
-            source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
-            source_file_row_group_decoded_bytes: None,
-            source_file_row_group_column_elements: None,
-            source_file_row_group_rows: Some(vec![1]),
+            source_file: Arc::new(SourceFileRowGroupFacts {
+                row_group_bytes: Some(vec![bytes]),
+                projected_compressed_bytes: Some(vec![bytes]),
+                projected_uncompressed_bytes: Some(vec![bytes]),
+                pure_filter_compressed_bytes: Some(vec![0]),
+                pure_filter_uncompressed_bytes: Some(vec![0]),
+                row_group_rows: Some(vec![1]),
+                ..Default::default()
+            }),
             reader_decimal_types: Vec::new(),
             reader_decimal_types_footer_verified: false,
             read_columns: vec!["c0".to_string()],
@@ -382,7 +382,7 @@ mod tests {
             plan.chunks.iter().map(|chunk| chunk.estimated_column_elements).collect::<Vec<_>>(),
             vec![Some(4), Some(6)]
         );
-        assert_eq!(plan.chunks[0].source_file_row_group_column_elements, Some(vec![4, 6]));
+        assert_eq!(plan.chunks[0].source_file.row_group_column_elements, Some(vec![4, 6]));
         fs::remove_file(path).unwrap();
     }
 
@@ -692,7 +692,7 @@ mod tests {
         assert_eq!(plan.chunk_count(), 1);
         assert!(plan.chunks[0].reads_all_row_groups);
         assert!(plan.chunks[0].row_group_indexes.is_empty());
-        assert_eq!(plan.chunks[0].source_file_row_group_rows, None);
+        assert_eq!(plan.chunks[0].source_file.row_group_rows, None);
     }
 
     #[test]
@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(plan.chunks[0].row_group_indexes, vec![0]);
         assert!(!plan.chunks[0].reads_all_row_groups);
         assert_eq!(plan.chunks[0].known_row_count, Some(123));
-        assert_eq!(plan.chunks[0].source_file_row_group_rows.as_deref(), Some(&[123][..]));
+        assert_eq!(plan.chunks[0].source_file.row_group_rows.as_deref(), Some(&[123][..]));
     }
 
     #[test]
@@ -773,7 +773,7 @@ mod tests {
             plan.chunks.iter().map(|chunk| chunk.known_row_count).collect::<Vec<_>>(),
             vec![Some(2), Some(2), Some(1)]
         );
-        assert!(plan.chunks.iter().all(|chunk| chunk.source_file_row_group_rows.as_deref() == Some(&[2, 2, 1][..])));
+        assert!(plan.chunks.iter().all(|chunk| chunk.source_file.row_group_rows.as_deref() == Some(&[2, 2, 1][..])));
         fs::remove_file(path).unwrap();
     }
 
@@ -932,7 +932,7 @@ mod tests {
     #[test]
     fn source_chunk_detects_whole_known_file_row_group_coverage() {
         let mut chunk = batchable_chunk(0, 0, 10);
-        chunk.source_file_row_groups = Some(vec![0, 1, 2]);
+        Arc::make_mut(&mut chunk.source_file).row_groups = Some(vec![0, 1, 2]);
         chunk.row_group_indexes = vec![2, 0, 1];
 
         assert!(chunk.selects_all_known_file_row_groups());
@@ -941,13 +941,15 @@ mod tests {
         assert!(!chunk.selects_all_known_file_row_groups());
 
         chunk.row_group_indexes = vec![0, 1, 2];
-        chunk.source_file_row_groups = None;
-        chunk.source_file_row_group_rows = Some(vec![10, 10, 10]);
-        chunk.source_file_row_group_bytes = Some(vec![1, 1, 1]);
-        chunk.source_file_projected_compressed_bytes = Some(vec![1, 1, 1]);
-        chunk.source_file_projected_uncompressed_bytes = Some(vec![1, 1, 1]);
-        chunk.source_file_pure_filter_compressed_bytes = Some(vec![0, 0, 0]);
-        chunk.source_file_pure_filter_uncompressed_bytes = Some(vec![0, 0, 0]);
+        chunk.source_file = Arc::new(SourceFileRowGroupFacts {
+            row_group_rows: Some(vec![10, 10, 10]),
+            row_group_bytes: Some(vec![1, 1, 1]),
+            projected_compressed_bytes: Some(vec![1, 1, 1]),
+            projected_uncompressed_bytes: Some(vec![1, 1, 1]),
+            pure_filter_compressed_bytes: Some(vec![0, 0, 0]),
+            pure_filter_uncompressed_bytes: Some(vec![0, 0, 0]),
+            ..Default::default()
+        });
         assert!(chunk.selects_all_known_file_row_groups());
 
         chunk.row_group_indexes = vec![0, 2];

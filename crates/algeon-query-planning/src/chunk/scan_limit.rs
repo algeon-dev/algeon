@@ -101,7 +101,7 @@ pub(crate) fn scan_limited_chunk_prefix(
 }
 
 pub(crate) fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(Vec<usize>, u64)> {
-    let row_group_rows = chunk.source_file_row_group_rows.as_ref().ok_or_else(|| {
+    let row_group_rows = chunk.source_file.row_group_rows.as_ref().ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.source_chunk.scan_limit",
@@ -165,25 +165,25 @@ pub(crate) fn rewrite_scan_limited_chunk_selection(
     sizing: SourceReadSizing<'_>,
 ) -> SourceChunk {
     let known_row_group_bytes =
-        sum_selected_row_group_values(chunk.source_file_row_group_bytes.as_ref(), &selected_row_groups);
+        sum_selected_row_group_values(chunk.source_file.row_group_bytes.as_ref(), &selected_row_groups);
     let known_projected_compressed_bytes =
-        sum_selected_row_group_values(chunk.source_file_projected_compressed_bytes.as_ref(), &selected_row_groups);
+        sum_selected_row_group_values(chunk.source_file.projected_compressed_bytes.as_ref(), &selected_row_groups);
     let known_projected_uncompressed_bytes =
-        sum_selected_row_group_values(chunk.source_file_projected_uncompressed_bytes.as_ref(), &selected_row_groups);
+        sum_selected_row_group_values(chunk.source_file.projected_uncompressed_bytes.as_ref(), &selected_row_groups);
     let known_pure_filter_compressed_bytes =
-        sum_selected_row_group_values(chunk.source_file_pure_filter_compressed_bytes.as_ref(), &selected_row_groups);
+        sum_selected_row_group_values(chunk.source_file.pure_filter_compressed_bytes.as_ref(), &selected_row_groups);
     let known_pure_filter_uncompressed_bytes =
-        sum_selected_row_group_values(chunk.source_file_pure_filter_uncompressed_bytes.as_ref(), &selected_row_groups);
+        sum_selected_row_group_values(chunk.source_file.pure_filter_uncompressed_bytes.as_ref(), &selected_row_groups);
     let estimated_chunk_bytes = known_projected_uncompressed_bytes
         .or(known_row_group_bytes)
         .or_else(|| scan_limited_proportional_file_bytes(&chunk, selected_row_groups.len()));
     let estimated_decoded_bytes =
-        sum_selected_row_group_values(chunk.source_file_row_group_decoded_bytes.as_ref(), &selected_row_groups)
+        sum_selected_row_group_values(chunk.source_file.row_group_decoded_bytes.as_ref(), &selected_row_groups)
             .or_else(|| {
                 proportional_bytes(chunk.estimated_decoded_bytes, selected_row_groups.len(), chunk.row_group_count())
             });
     let estimated_column_elements =
-        sum_selected_row_group_values(chunk.source_file_row_group_column_elements.as_ref(), &selected_row_groups)
+        sum_selected_row_group_values(chunk.source_file.row_group_column_elements.as_ref(), &selected_row_groups)
             .or(chunk.estimated_column_elements);
     let estimated_source_read_bytes = source_read_uncompressed_bytes(
         source,
@@ -229,13 +229,14 @@ pub(crate) fn scan_limited_proportional_file_bytes(
 
 pub(crate) fn source_file_row_group_count_basis(chunk: &SourceChunk) -> usize {
     chunk
-        .source_file_row_group_rows
+        .source_file
+        .row_group_rows
         .as_ref()
-        .or(chunk.source_file_row_group_bytes.as_ref())
-        .or(chunk.source_file_projected_compressed_bytes.as_ref())
-        .or(chunk.source_file_projected_uncompressed_bytes.as_ref())
-        .or(chunk.source_file_pure_filter_compressed_bytes.as_ref())
-        .or(chunk.source_file_pure_filter_uncompressed_bytes.as_ref())
+        .or(chunk.source_file.row_group_bytes.as_ref())
+        .or(chunk.source_file.projected_compressed_bytes.as_ref())
+        .or(chunk.source_file.projected_uncompressed_bytes.as_ref())
+        .or(chunk.source_file.pure_filter_compressed_bytes.as_ref())
+        .or(chunk.source_file.pure_filter_uncompressed_bytes.as_ref())
         .map_or(chunk.row_group_indexes.len(), Vec::len)
         .max(1)
 }

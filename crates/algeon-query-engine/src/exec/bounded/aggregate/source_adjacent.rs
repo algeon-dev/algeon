@@ -179,7 +179,7 @@ pub(in crate::exec::bounded) fn execute_source_aggregate_with_dispatch(
 /// One partition's slice of a staged raw batch, resident until its partition
 /// is aggregated. `chunks` is kept for the input evidence of that aggregate.
 struct SourceAdjacentPartitionInput {
-    chunks: Vec<SourceChunk>,
+    chunks: Arc<[SourceChunk]>,
     partial: CommittedPartial,
     source_row_group_count: u64,
 }
@@ -769,12 +769,13 @@ fn process_partitioned_source_adjacent_batch(
                 outputs.extend(reduced);
             },
             SourceAdjacentRawStaged::Partitioned(partitions) => {
+                let chunks: Arc<[SourceChunk]> = chunks.into();
                 let inputs = pending.get_or_insert_with(|| (0..current_partition_count).map(|_| Vec::new()).collect());
                 for (partition_index, partition) in partitions.into_iter().enumerate() {
                     if let Some(partition) = partition {
                         // Oversized partitions still enter the budgeted partial retry.
                         inputs[partition_index].push(SourceAdjacentPartitionInput {
-                            chunks: chunks.clone(),
+                            chunks: Arc::clone(&chunks),
                             partial: partition,
                             source_row_group_count,
                         });
@@ -1956,15 +1957,7 @@ mod tests {
                 estimated_column_elements: Some(1),
                 max_column_elements: u64::MAX,
                 exact_source_read_preflight_bytes: Some(bytes),
-                source_file_row_groups: None,
-                source_file_row_group_bytes: None,
-                source_file_projected_compressed_bytes: None,
-                source_file_projected_uncompressed_bytes: None,
-                source_file_pure_filter_compressed_bytes: None,
-                source_file_pure_filter_uncompressed_bytes: None,
-                source_file_row_group_decoded_bytes: None,
-                source_file_row_group_column_elements: None,
-                source_file_row_group_rows: None,
+                source_file: Arc::default(),
                 reader_decimal_types: Vec::new(),
                 reader_decimal_types_footer_verified: false,
                 read_columns: vec!["k".to_string()],

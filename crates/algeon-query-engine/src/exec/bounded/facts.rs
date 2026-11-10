@@ -115,10 +115,11 @@ pub(in crate::exec) fn attach_source_batch_resource_facts(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, sync::Arc};
 
     use cudf::{CudfErrorDetail, CudfErrorFailureSource, testing::error as cudf_error};
     use query_planning::{
+        chunk::SourceFileRowGroupFacts,
         error::QueryErrorCode,
         execution_contracts::SourceChunkPlanningMode,
         source::{ParquetSourceLocation, ResolvedParquetSource},
@@ -150,15 +151,15 @@ mod tests {
             estimated_column_elements: Some(1),
             max_column_elements: u64::MAX,
             exact_source_read_preflight_bytes: Some(1024),
-            source_file_row_groups: None,
-            source_file_row_group_bytes: Some(vec![1024]),
-            source_file_projected_compressed_bytes: Some(vec![1024]),
-            source_file_projected_uncompressed_bytes: Some(vec![1024]),
-            source_file_pure_filter_compressed_bytes: Some(vec![0]),
-            source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
-            source_file_row_group_decoded_bytes: None,
-            source_file_row_group_column_elements: None,
-            source_file_row_group_rows: Some(vec![1]),
+            source_file: Arc::new(SourceFileRowGroupFacts {
+                row_group_bytes: Some(vec![1024]),
+                projected_compressed_bytes: Some(vec![1024]),
+                projected_uncompressed_bytes: Some(vec![1024]),
+                pure_filter_compressed_bytes: Some(vec![0]),
+                pure_filter_uncompressed_bytes: Some(vec![0]),
+                row_group_rows: Some(vec![1]),
+                ..Default::default()
+            }),
             reader_decimal_types: Vec::new(),
             reader_decimal_types_footer_verified: false,
             read_columns: vec!["c0".to_string()],

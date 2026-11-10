@@ -955,7 +955,8 @@ pub(super) fn source_chunk_structural_part(chunk: &SourceChunk) -> String {
         format_usize_list(&chunk.row_group_indexes),
         chunk.reads_all_row_groups,
         chunk
-            .source_file_row_groups
+            .source_file
+            .row_groups
             .as_ref()
             .map(|row_groups| format_usize_list(row_groups))
             .unwrap_or_else(|| "unknown".to_string()),

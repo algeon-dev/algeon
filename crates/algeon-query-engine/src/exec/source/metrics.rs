@@ -91,6 +91,7 @@ mod tests {
 
     use arrow::datatypes::{DataType, Field, Schema};
     use query_planning::{
+        chunk::SourceFileRowGroupFacts,
         execution_contracts::SourceChunkPlanningMode,
         plan::NodeId,
         source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
@@ -223,15 +224,11 @@ mod tests {
             estimated_column_elements: Some(10),
             max_column_elements: u64::MAX,
             exact_source_read_preflight_bytes: None,
-            source_file_row_groups: Some(vec![0]),
-            source_file_row_group_bytes: None,
-            source_file_projected_compressed_bytes: None,
-            source_file_projected_uncompressed_bytes: None,
-            source_file_pure_filter_compressed_bytes: None,
-            source_file_pure_filter_uncompressed_bytes: None,
-            source_file_row_group_decoded_bytes: None,
-            source_file_row_group_column_elements: None,
-            source_file_row_group_rows: Some(vec![10]),
+            source_file: Arc::new(SourceFileRowGroupFacts {
+                row_groups: Some(vec![0]),
+                row_group_rows: Some(vec![10]),
+                ..Default::default()
+            }),
             reader_decimal_types: Vec::new(),
             reader_decimal_types_footer_verified: false,
             read_columns: vec!["id".to_string()],

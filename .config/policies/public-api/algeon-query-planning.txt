@@ -407,15 +407,7 @@ pub query_planning::chunk::SourceChunk::size_estimate_based: bool
 pub query_planning::chunk::SourceChunk::source_batching_reason: core::option::Option<alloc::string::String>
 pub query_planning::chunk::SourceChunk::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
 pub query_planning::chunk::SourceChunk::source_chunk_planning_reason: alloc::string::String
-pub query_planning::chunk::SourceChunk::source_file_projected_compressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
-pub query_planning::chunk::SourceChunk::source_file_projected_uncompressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
-pub query_planning::chunk::SourceChunk::source_file_pure_filter_compressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
-pub query_planning::chunk::SourceChunk::source_file_pure_filter_uncompressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
-pub query_planning::chunk::SourceChunk::source_file_row_group_bytes: core::option::Option<alloc::vec::Vec<u64>>
-pub query_planning::chunk::SourceChunk::source_file_row_group_column_elements: core::option::Option<alloc::vec::Vec<u64>>
-pub query_planning::chunk::SourceChunk::source_file_row_group_decoded_bytes: core::option::Option<alloc::vec::Vec<u64>>
-pub query_planning::chunk::SourceChunk::source_file_row_group_rows: core::option::Option<alloc::vec::Vec<u64>>
-pub query_planning::chunk::SourceChunk::source_file_row_groups: core::option::Option<alloc::vec::Vec<usize>>
+pub query_planning::chunk::SourceChunk::source_file: alloc::sync::Arc<query_planning::chunk::SourceFileRowGroupFacts>
 pub query_planning::chunk::SourceChunk::source_node_id: query_planning::plan::NodeId
 pub query_planning::chunk::SourceChunk::stable_id: alloc::string::String
 pub query_planning::chunk::SourceChunk::zero_column_count: bool
@@ -467,6 +459,18 @@ impl core::convert::From<query_planning::execution_contracts::MemoryControlPolic
 pub fn query_planning::chunk::SourceChunkPlanningPolicy::from(query_planning::execution_contracts::MemoryControlPolicy) -> Self
 impl core::default::Default for query_planning::chunk::SourceChunkPlanningPolicy
 pub fn query_planning::chunk::SourceChunkPlanningPolicy::default() -> Self
+pub struct query_planning::chunk::SourceFileRowGroupFacts
+pub query_planning::chunk::SourceFileRowGroupFacts::projected_compressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceFileRowGroupFacts::projected_uncompressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceFileRowGroupFacts::pure_filter_compressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceFileRowGroupFacts::pure_filter_uncompressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceFileRowGroupFacts::row_group_bytes: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceFileRowGroupFacts::row_group_column_elements: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceFileRowGroupFacts::row_group_decoded_bytes: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceFileRowGroupFacts::row_group_rows: core::option::Option<alloc::vec::Vec<u64>>
+pub query_planning::chunk::SourceFileRowGroupFacts::row_groups: core::option::Option<alloc::vec::Vec<usize>>
+impl query_planning::chunk::SourceFileRowGroupFacts
+pub fn query_planning::chunk::SourceFileRowGroupFacts::row_group_count(&self) -> core::option::Option<usize>
 pub struct query_planning::chunk::SourceReadSizing<'a>
 impl<'a> query_planning::chunk::SourceReadSizing<'a>
 pub const fn query_planning::chunk::SourceReadSizing<'a>::new(&'a dyn query_planning::backend::BackendCapabilities, u64) -> Self

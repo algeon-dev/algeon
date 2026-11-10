@@ -1,11 +1,11 @@
 //! Chunk assembly from row-group metadata.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::DataType;
 
 use super::{
-    SourceChunk, SourceChunkPlanningPolicy, SourceReadSizing,
+    SourceChunk, SourceChunkPlanningPolicy, SourceFileRowGroupFacts, SourceReadSizing,
     decoded::ReadColumnWidths,
     elements::{
         ColumnElements, read_columns_bound_elements_per_row, row_group_column_elements_from_schema,
@@ -102,10 +102,20 @@ pub fn append_row_group_chunks(
     let row_group_count_basis = metadata.map_or(row_groups.len(), RowGroupMetadata::row_group_count).max(1);
     let read_column_widths = ReadColumnWidths::of(&source.schema, &source.read_columns);
     let elements_per_row_bounded = read_columns_bound_elements_per_row(&source.schema, &source.read_columns);
-    let file_column_elements = metadata.and_then(|metadata| {
-        (0..metadata.row_group_count())
-            .map(|row_group| row_group_column_elements(source, metadata, row_group).map(|largest| largest.elements))
-            .collect::<Option<Vec<_>>>()
+    let source_file = Arc::new(SourceFileRowGroupFacts {
+        row_groups: file.row_groups.clone(),
+        row_group_bytes: metadata.and_then(RowGroupMetadata::row_group_bytes_vec),
+        projected_compressed_bytes: metadata.and_then(RowGroupMetadata::projected_compressed_bytes_vec),
+        projected_uncompressed_bytes: metadata.and_then(RowGroupMetadata::projected_uncompressed_bytes_vec),
+        pure_filter_compressed_bytes: metadata.and_then(RowGroupMetadata::pure_filter_compressed_bytes_vec),
+        pure_filter_uncompressed_bytes: metadata.and_then(RowGroupMetadata::pure_filter_uncompressed_bytes_vec),
+        row_group_decoded_bytes: metadata.and_then(RowGroupMetadata::decoded_bytes_vec),
+        row_group_column_elements: metadata.and_then(|metadata| {
+            (0..metadata.row_group_count())
+                .map(|row_group| row_group_column_elements(source, metadata, row_group).map(|largest| largest.elements))
+                .collect::<Option<Vec<_>>>()
+        }),
+        row_group_rows: metadata.and_then(RowGroupMetadata::row_group_rows_vec),
     });
     let mut current = PendingChunk::default();
 
@@ -165,8 +175,7 @@ pub fn append_row_group_chunks(
                 file,
                 file_index,
                 row_groups.len(),
-                metadata,
-                file_column_elements.as_deref(),
+                &source_file,
                 policy,
                 reader_decimal_types,
                 reader_decimal_types_footer_verified,
@@ -195,8 +204,7 @@ pub fn append_row_group_chunks(
         file,
         file_index,
         row_groups.len(),
-        metadata,
-        file_column_elements.as_deref(),
+        &source_file,
         policy,
         reader_decimal_types,
         reader_decimal_types_footer_verified,
@@ -271,8 +279,7 @@ pub(crate) fn push_pending_chunk(
     file: &LocalParquetFile,
     file_index: usize,
     planned_row_group_count: usize,
-    metadata: Option<&RowGroupMetadata>,
-    file_column_elements: Option<&[u64]>,
+    source_file: &Arc<SourceFileRowGroupFacts>,
     policy: SourceChunkPlanningPolicy,
     reader_decimal_types: &[ParquetReaderDecimalType],
     reader_decimal_types_footer_verified: bool,
@@ -325,16 +332,7 @@ pub(crate) fn push_pending_chunk(
         estimated_column_elements: pending.known_column_elements(),
         max_column_elements: sizing.max_column_elements(),
         exact_source_read_preflight_bytes,
-        source_file_row_groups: file.row_groups.clone(),
-        source_file_row_group_bytes: metadata.and_then(RowGroupMetadata::row_group_bytes_vec),
-        source_file_projected_compressed_bytes: metadata.and_then(RowGroupMetadata::projected_compressed_bytes_vec),
-        source_file_projected_uncompressed_bytes: metadata.and_then(RowGroupMetadata::projected_uncompressed_bytes_vec),
-        source_file_pure_filter_compressed_bytes: metadata.and_then(RowGroupMetadata::pure_filter_compressed_bytes_vec),
-        source_file_pure_filter_uncompressed_bytes: metadata
-            .and_then(RowGroupMetadata::pure_filter_uncompressed_bytes_vec),
-        source_file_row_group_decoded_bytes: metadata.and_then(RowGroupMetadata::decoded_bytes_vec),
-        source_file_row_group_column_elements: file_column_elements.map(<[u64]>::to_vec),
-        source_file_row_group_rows: metadata.and_then(RowGroupMetadata::row_group_rows_vec),
+        source_file: Arc::clone(source_file),
         reader_decimal_types: reader_decimal_types.to_vec(),
         reader_decimal_types_footer_verified,
         read_columns: source.read_columns.clone(),
@@ -466,15 +464,7 @@ pub fn single_all_row_groups_chunk(
         estimated_column_elements: None,
         max_column_elements: sizing.max_column_elements(),
         exact_source_read_preflight_bytes: None,
-        source_file_row_groups: file.row_groups.clone(),
-        source_file_row_group_bytes: None,
-        source_file_projected_compressed_bytes: None,
-        source_file_projected_uncompressed_bytes: None,
-        source_file_pure_filter_compressed_bytes: None,
-        source_file_pure_filter_uncompressed_bytes: None,
-        source_file_row_group_decoded_bytes: None,
-        source_file_row_group_column_elements: None,
-        source_file_row_group_rows: None,
+        source_file: Arc::new(SourceFileRowGroupFacts { row_groups: file.row_groups.clone(), ..Default::default() }),
         reader_decimal_types: reader_decimal_types.to_vec(),
         reader_decimal_types_footer_verified,
         read_columns: source.read_columns.clone(),

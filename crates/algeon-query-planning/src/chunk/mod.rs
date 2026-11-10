@@ -34,7 +34,7 @@ pub mod row_group;
 pub mod scan_limit;
 
 pub use memory::SourceTaskMemoryModel;
-pub use model::{SourceChunk, SourceChunkBatch, SourceChunkPlan};
+pub use model::{SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceFileRowGroupFacts};
 pub use planner::{
     annotate_source_chunk_batching_reasons, plan_source_chunk_batches, plan_source_chunk_batches_with_row_cap,
 };
