@@ -76,3 +76,57 @@ fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn bounded_native_full_sort_without_limit_fits_a_cap_below_input_plus_output() {
+    let rows = 1 << 20;
+    let computed_columns = 7;
+    let dir = unique_temp_dir("query-engine-bounded-full-sort-releases-input");
+    let path = dir.join("input.parquet");
+    let input_schema = write_single_row_group_final_sort_input_parquet(&path, rows);
+    let mut fields = vec![Field::new("key", DataType::Int32, false)];
+    let mut projection = vec![Expr::column("key")];
+    for index in 0..computed_columns {
+        fields.push(Field::new(format!("x{index}"), DataType::Int64, true));
+        projection.push(
+            Expr::binary(Expr::column("m00"), BinaryOp::Add, Expr::literal(LiteralValue::Int64(index)))
+                .alias(format!("x{index}")),
+        );
+    }
+    let sorted_schema = Arc::new(Schema::new(fields));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, sorted_schema)).unwrap();
+    let sort =
+        builder.add_sort(projection, SortSpec::new(vec![SortExpr::new(Expr::column("key"), true, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
+
+    // The sort input is 60 bytes per row and its order 4. Holding the input while the
+    // whole output is gathered needs about 124 bytes per row; releasing each input column
+    // after its sorted copy needs about 72.
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 100 * rows as u64,
+        max_source_chunk_bytes: 1024 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let result = execute_query_plan(&context, &plan).unwrap();
+    assert_eq!(result.metrics().retry_count, 0);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), rows as usize);
+    let keys = int32_array(batch, 0);
+    assert_eq!(keys.value(0), rows - 1);
+    assert_eq!(keys.value(rows as usize - 1), 0);
+    assert!(int64_array(batch, computed_columns as usize).values().iter().all(|&value| value == computed_columns));
+
+    fs::remove_dir_all(dir).unwrap();
+}

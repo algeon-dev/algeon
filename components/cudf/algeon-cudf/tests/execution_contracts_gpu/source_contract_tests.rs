@@ -349,7 +349,6 @@ fn copying_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
         "cudf_sys::cudf_gather_ex",
-        "cudf_sys::cudf_gather_device_allocated_size_ex",
         "cudf_sys::cudf_copy_if_else_vv_ex",
     ] {
         assert!(COPYING_RS.contains(required), "copying helpers must retain `{required}`");

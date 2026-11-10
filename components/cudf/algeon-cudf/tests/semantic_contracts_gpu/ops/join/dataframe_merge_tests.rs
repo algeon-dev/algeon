@@ -171,47 +171,6 @@ fn test_dataframe_join_indices_materialize_selected_payload_columns() {
     assert_eq!(payload, vec![200, 400]);
 }
 
-fn test_dataframe_join_indices_materialization_reservation_matches_output_allocation() {
-    let rt = sample_runtime();
-    let left = DataFrame::from_series([
-        ("id", rt.series(&[1i32, 2, 3, 4]).unwrap()),
-        ("score", rt.series(&[10i32, 20, 30, 40]).unwrap()),
-        ("payload", rt.series(&[100i32, 200, 300, 400]).unwrap()),
-    ])
-    .unwrap();
-    let right = DataFrame::from_series([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
-
-    let indices =
-        left.on(Exec::RETAINED).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let reservation =
-        left.on(Exec::RETAINED).materialize_join_indices_reservation_size_bytes(&indices, ["payload"]).unwrap();
-    let materialized = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["payload"]).unwrap();
-
-    assert_eq!(reservation, device_allocated_bytes(&materialized));
-    assert!(reservation > 0);
-}
-
-fn test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gather_map() {
-    let rt = sample_runtime();
-    let left = DataFrame::from_series([
-        ("id", rt.series(&[1i32, 2, 3, 4]).unwrap()),
-        ("score", rt.series(&[10i32, 20, 30, 40]).unwrap()),
-        ("payload", rt.series(&[100i32, 200, 300, 400]).unwrap()),
-    ])
-    .unwrap();
-    let right = DataFrame::from_series([("id", rt.series(&[999i32]).unwrap())]).unwrap();
-
-    let indices =
-        left.on(Exec::RETAINED).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let reservation =
-        left.on(Exec::RETAINED).materialize_join_indices_reservation_size_bytes(&indices, ["payload"]).unwrap();
-    let materialized = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["payload"]).unwrap();
-
-    assert!(indices.is_empty());
-    assert_eq!(reservation, 0);
-    assert_eq!(device_allocated_bytes(&materialized), 0);
-}
-
 fn test_projected_cross_join_plan_reports_size_and_materializes_both_sides() {
     let rt = sample_runtime();
     let left = cross_left_df(&rt);
@@ -401,7 +360,7 @@ fn test_projected_cross_join_plan_rejects_input_row_count_above_cudf_limit_even_
     assert_eq!(error_context_value(&err, "resource").as_deref(), Some("left_rows"));
 }
 
-fn test_dataframe_join_indices_materialization_reservation_orders_mixed_domains() {
+fn test_dataframe_join_indices_materialization_orders_mixed_domains() {
     let _event_observation = lock_event_observation();
     let data_rt = sample_runtime();
     let indices_rt = sample_runtime();
@@ -418,14 +377,13 @@ fn test_dataframe_join_indices_materialization_reservation_orders_mixed_domains(
 
     reset_dependency_observation();
     reset_exec_observation();
-    let reservation =
-        left.on(Exec::RETAINED).materialize_join_indices_reservation_size_bytes(&indices, ["score"]).unwrap();
+    let materialized = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["score"]).unwrap();
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
-
-    let materialized = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["score"]).unwrap();
-    assert_eq!(reservation, device_allocated_bytes(&materialized));
+    let mut scores = materialized.series("score").unwrap().to_vec_strict::<i32>().unwrap();
+    scores.sort();
+    assert_eq!(scores, vec![20, 40]);
 }
 
 fn test_dataframe_inner_join_indices_materialize_projected_sides_with_duplicates() {
@@ -581,21 +539,10 @@ fn test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplica
     let first_indices = hash_join.inner_probe(&first_probe, ["pid"], Exec::RETAINED).unwrap();
     assert_eq!(first_reservation_size, first_indices.device_allocated_size_bytes().unwrap());
     assert!(first_indices.device_allocated_size_bytes().unwrap() > 0);
-    let probe_output_reservation = first_probe
-        .on(Exec::RETAINED)
-        .materialize_join_indices_reservation_size_bytes(first_indices.probe(), ["score"])
-        .unwrap();
-    let build_output_reservation = hash_join
-        .build()
-        .on(Exec::RETAINED)
-        .materialize_join_indices_reservation_size_bytes(first_indices.build(), ["value"])
-        .unwrap();
     let first = hash_join.materialize(&first_probe, &first_indices, ["score"], ["value"], Exec::RETAINED).unwrap();
     let second_indices = hash_join.inner_probe(&second_probe, ["pid"], Exec::RETAINED).unwrap();
     let second = hash_join.materialize(&second_probe, &second_indices, ["score"], ["value"], Exec::RETAINED).unwrap();
 
-    assert_eq!(probe_output_reservation, device_allocated_bytes(&first.probe));
-    assert_eq!(build_output_reservation, device_allocated_bytes(&first.build));
     assert_eq!(hash_join.build_keys(), &["id".to_string()]);
     assert_eq!(hash_join.inner_probe_size(&first_probe, ["pid"], Exec::RETAINED).unwrap(), first_indices.len());
     assert_eq!(hash_join.inner_probe_size(&second_probe, ["pid"], Exec::RETAINED).unwrap(), second_indices.len());
@@ -1400,14 +1347,6 @@ pub(super) const CASES: &[(&str, fn())] = &[
         test_dataframe_join_indices_materialize_selected_payload_columns,
     ),
     (
-        "dataframe_merge_tests::test_dataframe_join_indices_materialization_reservation_matches_output_allocation",
-        test_dataframe_join_indices_materialization_reservation_matches_output_allocation,
-    ),
-    (
-        "dataframe_merge_tests::test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gather_map",
-        test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gather_map,
-    ),
-    (
         "dataframe_merge_tests::test_projected_cross_join_plan_reports_size_and_materializes_both_sides",
         test_projected_cross_join_plan_reports_size_and_materializes_both_sides,
     ),
@@ -1448,8 +1387,8 @@ pub(super) const CASES: &[(&str, fn())] = &[
         test_projected_cross_join_plan_rejects_input_row_count_above_cudf_limit_even_with_zero_output,
     ),
     (
-        "dataframe_merge_tests::test_dataframe_join_indices_materialization_reservation_orders_mixed_domains",
-        test_dataframe_join_indices_materialization_reservation_orders_mixed_domains,
+        "dataframe_merge_tests::test_dataframe_join_indices_materialization_orders_mixed_domains",
+        test_dataframe_join_indices_materialization_orders_mixed_domains,
     ),
     (
         "dataframe_merge_tests::test_dataframe_inner_join_indices_materialize_projected_sides_with_duplicates",

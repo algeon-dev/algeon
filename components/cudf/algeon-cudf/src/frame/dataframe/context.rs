@@ -257,15 +257,13 @@ impl FrameOps<'_> {
     ///
     /// This resolves and validates keys/options with the same user-facing
     /// rules as [`sort_values`](Self::sort_values), then retains only the INT32
-    /// sorted-order row-index column. Use
-    /// [`DataFramePreparedSort::materialized_output_reservation_size_bytes`]
-    /// to reserve the exact gathered output bytes before calling
-    /// [`DataFramePreparedSort::materialize`].
+    /// sorted-order row-index column. A sorted output column has the same
+    /// values as its input column, so the materialized output needs about as
+    /// many bytes as the selected input.
     ///
-    /// This contract covers the retained sorted-order bytes and the
-    /// materialized gather output sizing. It does not cover the libcudf sort
-    /// temporary workspace used while producing the sorted order. That workspace
-    /// contract remains unresolved.
+    /// This contract covers the retained sorted-order bytes. It does not cover
+    /// the libcudf sort temporary workspace used while producing the sorted
+    /// order. That workspace contract remains unresolved.
     pub fn prepare_sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<DataFramePreparedSort>
     where
         I: IntoIterator<Item = S>,
@@ -347,48 +345,6 @@ impl FrameOps<'_> {
         S: AsRef<str>,
     {
         self.df.materialize_join_indices_in_context(indices, columns, self.ctx, "dataframe::materialize_join_indices")
-    }
-
-    /// Return the exact retained device allocation size of
-    /// [`materialize_join_indices`](Self::materialize_join_indices) for the
-    /// selected payload columns.
-    ///
-    /// This is a lower-level reservation contract for bounded engines. It is
-    /// implemented in the cuDF layer by materializing non-empty projected
-    /// gather results, observing the bytes the table allocates, and releasing
-    /// the temporary result before returning. Empty gather maps return zero
-    /// without executing the gather. Callers should reserve the returned byte
-    /// count before performing the durable materialization.
-    ///
-    /// Unlike
-    /// [`hash_join_pre_build_reservation_size_bytes`](Self::hash_join_pre_build_reservation_size_bytes),
-    /// this contract executes the non-empty gather end-to-end and discards the
-    /// result. Its cost is comparable to
-    /// [`materialize_join_indices`](Self::materialize_join_indices) itself, so
-    /// reserve-then-materialize roughly doubles the gather work.
-    ///
-    /// This helper is deprecated in documentation only. It is retained for legacy
-    /// callers that need an exact post-gather allocation measurement. It is an
-    /// executable preflight. It does not compute a closed-form bound, and it can
-    /// allocate the full gather working set before the caller has reserved the
-    /// returned bytes. New bounded execution paths should prefer an explicit
-    /// closed-form reservation contract and then reconcile the observed retained
-    /// size after materialization.
-    pub fn materialize_join_indices_reservation_size_bytes<I, S>(
-        &self,
-        indices: &DataFrameJoinIndices,
-        columns: I,
-    ) -> Result<usize>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.df.materialize_join_indices_reservation_size_bytes_in_context(
-            indices,
-            columns,
-            self.ctx,
-            "dataframe::materialize_join_indices_reservation_size_bytes",
-        )
     }
 
     /// Build a reusable hash-join artifact.

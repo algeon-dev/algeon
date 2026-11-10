@@ -1590,8 +1590,7 @@ pub fn cudf::DataFramePreparedSort::into_parts(self) -> (cudf::DataFrame, cudf::
 pub fn cudf::DataFramePreparedSort::is_empty(&self) -> bool
 pub fn cudf::DataFramePreparedSort::materialize(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::DataFramePreparedSort::materialize_drop_consecutive_duplicates(self, cudf::frame::dataframe::DropDuplicatesOptions, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
-pub fn cudf::DataFramePreparedSort::materialize_with_budget(&self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::DataFrame>>
-pub fn cudf::DataFramePreparedSort::materialized_output_reservation_size_bytes(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFramePreparedSort::materialize_with_budget(self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::DataFrame>>
 pub fn cudf::DataFramePreparedSort::output_rows(&self) -> usize
 pub fn cudf::DataFramePreparedSort::retained_sorted_order_device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::DataFramePreparedSort::sorted_order(&self) -> &cudf::Series
@@ -1670,7 +1669,6 @@ pub fn cudf::FrameOps<'_>::left_join_indices(&self, &cudf::DataFrame, cudf::Data
 pub fn cudf::FrameOps<'_>::left_semi_join(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::FrameOps<'_>::left_semi_join_indices(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinIndices>
 pub fn cudf::FrameOps<'_>::materialize_join_indices<I, S>(&self, &cudf::DataFrameJoinIndices, I) -> cudf::core::error::Result<cudf::DataFrame> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
-pub fn cudf::FrameOps<'_>::materialize_join_indices_reservation_size_bytes<I, S>(&self, &cudf::DataFrameJoinIndices, I) -> cudf::core::error::Result<usize> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::FrameOps<'_>::merge(&self, &cudf::DataFrame, cudf::MergeOptions) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::FrameOps<'_>::merge_split(&self, &cudf::DataFrame, cudf::MergeOptions) -> cudf::core::error::Result<cudf::frame::dataframe::DataFrameJoinSides>
 pub fn cudf::FrameOps<'_>::mixed_full_join_indices(&self, &cudf::DataFrame, &cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
@@ -5207,8 +5205,7 @@ pub fn cudf::DataFramePreparedSort::into_parts(self) -> (cudf::DataFrame, cudf::
 pub fn cudf::DataFramePreparedSort::is_empty(&self) -> bool
 pub fn cudf::DataFramePreparedSort::materialize(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::DataFramePreparedSort::materialize_drop_consecutive_duplicates(self, cudf::frame::dataframe::DropDuplicatesOptions, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
-pub fn cudf::DataFramePreparedSort::materialize_with_budget(&self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::DataFrame>>
-pub fn cudf::DataFramePreparedSort::materialized_output_reservation_size_bytes(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFramePreparedSort::materialize_with_budget(self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::DataFrame>>
 pub fn cudf::DataFramePreparedSort::output_rows(&self) -> usize
 pub fn cudf::DataFramePreparedSort::retained_sorted_order_device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::DataFramePreparedSort::sorted_order(&self) -> &cudf::Series
@@ -5468,7 +5465,6 @@ pub fn cudf::FrameOps<'_>::left_join_indices(&self, &cudf::DataFrame, cudf::Data
 pub fn cudf::FrameOps<'_>::left_semi_join(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::FrameOps<'_>::left_semi_join_indices(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinIndices>
 pub fn cudf::FrameOps<'_>::materialize_join_indices<I, S>(&self, &cudf::DataFrameJoinIndices, I) -> cudf::core::error::Result<cudf::DataFrame> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
-pub fn cudf::FrameOps<'_>::materialize_join_indices_reservation_size_bytes<I, S>(&self, &cudf::DataFrameJoinIndices, I) -> cudf::core::error::Result<usize> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::FrameOps<'_>::merge(&self, &cudf::DataFrame, cudf::MergeOptions) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::FrameOps<'_>::merge_split(&self, &cudf::DataFrame, cudf::MergeOptions) -> cudf::core::error::Result<cudf::frame::dataframe::DataFrameJoinSides>
 pub fn cudf::FrameOps<'_>::mixed_full_join_indices(&self, &cudf::DataFrame, &cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
