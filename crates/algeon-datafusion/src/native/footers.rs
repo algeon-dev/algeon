@@ -8,11 +8,13 @@
 //! window share one parse per local file. Reads outside a scope parse
 //! independently.
 //!
-//! A remote object's footer comes from the planning session's DataFusion file
-//! metadata cache, which a `ListingTable` or table provider fills during its
-//! async `scan`. Physical optimizer rules run synchronously on the caller's
-//! Tokio worker, so planning never reads a remote footer from the store; an
-//! object missing from that cache has no footer here.
+//! A scope entered with the planning session's DataFusion file metadata cache
+//! looks up every footer there first. DataFusion fills that cache while it
+//! infers a table's schema and statistics, and a local footer parsed here is
+//! put back, so later queries of the session reuse it. Physical optimizer
+//! rules run synchronously on the caller's Tokio worker, so planning never
+//! reads a remote footer from the store; a remote object missing from that
+//! cache has no footer here.
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,8 +30,11 @@ use std::{
 
 use datafusion::{
     datasource::physical_plan::parquet::metadata::CachedParquetMetaData,
-    execution::{cache::cache_manager::FileMetadataCache, object_store::ObjectStoreUrl},
-    object_store::ObjectMeta,
+    execution::{
+        cache::cache_manager::{CachedFileMetadataEntry, FileMetadataCache},
+        object_store::ObjectStoreUrl,
+    },
+    object_store::{ObjectMeta, path::Path as ObjectStorePath},
 };
 use parquet::{
     errors::Result as ParquetResult,
@@ -63,9 +68,9 @@ pub(crate) fn footer_parses_on_this_thread() -> usize {
 pub(crate) struct FooterCache {
     state: Mutex<CacheState>,
     budget_bytes: usize,
-    /// The planning session's DataFusion file metadata cache, which serves
-    /// remote footers.
-    remote: Option<Arc<FileMetadataCache>>,
+    /// The planning session's DataFusion file metadata cache. It is the only
+    /// source of remote footers and keeps parsed local footers across scopes.
+    session: Option<Arc<FileMetadataCache>>,
     #[cfg(test)]
     parses: AtomicUsize,
 }
@@ -74,7 +79,7 @@ impl std::fmt::Debug for FooterCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FooterCache")
             .field("budget_bytes", &self.budget_bytes)
-            .field("remote", &self.remote.is_some())
+            .field("session", &self.session.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -93,29 +98,29 @@ struct FooterKey {
 }
 
 impl FooterCache {
-    /// A cache with the budget every planning scope retains. `remote` is the
+    /// A cache with the budget every planning scope retains. `session` is the
     /// planning session's file metadata cache; without it, remote objects
-    /// have no footer.
-    pub(crate) fn for_scope(remote: Option<Arc<FileMetadataCache>>) -> Self {
-        Self { remote, ..Self::new(FOOTER_CACHE_BUDGET_BYTES) }
+    /// have no footer and local footers last only as long as the scope.
+    pub(crate) fn for_scope(session: Option<Arc<FileMetadataCache>>) -> Self {
+        Self { session, ..Self::new(FOOTER_CACHE_BUDGET_BYTES) }
     }
 
     fn new(budget_bytes: usize) -> Self {
         Self {
             state: Mutex::new(CacheState::default()),
             budget_bytes,
-            remote: None,
+            session: None,
             #[cfg(test)]
             parses: AtomicUsize::new(0),
         }
     }
 
-    /// The cached footer of `object`. DataFusion keys the cache by the path
-    /// inside the store, without the bucket, and validates an entry by size
-    /// and modification time; an entry whose e_tag or version differs from
-    /// the object's is also refused.
-    fn remote_footer(&self, object: &ObjectMeta) -> Option<Arc<ParquetMetaData>> {
-        let entry = self.remote.as_ref()?.get(&object.location)?;
+    /// The session cache's footer of `object`. DataFusion keys the cache by
+    /// the path inside the store, without the bucket, and validates an entry
+    /// by size and modification time; an entry whose e_tag or version differs
+    /// from the object's is also refused.
+    fn session_footer(&self, object: &ObjectMeta) -> Option<Arc<ParquetMetaData>> {
+        let entry = self.session.as_ref()?.get(&object.location)?;
         let same_identity = |cached: &Option<String>, current: &Option<String>| match (cached, current) {
             (Some(cached), Some(current)) => cached == current,
             _ => true,
@@ -130,10 +135,24 @@ impl FooterCache {
         Some(Arc::clone(footer.parquet_metadata()))
     }
 
-    fn footer(&self, path: &Path) -> ParquetResult<Arc<ParquetMetaData>> {
+    /// The footer of the local file at `path`, which the store names
+    /// `location`. A cached footer is current only for the size and
+    /// modification time the file has on disk now, not the ones the scan
+    /// listed, because execution reads the file as it is now.
+    fn footer(&self, location: &ObjectStorePath, path: &Path) -> ParquetResult<Arc<ParquetMetaData>> {
         let file_metadata = fs::metadata(path)?;
-        let key =
-            FooterKey { path: path.to_path_buf(), size: file_metadata.len(), modified: file_metadata.modified()? };
+        let modified = file_metadata.modified()?;
+        let on_disk = ObjectMeta {
+            location: location.clone(),
+            last_modified: modified.into(),
+            size: file_metadata.len(),
+            e_tag: None,
+            version: None,
+        };
+        if let Some(footer) = self.session_footer(&on_disk) {
+            return Ok(footer);
+        }
+        let key = FooterKey { path: path.to_path_buf(), size: file_metadata.len(), modified };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(footer) = state.footers.get(&key) {
             return Ok(Arc::clone(footer));
@@ -145,6 +164,14 @@ impl FooterCache {
         if state.retained_bytes.saturating_add(footer_bytes) <= self.budget_bytes {
             state.retained_bytes += footer_bytes;
             state.footers.insert(key, Arc::clone(&footer));
+        }
+        // DataFusion rejects an entry larger than its cache limit; the scope
+        // map above still shares such a footer within this scope.
+        if let Some(session) = &self.session {
+            session.put(
+                location,
+                CachedFileMetadataEntry::new(on_disk, Arc::new(CachedParquetMetaData::new(Arc::clone(&footer)))),
+            );
         }
         Ok(footer)
     }
@@ -208,15 +235,6 @@ impl Drop for FooterScope {
     }
 }
 
-/// Returns the footer of the local Parquet file at `path`, parsed at most once
-/// per active [`FooterScope`].
-pub(crate) fn parquet_footer(path: &Path) -> ParquetResult<Arc<ParquetMetaData>> {
-    match ACTIVE_CACHE.with_borrow(Clone::clone) {
-        Some(cache) => cache.footer(path),
-        None => parse_footer(path).map(Arc::new),
-    }
-}
-
 /// Why planning has no footer for a scan object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FooterUnavailable {
@@ -228,20 +246,24 @@ pub(crate) enum FooterUnavailable {
 }
 
 /// Returns the footer of the Parquet object `object` in the store at
-/// `object_store_url`: a `file://` object is parsed from the local file, any
-/// other object is read from the active scope's remote cache.
+/// `object_store_url`. Both kinds of object are looked up in the active
+/// scope's session cache first. A `file://` object missing there is parsed
+/// from the local file, at most once per active [`FooterScope`]; any other
+/// object has no footer.
 pub(crate) fn object_parquet_footer(
     object_store_url: &ObjectStoreUrl,
     object: &ObjectMeta,
 ) -> Result<Arc<ParquetMetaData>, FooterUnavailable> {
+    let cache = ACTIVE_CACHE.with_borrow(Clone::clone);
     if object_store_url.as_str().starts_with("file://") {
         let path = local_object_path_to_filesystem(object.location.as_ref());
-        return parquet_footer(path.as_path()).map_err(|_error| FooterUnavailable::Local);
+        let footer = match cache {
+            Some(cache) => cache.footer(&object.location, &path),
+            None => parse_footer(&path).map(Arc::new),
+        };
+        return footer.map_err(|_error| FooterUnavailable::Local);
     }
-    ACTIVE_CACHE
-        .with_borrow(Clone::clone)
-        .and_then(|cache| cache.remote_footer(object))
-        .ok_or(FooterUnavailable::RemoteNotCached)
+    cache.and_then(|cache| cache.session_footer(object)).ok_or(FooterUnavailable::RemoteNotCached)
 }
 
 #[cfg(test)]
@@ -265,6 +287,10 @@ mod tests {
         writer.close().unwrap();
     }
 
+    fn location(path: &Path) -> ObjectStorePath {
+        ObjectStorePath::from(path.to_str().unwrap())
+    }
+
     #[test]
     fn rewritten_file_is_parsed_again() {
         let dir = tempfile::tempdir().unwrap();
@@ -272,10 +298,10 @@ mod tests {
         write_parquet(&path, 4);
         let cache = FooterCache::new(usize::MAX);
 
-        assert_eq!(cache.footer(&path).unwrap().num_row_groups(), 2);
+        assert_eq!(cache.footer(&location(&path), &path).unwrap().num_row_groups(), 2);
         write_parquet(&path, 8);
 
-        assert_eq!(cache.footer(&path).unwrap().num_row_groups(), 4);
+        assert_eq!(cache.footer(&location(&path), &path).unwrap().num_row_groups(), 4);
         assert_eq!(cache.parses(), 2);
     }
 
@@ -288,12 +314,39 @@ mod tests {
         let unretained = FooterCache::new(0);
 
         for _ in 0..2 {
-            retained.footer(&path).unwrap();
-            unretained.footer(&path).unwrap();
+            retained.footer(&location(&path), &path).unwrap();
+            unretained.footer(&location(&path), &path).unwrap();
         }
 
         assert_eq!(retained.parses(), 1);
         assert_eq!(unretained.parses(), 2);
+    }
+
+    #[tokio::test]
+    async fn local_footers_outlive_the_scope_in_the_session_cache_until_the_file_changes() {
+        use datafusion::{
+            execution::runtime_env::RuntimeEnv,
+            object_store::{ObjectStoreExt, local::LocalFileSystem},
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.parquet");
+        write_parquet(&path, 4);
+        let store = LocalFileSystem::new();
+        let local = ObjectStoreUrl::local_filesystem();
+        let session_cache = RuntimeEnv::default().cache_manager.get_file_metadata_cache();
+        let row_groups_in_new_scope = |object: &ObjectMeta| {
+            let scope = FooterScope::join(Arc::new(FooterCache::for_scope(Some(Arc::clone(&session_cache)))));
+            (object_parquet_footer(&local, object).unwrap().num_row_groups(), scope.parses())
+        };
+
+        let object = store.head(&location(&path)).await.unwrap();
+        assert_eq!(row_groups_in_new_scope(&object), (2, 1));
+        assert_eq!(row_groups_in_new_scope(&object), (2, 0), "a later scope of the session must not parse again");
+
+        write_parquet(&path, 8);
+        let rewritten = store.head(&location(&path)).await.unwrap();
+        assert_eq!(row_groups_in_new_scope(&rewritten), (4, 1), "a rewritten file must be parsed again");
     }
 
     #[tokio::test]

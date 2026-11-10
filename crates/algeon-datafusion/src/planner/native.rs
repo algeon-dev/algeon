@@ -332,7 +332,7 @@ impl AlgeonNativePhysicalOptimizerRule {
     ) -> DataFusionResult<(Arc<dyn ExecutionPlan>, Option<NativePlanningDiagnostics>)> {
         let invocation = Invocation::detached();
         if let Some(outer) = Invocation::of_options(options) {
-            invocation.share_remote_footers(outer);
+            invocation.share_session_footers(outer);
         }
         let mut options = options.clone();
         options.extensions.insert(invocation.clone());
@@ -888,8 +888,8 @@ fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
 mod tests {
     use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
     #[cfg(feature = "cugraph")]
-    use datafusion::physical_plan::coop::CooperativeExec;
-    use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
+    use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
+    use datafusion::physical_plan::{coop::CooperativeExec, empty::EmptyExec, union::UnionExec};
     #[cfg(feature = "cugraph")]
     use query_planning::source::GpuResidentSource;
     use query_planning::{
@@ -1181,11 +1181,11 @@ mod tests {
         );
     }
 
-    /// The count-only probe and the final rewrite of one planning pass share
-    /// the invocation's footers, so a query that both stages lower parses each
-    /// file's footer once.
-    #[tokio::test]
-    async fn one_planning_pass_parses_each_footer_once_across_optimizer_stages() {
+    /// Footers parsed while planning `SELECT SUM(value)` over a registered
+    /// local Parquet file `passes` times on one session built over `runtime_env`.
+    /// The count-only probe lowers the source before it declines the aggregate,
+    /// and the final rewrite lowers it again.
+    async fn footer_parses_planning_sum(runtime_env: Arc<RuntimeEnv>, passes: usize) -> usize {
         use arrow::{array::Int64Array, record_batch::RecordBatch};
         use datafusion::{
             execution::SessionStateBuilder,
@@ -1204,18 +1204,35 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
         let state = SessionStateBuilder::new_with_default_features()
+            .with_runtime_env(runtime_env)
             .with_algeon_native(AlgeonNativeOptimizerConfig::default())
             .build();
         let ctx = SessionContext::new_with_state(state);
         ctx.register_parquet("vals", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-        // The probe lowers the source before it declines a non-count aggregate,
-        // and the final rewrite lowers it again.
-        let logical = ctx.state().create_logical_plan("SELECT SUM(value) FROM vals").await.unwrap();
 
         let parses_before = footer_parses_on_this_thread();
-        let (plan, _) = plan_with_native_diagnostics(&ctx.state(), &logical).await.unwrap();
+        for _ in 0..passes {
+            let logical = ctx.state().create_logical_plan("SELECT SUM(value) FROM vals").await.unwrap();
+            let (plan, _) = plan_with_native_diagnostics(&ctx.state(), &logical).await.unwrap();
+            assert!(plan_contains_gpu_execution(plan.as_ref()), "the final rewrite lowers the aggregate");
+        }
+        footer_parses_on_this_thread() - parses_before
+    }
 
-        assert!(plan_contains_gpu_execution(plan.as_ref()), "the final rewrite lowers the aggregate");
-        assert_eq!(footer_parses_on_this_thread() - parses_before, 1);
+    /// The count-only probe and the final rewrite of one planning pass share
+    /// the invocation's footers. A session cache too small to hold the footer
+    /// leaves that sharing as the only reuse.
+    #[tokio::test]
+    async fn one_planning_pass_parses_each_footer_once_across_optimizer_stages() {
+        let runtime_env = RuntimeEnvBuilder::new().with_metadata_cache_limit(0).build_arc().unwrap();
+
+        assert_eq!(footer_parses_planning_sum(runtime_env, 1).await, 1);
+    }
+
+    /// DataFusion caches a registered table's footers while it infers the
+    /// schema, so planning that table on the same session parses none.
+    #[tokio::test]
+    async fn planning_reads_local_footers_from_the_session_cache() {
+        assert_eq!(footer_parses_planning_sum(Arc::new(RuntimeEnv::default()), 2).await, 0);
     }
 }

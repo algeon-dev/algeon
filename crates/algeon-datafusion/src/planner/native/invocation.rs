@@ -56,8 +56,8 @@ struct InvocationState {
     // footer once without keeping footers alive while the plan executes.
     footers: Mutex<Option<Arc<FooterCache>>>,
     // The file metadata cache of the runtime this invocation was last
-    // installed with. Planning reads remote footers from it.
-    remote_footers: Mutex<Option<Arc<FileMetadataCache>>>,
+    // installed with. Planning looks up every footer there first.
+    session_footers: Mutex<Option<Arc<FileMetadataCache>>>,
 }
 
 impl std::fmt::Debug for InvocationState {
@@ -102,7 +102,7 @@ impl Invocation {
             execution: Mutex::new(None),
             planning: Mutex::new(Vec::new()),
             footers: Mutex::new(None),
-            remote_footers: Mutex::new(None),
+            session_footers: Mutex::new(None),
         }))
     }
 
@@ -118,19 +118,19 @@ impl Invocation {
     }
 
     /// Makes this invocation the one that `config` plans and executes under,
-    /// replacing any invocation the config already carried. Planning reads
-    /// remote footers from the file metadata cache of `runtime_env`, the
-    /// runtime the session plans with.
+    /// replacing any invocation the config already carried. Planning looks up
+    /// footers in the file metadata cache of `runtime_env`, the runtime the
+    /// session plans with.
     pub(crate) fn install(&self, config: &mut SessionConfig, runtime_env: &RuntimeEnv) {
-        *self.0.remote_footers.lock().unwrap_or_else(PoisonError::into_inner) =
+        *self.0.session_footers.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(runtime_env.cache_manager.get_file_metadata_cache());
         config.options_mut().extensions.insert(self.clone());
     }
 
-    /// Makes `self` read remote footers from the same cache as `other`.
-    pub(crate) fn share_remote_footers(&self, other: &Self) {
-        let remote = other.0.remote_footers.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        *self.0.remote_footers.lock().unwrap_or_else(PoisonError::into_inner) = remote;
+    /// Makes `self` look up footers in the same session cache as `other`.
+    pub(crate) fn share_session_footers(&self, other: &Self) {
+        let session = other.0.session_footers.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        *self.0.session_footers.lock().unwrap_or_else(PoisonError::into_inner) = session;
     }
 
     /// The attempt this invocation belongs to, if any.
@@ -186,8 +186,8 @@ impl Invocation {
     pub(crate) fn footer_scope(&self) -> FooterScope {
         let cache =
             Arc::clone(self.0.footers.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(|| {
-                let remote = self.0.remote_footers.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                Arc::new(FooterCache::for_scope(remote))
+                let session = self.0.session_footers.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                Arc::new(FooterCache::for_scope(session))
             }));
         FooterScope::join(cache)
     }
