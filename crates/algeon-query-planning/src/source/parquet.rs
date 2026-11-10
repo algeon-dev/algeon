@@ -814,11 +814,12 @@ impl fmt::Debug for LocalParquetFile {
 }
 
 impl LocalParquetFile {
-    /// Clears the byte estimates that depend on the source's column roles, so
-    /// a rewrite that changes which columns are read or projected never keeps
-    /// figures measured for the old columns. The engine reloads them from the
-    /// footer.
+    /// Clears the byte estimates that depend on the source's read or
+    /// projected columns, so a rewrite that changes those columns never keeps
+    /// figures measured for the old ones. The engine reloads them from the
+    /// footer during chunk planning.
     pub(crate) fn clear_column_byte_estimates(&mut self) {
+        self.row_group_bytes = None;
         self.projected_row_group_compressed_bytes = None;
         self.projected_row_group_uncompressed_bytes = None;
         self.pure_filter_row_group_compressed_bytes = None;

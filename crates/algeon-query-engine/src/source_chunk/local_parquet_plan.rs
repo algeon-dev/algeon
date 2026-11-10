@@ -8,6 +8,7 @@ use query_planning::{
         assembly::{
             append_row_group_chunks, planned_row_groups, single_all_row_groups_chunk, zero_column_count_identity_chunk,
         },
+        row_group::RowGroupMetadata,
         scan_limit::apply_source_scan_limit_to_chunks,
     },
     error::{QueryError, QueryErrorCode, Result},
@@ -95,33 +96,61 @@ pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     metadata_cache: &mut SourceMetadataCache,
     metadata_load_context: Option<&ExecutionContext>,
 ) -> Result<SourceChunkPlan> {
-    validate_chunk_planning_source(source)?;
-    validate_chunk_planning_policy(policy)?;
+    plan_local_parquet_source_chunks_with_derived_policy(
+        source_node_id,
+        source,
+        |_| policy,
+        metadata_cache,
+        metadata_load_context,
+    )
+    .map(|(plan, _policy)| plan)
+}
 
-    let sizing = rapids_source_read_sizing();
-    let mut chunks = Vec::new();
-    let mut saw_metadata = false;
-    let mut saw_missing_metadata = false;
-    let mut metadata_unavailable_files = 0;
+/// Plans chunks with a policy derived from the row-group metadata that sizes
+/// them, and returns that policy with the plan.
+///
+/// `derive_policy` receives one slot per `source.files` entry, merged from the
+/// source's own estimates and any footer loaded here, so throughput admission
+/// and chunk sizing read the same figures from one footer load. A `None` slot
+/// means no row-group metadata is available for that file.
+pub(crate) fn plan_local_parquet_source_chunks_with_derived_policy(
+    source_node_id: NodeId,
+    source: &LocalParquetSource,
+    derive_policy: impl FnOnce(&[Option<RowGroupMetadata>]) -> SourceChunkPlanningPolicy,
+    metadata_cache: &mut SourceMetadataCache,
+    metadata_load_context: Option<&ExecutionContext>,
+) -> Result<(SourceChunkPlan, SourceChunkPlanningPolicy)> {
+    validate_chunk_planning_source(source)?;
+
     let mut metadata_load_time = Duration::ZERO;
     let mut metadata_load_count = 0u64;
     let metadata_prefetch = metadata_cache.prefetch_footer_metadata_for_source(source, metadata_load_context)?;
     metadata_load_time += metadata_prefetch.load_time;
     metadata_load_count = metadata_load_count.saturating_add(metadata_prefetch.load_count);
 
-    for (file_index, file) in source.files.iter().enumerate() {
+    let mut file_metadata = Vec::with_capacity(source.files.len());
+    let mut file_reader_decimal_types = Vec::with_capacity(source.files.len());
+    for file in &source.files {
         let metadata_load = read_parquet_metadata(source, file, metadata_cache, metadata_load_context)?;
         metadata_load_time += metadata_load.load_time;
         metadata_load_count = metadata_load_count.saturating_add(metadata_load.load_count);
-        let reader_decimal_types = metadata_load.reader_decimal_types;
-        let reader_decimal_types_footer_verified = metadata_load.reader_decimal_types_footer_verified;
-        let metadata = metadata_load.metadata;
-        saw_metadata |= metadata.is_some();
-        if metadata.is_none() {
-            saw_missing_metadata = true;
-            metadata_unavailable_files += 1;
-        }
+        file_metadata.push(metadata_load.metadata);
+        file_reader_decimal_types
+            .push((metadata_load.reader_decimal_types, metadata_load.reader_decimal_types_footer_verified));
+    }
 
+    let policy = derive_policy(&file_metadata);
+    validate_chunk_planning_policy(policy)?;
+
+    let sizing = rapids_source_read_sizing();
+    let mut chunks = Vec::new();
+    let saw_metadata = file_metadata.iter().any(Option::is_some);
+    let metadata_unavailable_files = file_metadata.iter().filter(|metadata| metadata.is_none()).count();
+    let saw_missing_metadata = metadata_unavailable_files > 0;
+
+    for (file_index, ((file, metadata), (reader_decimal_types, reader_decimal_types_footer_verified))) in
+        source.files.iter().zip(&file_metadata).zip(&file_reader_decimal_types).enumerate()
+    {
         let row_groups = planned_row_groups(file, file_index, metadata.as_ref())?;
         let Some(row_groups) = row_groups else {
             chunks.push(single_all_row_groups_chunk(
@@ -131,8 +160,8 @@ pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
                 file_index,
                 chunks.len(),
                 policy,
-                &reader_decimal_types,
-                reader_decimal_types_footer_verified,
+                reader_decimal_types,
+                *reader_decimal_types_footer_verified,
                 sizing,
             ));
             continue;
@@ -146,8 +175,8 @@ pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
             &row_groups,
             metadata.as_ref(),
             policy,
-            &reader_decimal_types,
-            reader_decimal_types_footer_verified,
+            reader_decimal_types,
+            *reader_decimal_types_footer_verified,
             sizing,
             &mut chunks,
         )?;
@@ -191,7 +220,7 @@ pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
         .with_fact("chunk_index", chunk.chunk_index));
     }
 
-    Ok(SourceChunkPlan {
+    let plan = SourceChunkPlan {
         chunks,
         source_node_id,
         row_group_metadata_available: saw_metadata && !saw_missing_metadata,
@@ -199,7 +228,8 @@ pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
         metadata_unavailable_files,
         metadata_load_time,
         metadata_load_count,
-    })
+    };
+    Ok((plan, policy))
 }
 
 fn validate_chunk_planning_policy(policy: SourceChunkPlanningPolicy) -> Result<()> {

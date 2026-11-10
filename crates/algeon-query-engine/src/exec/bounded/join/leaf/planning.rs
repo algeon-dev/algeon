@@ -1,21 +1,24 @@
 //! Chunk planning for a deferred Parquet leaf stream.
 //!
 //! Each constructor validates the source, derives the chunk planning policy from the
-//! memory-control policy, planning mode and a `SourceTaskMemoryModel` for the consumer, and
-//! plans chunks. Planning may load Parquet footers on the calling thread. The stream starts
+//! memory-control policy, planning mode, a `SourceTaskMemoryModel` for the consumer and the
+//! row-group metadata that sizes the chunks, and plans chunks. Planning may load Parquet
+//! footers on the calling thread. The stream starts
 //! with no stages or dynamic filters; later builders add them. The aggregate variants also
 //! cap chunk sizes from the aggregate input hints. Every planned chunk is counted in the
 //! source metrics, and the retry limits of the context are copied into the stream.
 
-use query_planning::pipeline::AggregateInputHints;
+use query_planning::{chunk::row_group::RowGroupMetadata, pipeline::AggregateInputHints};
 
 use super::{
     BoundedJoinLeafLocalParquetSourceStream, ExecutionContext, ExecutionMetrics, LocalParquetSource, NodeId, Result,
     SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_join_leaf_source_chunk_batching_reasons,
-    apply_source_adjacent_aggregate_chunk_caps, plan_local_parquet_source_chunks_with_execution_context,
-    record_bounded_parquet_source_metrics, validate_local_parquet_source,
+    apply_source_adjacent_aggregate_chunk_caps, record_bounded_parquet_source_metrics, validate_local_parquet_source,
 };
-use crate::{exec::retry::RetryLimits, rapids_backend::rapids_analysis_context};
+use crate::{
+    chunk::plan_local_parquet_source_chunks_with_derived_policy, exec::retry::RetryLimits,
+    rapids_backend::rapids_analysis_context, source_chunk::SourceMetadataCache,
+};
 
 pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stream(
     context: &ExecutionContext,
@@ -95,12 +98,20 @@ fn plan_bounded_local_parquet_source_stream(
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     validate_local_parquet_source(source, rapids_analysis_context(context.planning_policy()))?;
-    let mut planning_policy = local_parquet_source_stream_chunk_planning_policy(context, source, memory_model);
-    if let Some(chunk_cap_hints) = chunk_cap_hints {
-        planning_policy = apply_source_adjacent_aggregate_chunk_caps(planning_policy, chunk_cap_hints);
-    }
-    let mut chunk_plan =
-        plan_local_parquet_source_chunks_with_execution_context(node_id, source, planning_policy, context)?;
+    let (mut chunk_plan, planning_policy) = plan_local_parquet_source_chunks_with_derived_policy(
+        node_id,
+        source,
+        |file_metadata| {
+            let policy =
+                local_parquet_source_stream_chunk_planning_policy(context, source, file_metadata, memory_model);
+            match chunk_cap_hints {
+                Some(chunk_cap_hints) => apply_source_adjacent_aggregate_chunk_caps(policy, chunk_cap_hints),
+                None => policy,
+            }
+        },
+        &mut SourceMetadataCache::default(),
+        Some(context),
+    )?;
     annotate_join_leaf_source_chunk_batching_reasons(
         source,
         &mut chunk_plan.chunks,
@@ -123,13 +134,15 @@ fn plan_bounded_local_parquet_source_stream(
     })
 }
 
-pub(super) fn local_parquet_source_stream_chunk_planning_policy(
+fn local_parquet_source_stream_chunk_planning_policy(
     context: &ExecutionContext,
     source: &LocalParquetSource,
+    file_metadata: &[Option<RowGroupMetadata>],
     memory_model: SourceTaskMemoryModel,
 ) -> SourceChunkPlanningPolicy {
     SourceChunkPlanningPolicy::for_source_task_with_mode_and_options(
         source,
+        file_metadata,
         context.memory_control_policy(),
         memory_model,
         context.source_chunk_planning_mode(),

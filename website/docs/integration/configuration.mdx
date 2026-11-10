@@ -264,7 +264,7 @@ commit and enabled features.
   its encoded size.
 - `parquet_throughput` lets one chunk of a Parquet file hold up to 1,024 row
   groups within the target when `max_row_groups_per_chunk` is `1`. It applies
-  to local files and to `s3://` objects whose footers planning read, and needs
+  to local files and to `s3://` objects whose footers chunk planning reads, and needs
   no remote-specific setting: on a g7e.8xlarge reading same-region S3, a `SUM` over the 17.2 GB
   TPC-DS SF100 `store_sales` file takes 1.1 s against 270 s with one row group
   per chunk. A chunk never spans files, so a table of many small remote files
