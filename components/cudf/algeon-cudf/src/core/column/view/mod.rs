@@ -390,28 +390,59 @@ impl<'a> ColumnView<'a> {
             return self.to_raw_bytes()?.into_iter().map(|raw| materialize_bool(raw, "column_view::to_vec")).collect();
         }
 
-        let size = self.len()?;
-        // SAFETY: `CudfType` is sealed to built-in primitives with valid
-        // all-zero bit patterns.
-        let mut buf = vec![unsafe { std::mem::zeroed::<T>() }; size];
-        let buf_size = size * std::mem::size_of::<T>();
+        // SAFETY: `CudfType` is sealed to built-in primitives; apart from
+        // `bool`, handled above, every bit pattern of each is a valid value.
+        unsafe { self.to_fixed_width_host_vec::<T>("column_view::to_vec") }
+    }
 
-        self.synchronize_host_visibility("column_view::to_vec")?;
+    /// Copy the active range of a fixed-width view to a host `Vec<T>` whose
+    /// element size equals the column's element size.
+    ///
+    /// # Safety
+    ///
+    /// Every bit pattern of `size_of::<T>()` bytes must be a valid `T`. The
+    /// device bytes are not inspected, so the column may hold any value.
+    pub(crate) unsafe fn to_fixed_width_host_vec<T: Copy>(&self, operation: &'static str) -> Result<Vec<T>> {
+        let dt = self.data_type()?;
+        let elem_size = dt.id().size_in_bytes()?.and_then(|size| usize::try_from(size).ok());
+        if elem_size != Some(std::mem::size_of::<T>()) {
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                operation,
+                "column element size does not match the host element size",
+            )
+            .with_fact(FACT_TYPE_ID, dt.id())
+            .with_detail("host_element_size", std::mem::size_of::<T>().to_string()));
+        }
 
-        // SAFETY: buf is a valid mutable buffer of buf_size bytes. self.handle is
-        // valid. Type was checked above to match T::TYPE_ID.
+        let len = self.len()?;
+        let buf_size = len.checked_mul(std::mem::size_of::<T>()).ok_or_else(|| {
+            fixed_width_host_byte_range_overflow_error(operation, len, std::mem::size_of::<T>(), dt.id())
+        })?;
+        let mut buf = Vec::<T>::with_capacity(len);
+
+        self.synchronize_host_visibility(operation)?;
+
         let exec_options = self.domain.enter_execution()?;
+        // SAFETY: buf owns capacity for `len` elements, `buf_size` bytes, and
+        // the native copy writes exactly `len` elements of the checked element
+        // size. self.handle is valid.
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_to_host_ex(
                     self.handle.as_ptr(),
-                    buf.as_mut_ptr() as *mut c_void,
+                    buf.as_mut_ptr().cast::<c_void>(),
                     buf_size,
                     exec_options.options(),
                 )
             },
-            "column_view::to_vec",
+            operation,
         )?;
+        // SAFETY: on success the native copy has written all `len` elements
+        // and synchronized its stream (host-copy completion rule in
+        // algeon-cudf-sys/SAFETY.md); the caller guarantees those bytes are
+        // valid `T` values.
+        unsafe { buf.set_len(len) };
 
         Ok(buf)
     }
@@ -644,7 +675,7 @@ impl<'a> ColumnView<'a> {
         }
     }
 
-    fn to_strings_host_raw(&self, operation: &'static str) -> Result<Vec<String>> {
+    pub(crate) fn to_strings_host_raw(&self, operation: &'static str) -> Result<Vec<String>> {
         let dt = self.data_type()?;
         if dt.id() != TypeId::String {
             return Err(Error::new_with(ErrorCode::TypeMismatch, operation, "column type is not STRING")

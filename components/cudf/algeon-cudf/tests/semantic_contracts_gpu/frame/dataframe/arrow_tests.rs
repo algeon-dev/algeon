@@ -847,6 +847,64 @@ fn test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract() {
     assert_eq!(amount.values().as_ref(), &[12345000i128, 0, -678000]);
 }
 
+fn decimal_sources_frame(values: [i64; 3], validity: [bool; 3]) -> DataFrame {
+    let nulls = NullBuffer::from(validity.to_vec());
+    let decimal32 = Decimal32Array::new(ScalarBuffer::from(values.map(|v| v as i32).to_vec()), Some(nulls.clone()))
+        .with_precision_and_scale(9, 2)
+        .unwrap();
+    let decimal64 = Decimal64Array::new(ScalarBuffer::from(values.to_vec()), Some(nulls.clone()))
+        .with_precision_and_scale(18, 2)
+        .unwrap();
+    let decimal128 = Decimal128Array::new(ScalarBuffer::from(values.map(i128::from).to_vec()), Some(nulls))
+        .with_precision_and_scale(38, 2)
+        .unwrap();
+    let schema = Schema::new(vec![
+        Field::new("d32", ArrowDataType::Decimal32(9, 2), true),
+        Field::new("d64", ArrowDataType::Decimal64(18, 2), true),
+        Field::new("d128", ArrowDataType::Decimal128(38, 2), true),
+    ]);
+    let batch =
+        RecordBatch::try_new(Arc::new(schema), vec![Arc::new(decimal32), Arc::new(decimal64), Arc::new(decimal128)])
+            .unwrap();
+    import_record_batch(&batch).unwrap()
+}
+
+fn decimal128_contract_schema(precision: u8) -> Arc<Schema> {
+    Arc::new(Schema::new(
+        ["d32", "d64", "d128"].map(|name| Field::new(name, ArrowDataType::Decimal128(precision, 2), true)).to_vec(),
+    ))
+}
+
+fn test_decimal_schema_contract_checks_valid_rows_against_the_stored_precision() {
+    // A null slot holding 10^5 is not a value and must not be checked.
+    let frame = decimal_sources_frame([99_999, -99_999, 100_000], [true, true, false]);
+    let schema = decimal128_contract_schema(5);
+    let batch = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
+    assert_eq!(batch.schema(), schema);
+    for column in batch.columns() {
+        let values = column.as_primitive::<Decimal128Type>();
+        assert_eq!(values.iter().collect::<Vec<_>>(), vec![Some(99_999), Some(-99_999), None]);
+    }
+
+    // A valid row of 10^5 is rejected instead of being exported as null under
+    // Decimal128 or left unchecked under the narrow field types.
+    for (name, data_type) in [
+        ("d32", ArrowDataType::Decimal128(5, 2)),
+        ("d64", ArrowDataType::Decimal128(5, 2)),
+        ("d128", ArrowDataType::Decimal128(5, 2)),
+        ("d32", ArrowDataType::Decimal32(5, 2)),
+        ("d64", ArrowDataType::Decimal64(5, 2)),
+    ] {
+        let frame = decimal_sources_frame([1, -100_000, 2], [true, true, true]);
+        let frame = frame.select([name]).unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(name, data_type, true)]));
+        let error = GpuRecordBatch::new(frame, schema).unwrap().to_host_record_batch().unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ValueOutOfRange, "{name}");
+        assert_eq!(error_context_value(&error, "reason").as_deref(), Some("decimal_precision_overflow"), "{name}");
+        assert_eq!(error_context_value(&error, "row").as_deref(), Some("1"), "{name}");
+    }
+}
+
 fn test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export() {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "event_ts",
@@ -2263,6 +2321,10 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "arrow_tests::test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract",
         test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract,
+    ),
+    (
+        "arrow_tests::test_decimal_schema_contract_checks_valid_rows_against_the_stored_precision",
+        test_decimal_schema_contract_checks_valid_rows_against_the_stored_precision,
     ),
     (
         "arrow_tests::test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export",

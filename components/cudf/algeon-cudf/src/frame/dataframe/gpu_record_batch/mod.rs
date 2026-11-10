@@ -406,11 +406,12 @@ impl GpuRecordBatch {
 
     /// Materialize this GPU batch as a host Arrow RecordBatch.
     ///
-    /// This delegates to [`DataFrame::to_record_batch`] for the device-to-host
-    /// copy, then attaches this batch's stored Arrow schema contract. When
-    /// cudf's host export type is a supported physical equivalent of the
-    /// stored Arrow field type, the host array is cast before the final
-    /// `RecordBatch` is built.
+    /// Decimal fields are exported directly at the stored precision and scale;
+    /// a valid row whose magnitude does not fit the stored precision returns
+    /// [`ErrorCode::ValueOutOfRange`](crate::ErrorCode::ValueOutOfRange). When
+    /// cudf's host export type of another column is a supported physical
+    /// equivalent of the stored Arrow field type, the host array is converted
+    /// before the final `RecordBatch` is built.
     pub fn to_host_record_batch(&self) -> Result<RecordBatch> {
         let batch = self.frame.to_record_batch_with_arrow_schema(&self.mapped_schema)?;
         record_batch_with_schema_contract(batch, &self.schema)

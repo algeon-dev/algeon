@@ -109,7 +109,10 @@ default, `cudaDeviceScheduleAuto`, the waiting thread spins on its CPU core
 while the process has no more active CUDA contexts than logical processors,
 and yields to other threads otherwise.
 
-Once `cudaStreamSynchronize` returns, the worker wraps the host buffers into
-Arrow arrays without another copy. The last chunk ends the result stream,
+Once `cudaStreamSynchronize` returns, the worker hands fixed-width values and
+packed null masks to Arrow arrays without another copy. Boolean values are
+packed to bits, Decimal32 and Decimal64 columns are widened when the schema
+asks for Decimal128, and string columns are rebuilt row by row. The last chunk
+ends the result stream,
 and the attempt [releases its grant](./admission.mdx#resident-handoff-and-release)
 once no fragment is running.

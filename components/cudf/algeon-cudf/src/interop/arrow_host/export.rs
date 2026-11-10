@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use arrow::{
     array::{Array, BooleanArray, Decimal128Array, ListArray, PrimitiveArray, StringBuilder},
-    buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer},
+    buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{
         ArrowNativeType, ArrowPrimitiveType, DataType as ArrowDataType, Date32Type, Decimal32Type, Decimal64Type,
-        DecimalType, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType, DurationSecondType,
-        Field, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType,
+        Decimal128Type, DecimalType, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType,
+        DurationSecondType, Field, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+        TimestampSecondType,
     },
     error::ArrowError,
 };
@@ -74,6 +75,12 @@ pub(super) fn column_view_to_arrow_with_requested_type(
         (TypeId::Decimal64, Some(ArrowDataType::Decimal64(precision, scale))) => {
             decimal_to_arrow::<i64, Decimal64Type>(cv, dtype, *precision, *scale)
         },
+        (
+            TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128,
+            Some(ArrowDataType::Decimal128(precision, scale)),
+        ) if dtype.scale() == arrow_decimal_scale_to_cudf_scale(*scale) => {
+            decimal128_to_arrow_with_precision(cv, dtype, *precision, *scale)
+        },
         _ => column_view_to_arrow(cv, dtype),
     }
 }
@@ -111,59 +118,45 @@ pub(super) fn map_arrow_ffi_export_error(operation: &'static str, error: ArrowEr
     .with_source(error)
 }
 
-fn numeric_to_arrow<T>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
-where T: ArrowPrimitiveMapping {
-    let data: Vec<T> = cv.to_vec()?;
-    let validity = cv.to_host_validity()?;
-
-    match validity {
-        None => {
-            let arr = PrimitiveArray::<T::ArrowPrimitive>::from_iter_values(data);
-            Ok(Arc::new(arr))
-        },
-        Some(mask) => {
-            let null_buffer = NullBuffer::from(mask);
-            let buffer = ScalarBuffer::from(data);
-            let arr = PrimitiveArray::<T::ArrowPrimitive>::try_new(buffer, Some(null_buffer))
-                .map_err(map_numeric_to_arrow_error)?;
-            Ok(Arc::new(arr))
-        },
-    }
+/// Arrow null buffer for the active range of `cv`, or `None` when the view has
+/// no null mask or no null row.
+///
+/// cuDF and Arrow both pack validity least-significant-bit first, and the host
+/// copy starts the active range at bit 0, so the bytes become the Arrow buffer
+/// without unpacking.
+fn host_null_buffer(cv: &ColumnView<'_>) -> Result<Option<NullBuffer>> {
+    let Some(mask) = cv.to_host_null_mask_bytes()? else {
+        return Ok(None);
+    };
+    let nulls = NullBuffer::new(BooleanBuffer::new(Buffer::from_vec(mask), 0, cv.len()?));
+    Ok((nulls.null_count() > 0).then_some(nulls))
 }
 
-fn bytes_to_native_vec<T: Copy + Default>(bytes: &[u8]) -> Vec<T> {
-    let elem_size = std::mem::size_of::<T>();
-    assert_eq!(bytes.len() % elem_size, 0);
-    let len = bytes.len() / elem_size;
-    let mut out = vec![T::default(); len];
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr().cast::<u8>(), bytes.len());
-    }
-    out
+fn numeric_to_arrow<T>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
+where T: ArrowPrimitiveMapping {
+    let values = ScalarBuffer::from(cv.to_vec::<T>()?);
+    let arr = PrimitiveArray::<T::ArrowPrimitive>::try_new(values, host_null_buffer(cv)?)
+        .map_err(map_numeric_to_arrow_error)?;
+    Ok(Arc::new(arr))
 }
 
 pub(super) fn native_slice_as_bytes<T>(values: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values)) }
 }
 
-fn fixed_width_host_values<T: Copy + Default>(cv: &ColumnView<'_>) -> Result<Vec<T>> {
-    cv.to_fixed_width_host_bytes().map(|bytes| bytes_to_native_vec::<T>(&bytes))
+fn fixed_width_host_values<T: ArrowNativeType>(cv: &ColumnView<'_>) -> Result<Vec<T>> {
+    // SAFETY: `ArrowNativeType` is sealed to integer, float and plain interval
+    // structs, for which every bit pattern is a valid value.
+    unsafe { cv.to_fixed_width_host_vec::<T>("arrow::fixed_width_host_values") }
 }
 
 fn fixed_width_to_arrow<T, A>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
 where
-    T: Copy + ArrowNativeType,
+    T: ArrowNativeType,
     A: ArrowPrimitiveType<Native = T>,
 {
-    let data = fixed_width_host_values::<T>(cv)?;
-    let validity = cv.to_host_validity()?;
-
-    let arr = match validity {
-        None => PrimitiveArray::<A>::from_iter_values(data),
-        Some(mask) => PrimitiveArray::<A>::from_iter(
-            data.into_iter().zip(mask).map(|(value, valid)| if valid { Some(value) } else { None }),
-        ),
-    };
+    let values = ScalarBuffer::from(fixed_width_host_values::<T>(cv)?);
+    let arr = PrimitiveArray::<A>::try_new(values, host_null_buffer(cv)?).map_err(map_numeric_to_arrow_error)?;
     Ok(Arc::new(arr))
 }
 
@@ -258,10 +251,7 @@ fn list_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     let child_nullable = child_view.nullable()?;
     let child_field = Arc::new(Field::new("item", child_array.data_type().clone(), child_nullable));
     let offsets = OffsetBuffer::new(ScalarBuffer::from(normalized_offsets));
-    let nulls = cv.to_host_validity()?.and_then(|mask| {
-        let nulls = NullBuffer::from(mask);
-        (nulls.null_count() > 0).then_some(nulls)
-    });
+    let nulls = host_null_buffer(cv)?;
     let array = ListArray::try_new(child_field, offsets, child_array, nulls).map_err(map_list_arrow_error)?;
     Ok(Arc::new(array))
 }
@@ -292,20 +282,48 @@ fn decimal128_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn A
     let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), "arrow::decimal128_to_arrow")
         .map_err(|error| error.with_fact(FACT_TYPE_ID, dtype.id()))?;
     let data = fixed_width_host_values::<i128>(cv)?;
-    decimal128_array_from_values(data, cv.to_host_validity()?, arrow_scale)
+    decimal128_array_from_values(data, host_null_buffer(cv)?, DEFAULT_DECIMAL128_ARROW_PRECISION, arrow_scale)
 }
 
 fn decimal_widening_to_arrow<T>(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn Array>>
-where T: Copy + Default + Into<i128> {
+where T: ArrowNativeType + Into<i128> {
     let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), "arrow::decimal_widening_to_arrow")
         .map_err(|error| error.with_fact(FACT_TYPE_ID, dtype.id()))?;
     let data = fixed_width_host_values::<T>(cv)?.into_iter().map(Into::into).collect::<Vec<_>>();
-    decimal128_array_from_values(data, cv.to_host_validity()?, arrow_scale)
+    decimal128_array_from_values(data, host_null_buffer(cv)?, DEFAULT_DECIMAL128_ARROW_PRECISION, arrow_scale)
+}
+
+/// Exports a cuDF decimal column as Arrow `Decimal128(precision, scale)` for a
+/// schema contract whose scale matches the column, without the
+/// `Decimal128(38, scale)` intermediate and Arrow cast.
+///
+/// cuDF decimals carry no precision, so valid rows are checked against
+/// `precision` unless the source width already bounds them. At precision 38 a
+/// `Decimal128` column is not checked, matching the default export.
+fn decimal128_to_arrow_with_precision(
+    cv: &ColumnView<'_>,
+    dtype: DataType,
+    precision: u8,
+    scale: i8,
+) -> Result<Arc<dyn Array>> {
+    let operation = "arrow::decimal128_to_arrow_with_precision";
+    validate_arrow_decimal::<Decimal128Type>(precision, scale, operation)?;
+    let (data, source_max_digits): (Vec<i128>, u8) = match dtype.id() {
+        // i32 magnitudes stay below 10^10 and i64 magnitudes below 10^19.
+        TypeId::Decimal32 => (fixed_width_host_values::<i32>(cv)?.into_iter().map(i128::from).collect(), 10),
+        TypeId::Decimal64 => (fixed_width_host_values::<i64>(cv)?.into_iter().map(i128::from).collect(), 19),
+        _ => (fixed_width_host_values::<i128>(cv)?, DEFAULT_DECIMAL128_ARROW_PRECISION),
+    };
+    let nulls = host_null_buffer(cv)?;
+    if precision < source_max_digits {
+        check_decimal_precision::<Decimal128Type>(&data, nulls.as_ref(), dtype, precision, scale, operation)?;
+    }
+    decimal128_array_from_values(data, nulls, precision, scale)
 }
 
 fn decimal_to_arrow<T, A>(cv: &ColumnView<'_>, dtype: DataType, precision: u8, scale: i8) -> Result<Arc<dyn Array>>
 where
-    T: Copy + Default + ArrowNativeType,
+    T: ArrowNativeType,
     A: DecimalType<Native = T>,
 {
     let expected_scale = arrow_decimal_scale_to_cudf_scale(scale);
@@ -321,63 +339,85 @@ where
         .with_detail("reason", "decimal_scale_mismatch"));
     }
     validate_arrow_decimal::<A>(precision, scale, "arrow::decimal_to_arrow")?;
-    let data = fixed_width_host_values::<T>(cv)?;
-    let arr = match cv.to_host_validity()? {
-        None => PrimitiveArray::<A>::from_iter_values(data),
-        Some(mask) => {
-            PrimitiveArray::<A>::from_iter(data.into_iter().zip(mask).map(|(value, valid)| valid.then_some(value)))
-        },
-    }
-    .with_precision_and_scale(precision, scale)
-    .map_err(map_decimal_to_arrow_error)?;
+    let values = fixed_width_host_values::<T>(cv)?;
+    let nulls = host_null_buffer(cv)?;
+    // Arrow caps Decimal32 at 9 and Decimal64 at 18 digits, below the 10 and
+    // 19 digits their native widths can hold, so every row is checked.
+    check_decimal_precision::<A>(&values, nulls.as_ref(), dtype, precision, scale, "arrow::decimal_to_arrow")?;
+    let arr = PrimitiveArray::<A>::try_new(ScalarBuffer::from(values), nulls)
+        .and_then(|arr| arr.with_precision_and_scale(precision, scale))
+        .map_err(map_decimal_to_arrow_error)?;
     Ok(Arc::new(arr))
+}
+
+/// Rejects the first valid row whose magnitude does not fit `precision`.
+/// Null slots are skipped because cuDF leaves their values unspecified.
+fn check_decimal_precision<A: DecimalType>(
+    values: &[A::Native],
+    nulls: Option<&NullBuffer>,
+    dtype: DataType,
+    precision: u8,
+    scale: i8,
+    operation: &'static str,
+) -> Result<()> {
+    let out_of_range = |row: &usize| !A::is_valid_decimal_precision(values[*row], precision);
+    let first_out_of_range = match nulls {
+        Some(nulls) => nulls.valid_indices().find(out_of_range),
+        None => (0..values.len()).find(out_of_range),
+    };
+    let Some(row) = first_out_of_range else {
+        return Ok(());
+    };
+    Err(Error::new_with(
+        ErrorCode::ValueOutOfRange,
+        operation,
+        "decimal value exceeds the precision of the Arrow schema contract",
+    )
+    .with_fact(FACT_TYPE_ID, dtype.id())
+    .with_detail("row", row.to_string())
+    .with_detail("value", format!("{:?}", values[row]))
+    .with_detail("precision", precision.to_string())
+    .with_detail("scale", scale.to_string())
+    .with_detail("reason", "decimal_precision_overflow"))
 }
 
 fn decimal128_array_from_values(
     data: Vec<i128>,
-    validity: Option<Vec<bool>>,
-    arrow_scale: i8,
+    nulls: Option<NullBuffer>,
+    precision: u8,
+    scale: i8,
 ) -> Result<Arc<dyn Array>> {
-    let arr = match validity {
-        None => Decimal128Array::from(data),
-        Some(mask) => Decimal128Array::from(
-            data.into_iter().zip(mask).map(|(value, valid)| if valid { Some(value) } else { None }).collect::<Vec<_>>(),
-        ),
-    }
-    .with_precision_and_scale(DEFAULT_DECIMAL128_ARROW_PRECISION, arrow_scale)
-    .map_err(map_decimal_to_arrow_error)?;
-
+    let arr = Decimal128Array::try_new(ScalarBuffer::from(data), nulls)
+        .and_then(|arr| arr.with_precision_and_scale(precision, scale))
+        .map_err(map_decimal_to_arrow_error)?;
     Ok(Arc::new(arr))
 }
 
 fn bool_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
-    // Avoid constructing Rust `bool` values directly from raw device bytes.
-    let data: Vec<bool> = cv.to_raw_bytes()?.into_iter().map(|byte| byte != 0).collect();
-    let validity = cv.to_host_validity()?;
-
-    match validity {
-        None => Ok(Arc::new(BooleanArray::from(data))),
-        Some(mask) => {
-            let null_buffer = NullBuffer::from(mask);
-            let bool_buffer = BooleanBuffer::from(data);
-            let arr = BooleanArray::new(bool_buffer, Some(null_buffer));
-            Ok(Arc::new(arr))
-        },
-    }
+    // Null slots may hold any byte, so values are compared with zero instead
+    // of being read as Rust `bool`.
+    let raw = cv.to_raw_bytes()?;
+    let values = BooleanBuffer::collect_bool(raw.len(), |row| raw[row] != 0);
+    Ok(Arc::new(BooleanArray::new(values, host_null_buffer(cv)?)))
 }
 
 fn string_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     let operation = "arrow::string_to_arrow";
-    let data = cv.to_optional_strings()?;
+    let data = cv.to_strings_host_raw(operation)?;
+    let nulls = host_null_buffer(cv)?;
     let chars_bytes = data.iter().try_fold(0usize, |total, value| {
-        total.checked_add(value.as_ref().map_or(0, String::len)).ok_or_else(|| {
+        total.checked_add(value.len()).ok_or_else(|| {
             Error::new_with(ErrorCode::SizeOverflow, operation, "string character byte count overflowed usize")
                 .with_detail("reason", "string_character_count_overflow")
         })
     })?;
     let mut builder = StringBuilder::with_capacity(data.len(), chars_bytes);
-    for value in &data {
-        builder.append_option(value.as_deref());
+    for (row, value) in data.iter().enumerate() {
+        if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
+            builder.append_null();
+        } else {
+            builder.append_value(value);
+        }
     }
     Ok(Arc::new(builder.finish()))
 }
