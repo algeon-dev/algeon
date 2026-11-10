@@ -21,6 +21,7 @@ use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_planning::{
     admission::{AttemptCapabilityEvidence, admit},
     error::{QueryErrorCode, Result},
+    execution_contracts::SourceChunkPlanningMode,
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, ColumnRef, Expr, LimitSpec},
     mode::StatisticalAggregateExecutionMode,
     pipeline::{CompiledPipeline, PipelineTaskKind, ResidentDataForm},
@@ -67,6 +68,8 @@ fn build_lane_backend() -> Result<GpuBackendCore> {
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 1,
         min_retry_chunk_row_groups: 1,
+        // Lane tests need one chunk per row group to give each lane work.
+        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         ..QueryExecutionConfig::default()
     };
     // Two forks per attempt back two execution lanes; two execution workers,
@@ -691,8 +694,8 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
     let dir = unique_temp_dir("query-engine-lane-inline-source-read");
     let path = dir.join("keys.parquet");
-    // One chunk per row group (the backend caps `max_row_groups_per_chunk`
-    // at 1), and each row group must exceed the 1 MiB source-batch target on
+    // One chunk per row group (the backend plans conservative chunks of one
+    // row group), and each row group must exceed the 1 MiB source-batch target on
     // its own or batching would merge them into a single direct read.
     const ROWS_PER_ROW_GROUP: usize = 200_000;
     const ROW_GROUPS: usize = 3;

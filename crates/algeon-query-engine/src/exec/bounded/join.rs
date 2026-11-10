@@ -25,10 +25,10 @@ use super::{
     join_leaf_prefetch_admitted, join_side_projection_with_order, lower_expr, lower_join_residual_predicate,
     lower_null_equality, materialize_join_output_projection, materialize_left_only_join_output_projection,
     materialize_mark_join_output_projection, null_aware_anti_probe, null_aware_anti_probe_input,
-    observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches,
-    probe_side, projected_input_columns, projected_output_columns, record_bounded_parquet_source_metrics,
-    record_chunk_retry_error, reorder_projected_cross_join_output, residual_input_columns, select_join_input,
-    side_metric, split_retryable_chunk, validate_executable_join_subset, validate_local_parquet_source,
+    observe_device_memory_bytes, plan_source_chunk_batches, probe_side, projected_input_columns,
+    projected_output_columns, record_bounded_parquet_source_metrics, record_chunk_retry_error,
+    reorder_projected_cross_join_output, residual_input_columns, select_join_input, side_metric, split_retryable_chunk,
+    validate_executable_join_subset, validate_local_parquet_source,
 };
 
 mod common;

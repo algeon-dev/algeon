@@ -1,4 +1,4 @@
-use super::memory::SourceTaskMemoryModel;
+use super::{memory::SourceTaskMemoryModel, row_group::RowGroupMetadata};
 use crate::{
     error::{QueryError, QueryErrorCode, Result as QueryResult},
     execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
@@ -136,24 +136,35 @@ impl SourceChunkPlanningPolicy {
     }
 
     /// Derives a source-task policy with explicit throughput planning options.
+    ///
+    /// `file_metadata` holds one slot per `source.files` entry: the row-group
+    /// metadata chunk planning sizes that file with, merged from source facts
+    /// and the footer the engine loaded. A `None` slot means no row-group
+    /// metadata is available for that file, which keeps the conservative cap.
     pub fn for_source_task_with_mode_and_options(
         source: &LocalParquetSource,
+        file_metadata: &[Option<RowGroupMetadata>],
         memory_policy: MemoryControlPolicy,
         model: SourceTaskMemoryModel,
         mode: SourceChunkPlanningMode,
         options: SourceChunkPlanningOptions,
     ) -> Self {
-        Self::for_source_task(memory_policy, model).with_source_planning_mode(source, mode, options)
+        Self::for_source_task(memory_policy, model).with_source_planning_mode(source, file_metadata, mode, options)
     }
 
     /// Derives a source policy from memory policy and source planning mode.
+    ///
+    /// `file_metadata` follows
+    /// [`for_source_task_with_mode_and_options`](Self::for_source_task_with_mode_and_options).
     pub fn from_memory_policy_with_mode(
         source: &LocalParquetSource,
+        file_metadata: &[Option<RowGroupMetadata>],
         memory_policy: MemoryControlPolicy,
         mode: SourceChunkPlanningMode,
     ) -> Self {
         Self::from_memory_policy_with_mode_and_options(
             source,
+            file_metadata,
             memory_policy,
             mode,
             SourceChunkPlanningOptions::default(),
@@ -161,13 +172,17 @@ impl SourceChunkPlanningPolicy {
     }
 
     /// Derives a source policy with explicit throughput planning options.
+    ///
+    /// `file_metadata` follows
+    /// [`for_source_task_with_mode_and_options`](Self::for_source_task_with_mode_and_options).
     pub fn from_memory_policy_with_mode_and_options(
         source: &LocalParquetSource,
+        file_metadata: &[Option<RowGroupMetadata>],
         memory_policy: MemoryControlPolicy,
         mode: SourceChunkPlanningMode,
         options: SourceChunkPlanningOptions,
     ) -> Self {
-        Self::from(memory_policy).with_source_planning_mode(source, mode, options)
+        Self::from(memory_policy).with_source_planning_mode(source, file_metadata, mode, options)
     }
 
     pub(super) fn effective_max_row_groups_per_chunk(self) -> usize {
@@ -177,6 +192,7 @@ impl SourceChunkPlanningPolicy {
     fn with_source_planning_mode(
         mut self,
         source: &LocalParquetSource,
+        file_metadata: &[Option<RowGroupMetadata>],
         mode: SourceChunkPlanningMode,
         options: SourceChunkPlanningOptions,
     ) -> Self {
@@ -184,7 +200,7 @@ impl SourceChunkPlanningPolicy {
             return self;
         }
         self.source_chunk_planning_mode = mode;
-        if !parquet_throughput_planning_admitted(source, self) {
+        if !parquet_throughput_planning_admitted(source, file_metadata, self) {
             self.source_chunk_planning_reason = "parquet_throughput_rejected";
             return self;
         }
@@ -228,11 +244,16 @@ impl From<MemoryControlPolicy> for SourceChunkPlanningPolicy {
 /// Whether throughput planning may raise a one-row-group cap for `source`.
 /// The grant does not enter here: the source-byte target already scales the
 /// widened chunks with it.
-fn parquet_throughput_planning_admitted(source: &LocalParquetSource, policy: SourceChunkPlanningPolicy) -> bool {
+fn parquet_throughput_planning_admitted(
+    source: &LocalParquetSource,
+    file_metadata: &[Option<RowGroupMetadata>],
+    policy: SourceChunkPlanningPolicy,
+) -> bool {
     if policy.max_row_groups_per_chunk != 1 || policy.max_source_chunk_bytes.is_none() {
         return false;
     }
     if source.files.is_empty()
+        || file_metadata.len() != source.files.len()
         || source.is_zero_column_count_source()
         || source.scan_limit.is_some()
         || source.read_columns.is_empty()
@@ -240,16 +261,18 @@ fn parquet_throughput_planning_admitted(source: &LocalParquetSource, policy: Sou
     {
         return false;
     }
-    source.files.iter().all(|file| {
+    source.files.iter().zip(file_metadata).all(|(file, metadata)| {
         parquet_throughput_file_uses_supported_reader_path(file)
             && file.partition_values.is_empty()
-            && parquet_throughput_file_has_source_read_bytes(source, file)
+            && metadata
+                .as_ref()
+                .is_some_and(|metadata| parquet_throughput_file_has_source_read_bytes(source, file, metadata))
     })
 }
 
 /// A remote file qualifies like a local one: one chunk is one reader call
 /// over its row groups, and the reader fetches their byte ranges in parallel.
-/// Both need the row-group byte metadata that planning reads from the footer.
+/// Both need the row-group byte metadata that chunk planning sizes them with.
 fn parquet_throughput_file_uses_supported_reader_path(file: &LocalParquetFile) -> bool {
     match file.resolved_source.read_strategy() {
         ParquetReadStrategy::LocalKvikio => file.location.is_local_path(),
@@ -258,27 +281,22 @@ fn parquet_throughput_file_uses_supported_reader_path(file: &LocalParquetFile) -
     }
 }
 
-fn parquet_throughput_file_has_source_read_bytes(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
-    let selected_row_groups = match &file.row_groups {
-        Some(row_groups) if !row_groups.is_empty() => row_groups.clone(),
-        Some(_) => return false,
-        None => {
-            let Some(count) = file.projected_row_group_uncompressed_bytes.as_ref().map(Vec::len) else {
-                return false;
-            };
-            if count == 0 {
-                return false;
-            }
-            (0..count).collect()
-        },
+fn parquet_throughput_file_has_source_read_bytes(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    metadata: &RowGroupMetadata,
+) -> bool {
+    let projected_len = metadata.projected_uncompressed_bytes_len();
+    let max_row_group = match &file.row_groups {
+        Some(row_groups) => row_groups.iter().copied().max(),
+        None => projected_len.and_then(|count| count.checked_sub(1)),
     };
-    let Some(max_row_group) = selected_row_groups.iter().copied().max() else {
+    let Some(max_row_group) = max_row_group else {
         return false;
     };
-    let projected_covers_selection =
-        file.projected_row_group_uncompressed_bytes.as_ref().is_some_and(|bytes| max_row_group < bytes.len());
+    let projected_covers_selection = projected_len.is_some_and(|len| max_row_group < len);
     let pure_filter_covers_selection = source.pure_filter_columns.is_empty()
-        || file.pure_filter_row_group_uncompressed_bytes.as_ref().is_some_and(|bytes| max_row_group < bytes.len());
+        || metadata.pure_filter_uncompressed_bytes_len().is_some_and(|len| max_row_group < len);
     projected_covers_selection && pure_filter_covers_selection
 }
 
@@ -289,7 +307,10 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
 
     use super::*;
-    use crate::source::{CredentialMode, ResolvedParquetSource};
+    use crate::{
+        chunk::row_group::source_row_group_metadata,
+        source::{CredentialMode, ResolvedParquetSource},
+    };
 
     fn one_row_group_policy() -> MemoryControlPolicy {
         MemoryControlPolicy {
@@ -319,8 +340,11 @@ mod tests {
             .with_projected_row_group_bytes(vec![512; 7], vec![1024; 7])
             .with_row_group_rows(vec![1; 7]);
 
+        let file_metadata = vec![source_row_group_metadata(&file, None)];
+
         let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode(
             &remote_source(file),
+            &file_metadata,
             one_row_group_policy(),
             SourceChunkPlanningMode::ParquetThroughput,
         );

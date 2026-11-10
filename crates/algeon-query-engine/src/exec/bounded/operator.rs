@@ -16,8 +16,7 @@ use super::{
     GpuResidentInputMap, GpuResidentSource, LocalParquetSource, NodeId, ProjectionNode, QueryError, QueryErrorCode,
     ResidentGpuFrame, Result, SourceChunkPlanningPolicy, concatenate_source_read_outputs, cudf_query_error,
     execute_edge_normalize, execute_projection_with_budget, execute_projection_with_budget_and_prepared,
-    execution_budget_token_for_boundary, observe_device_memory_bytes,
-    plan_local_parquet_source_chunks_with_execution_context, projection_regexp_replace_prepare,
+    execution_budget_token_for_boundary, observe_device_memory_bytes, projection_regexp_replace_prepare,
     read_gpu_resident_source, read_literal_batch_source, read_local_parquet_chunks_required_only,
     validate_local_parquet_source,
 };
@@ -33,8 +32,10 @@ use crate::exec::graph_algorithm::{
     statistics::runtime_graph_statistics_probe,
 };
 use crate::{
+    chunk::plan_local_parquet_source_chunks_with_derived_policy,
     exec::source::{read_local_parquet_source, record_bounded_parquet_source_metrics},
     rapids_backend::rapids_analysis_context,
+    source_chunk::SourceMetadataCache,
 };
 
 /// A union branch named like the union's declared output.
@@ -279,16 +280,20 @@ pub(in crate::exec::bounded) fn execute_bounded_local_parquet_source(
     node_id: NodeId,
 ) -> Result<ResidentGpuFrame> {
     validate_local_parquet_source(source, rapids_analysis_context(execution.context().planning_policy()))?;
-    let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
+    let (chunk_plan, _policy) = plan_local_parquet_source_chunks_with_derived_policy(
         node_id,
         source,
-        SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
-            source,
-            execution.context().memory_control_policy(),
-            execution.context().source_chunk_planning_mode(),
-            execution.context().source_chunk_planning_options(),
-        ),
-        execution.context(),
+        |file_metadata| {
+            SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
+                source,
+                file_metadata,
+                execution.context().memory_control_policy(),
+                execution.context().source_chunk_planning_mode(),
+                execution.context().source_chunk_planning_options(),
+            )
+        },
+        &mut SourceMetadataCache::default(),
+        Some(execution.context()),
     )?;
     for chunk in &chunk_plan.chunks {
         execution.record_source_read(SourceReadFact::ChunkPlanned { row_groups: chunk.row_group_count() as u64 });

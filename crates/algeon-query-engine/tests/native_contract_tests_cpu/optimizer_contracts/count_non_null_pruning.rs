@@ -59,6 +59,12 @@ fn count_non_null_pruning_rewrites_footer_proven_count_column_to_retained_carrie
         !source.read_columns.iter().any(|column| column == "o_orderkey"),
         "count-only column should not be read after COUNT(column) becomes COUNT(1)"
     );
+    // Every byte estimate measured the pruned column too; chunk planning
+    // reloads them from the footer for the narrower read.
+    let file = &source.files[0];
+    assert_eq!(file.row_group_bytes, None);
+    assert_eq!(file.projected_row_group_compressed_bytes, None);
+    assert_eq!(file.projected_row_group_uncompressed_bytes, None);
 }
 
 #[test]
@@ -245,7 +251,10 @@ fn count_non_null_pruning_source_adjacent_plan(
         Field::new("c_count", DataType::Int64, false),
     ]));
 
-    let mut file = LocalParquetFile::new("/tmp/count-non-null-orders.parquet").with_row_groups(vec![0, 2]);
+    let mut file = LocalParquetFile::new("/tmp/count-non-null-orders.parquet")
+        .with_row_groups(vec![0, 2])
+        .with_row_group_bytes(vec![96; 3])
+        .with_projected_row_group_bytes(vec![64; 3], vec![128; 3]);
     if let Some(null_counts) = carrier_null_counts {
         file = file.with_row_group_null_counts(0, null_counts);
     }

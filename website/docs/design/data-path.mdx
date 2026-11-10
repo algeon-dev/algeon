@@ -48,8 +48,8 @@ column byte ranges, and KvikIO divides reads into I/O tasks on its shared
 pool. One source chunk can therefore require many I/O tasks. The
 I/O task size controls the read subdivision; the source-chunk target still
 comes from the query's memory policy. Throughput grouping also widens chunks
-of `s3://` files that carry planning-time row-group byte metadata from cached
-footers. A chunk never spans files.
+of `s3://` files whose footers chunk planning reads, the same footers that
+size the chunks. A chunk never spans files.
 
 Every planned read, and every batch of chunks read together, decodes into
 one cuDF table. Its row count and the child value count of each list column

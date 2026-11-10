@@ -39,6 +39,14 @@ impl RowGroupMetadata {
             .map_or(0, Vec::len)
     }
 
+    pub(crate) fn projected_uncompressed_bytes_len(&self) -> Option<usize> {
+        self.projected_uncompressed_bytes.as_ref().map(Vec::len)
+    }
+
+    pub(crate) fn pure_filter_uncompressed_bytes_len(&self) -> Option<usize> {
+        self.pure_filter_uncompressed_bytes.as_ref().map(Vec::len)
+    }
+
     pub(crate) fn row_group_bytes(&self, row_group: usize) -> Option<u64> {
         self.row_group_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
     }
