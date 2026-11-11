@@ -100,10 +100,12 @@ kernels and starts once they complete.
 
 The host runtime polls the DataFusion stream and awaits each pool job without
 blocking a host worker. The first poll runs admission and the fragment's
-schedule. Each chunk then takes one pool job, which sizes the chunk to at most
-4 MiB of Arrow buffers, reserves that estimate from DataFusion's `MemoryPool`
-(one live reservation per stream), enqueues the device-to-host copy and waits
-in `cudaStreamSynchronize`. The wait holds the pool worker until the copy
+schedule. Each chunk then takes one pool job, which sizes a row range of the
+result to at most 4 MiB of Arrow buffers, reserves that estimate from
+DataFusion's `MemoryPool` (one live reservation per stream), enqueues the
+device-to-host copy and waits in `cudaStreamSynchronize`. Sizing reads only
+the string and list offsets of the range, and the copy reads each column
+through a view of it instead of first copying the range on the device. The wait holds the pool worker until the copy
 completes. Algeon sets no CUDA device scheduling flag. Under the runtime
 default, `cudaDeviceScheduleAuto`, the waiting thread spins on its CPU core
 while the process has no more active CUDA contexts than logical processors,

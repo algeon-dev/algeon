@@ -94,10 +94,10 @@ query_planning::chunk::decimal::parquet_reader_decimal_types	cross-crate	query-p
 query_planning::chunk::decimal::reader_decimal_type_metadata_unavailable_error	cross-crate	query-planning chunk::decimal	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::chunk::decimal::validate_object_store_reader_decimal_types	cross-crate	query-planning chunk::decimal	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::chunk::decimal::validate_supplied_reader_decimal_types_match_footer	cross-crate	query-planning chunk::decimal	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::chunk::row_group	cross-crate	query-planning chunk	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::chunk::row_group::RowGroupMetadata	cross-crate	query-planning chunk::row_group	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::chunk::row_group	cross-crate	query-planning chunk	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::chunk::row_group::RowGroupMetadata	cross-crate	query-planning chunk::row_group	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::chunk::row_group::row_group_metadata_from_footer	cross-crate	query-planning chunk::row_group	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::chunk::row_group::source_row_group_metadata	cross-crate	query-planning chunk::row_group	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::chunk::row_group::source_row_group_metadata	cross-crate	query-planning chunk::row_group	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::chunk::scan_limit	cross-crate	query-planning chunk	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::chunk::scan_limit::apply_source_scan_limit_to_chunks	cross-crate	query-planning chunk::scan_limit	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::chunk::source_file_for_chunk	cross-crate	query-planning chunk	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it

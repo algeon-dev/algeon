@@ -1,7 +1,6 @@
 //! List-of-numeric export proofs, contracts, and child pack helpers.
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
 use rapids_interop::{
     BufferBinding, BufferId, ColumnId, CompletionAuthority, PreparedColumnExport, ReadStartAuthority,
 };
@@ -99,13 +98,6 @@ impl From<UniformListProof> for ListExportContract {
 }
 
 impl FixedSizeListStructuralProof {
-    pub(super) fn matches_schema(self, schema: &SchemaRef) -> bool {
-        matches!(
-            schema.fields().get(self.field_index).map(|field| field.data_type()),
-            Some(ArrowDataType::FixedSizeList(_, dimension)) if *dimension == self.dimension
-        )
-    }
-
     pub(super) fn matches_producer(self, producer: &Arc<Column>) -> bool {
         self.producer_column_identity == Arc::as_ptr(producer) as usize
             && self.binding_id == producer.execution_domain().binding_id()

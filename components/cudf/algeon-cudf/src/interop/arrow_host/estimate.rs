@@ -16,11 +16,12 @@ use super::schema::{
 };
 use crate::{
     core::{
-        column::ColumnView,
+        column::{Column, ColumnView},
         error::{self, Error, ErrorCode, Result},
-        types::cudf_null_mask_allocation_size_bytes,
+        types::{TypeId, cudf_null_mask_allocation_size_bytes},
     },
     frame::dataframe::DataFrame,
+    internal::resolve::missing_column_error,
 };
 
 /// Returns the device bytes retained when Arrow list arrays are concatenated
@@ -346,60 +347,258 @@ pub(super) fn list_child_import_device_bytes(
         .try_fold(0usize, |total, bytes| checked_size_add(total, bytes, operation, "summing list child buffers"))
 }
 
-/// Conservatively estimate the Arrow buffer capacity retained by a host-copy
-/// export before any device values are copied to host.
+/// Conservatively sizes the Arrow buffer capacity that a host-copy export of
+/// rows `[offset, offset + rows)` of one frame retains, before any device
+/// value is copied to host.
 ///
 /// The estimate follows the final external Arrow schema. The cuDF source
-/// representation contributes only the string character byte count. In
-/// particular, narrow decimals retain their 4-byte or 8-byte logical width,
-/// booleans become bit-packed, and string/list offset widths follow
-/// Utf8/LargeUtf8 and List/LargeList respectively. Every logical
+/// representation contributes only the string character and list child row
+/// counts of the range. In particular, narrow decimals retain their 4-byte or
+/// 8-byte logical width, booleans become bit-packed, and string/list offset
+/// widths follow Utf8/LargeUtf8 and List/LargeList respectively. Every logical
 /// Arrow buffer is rounded to Arrow's 64-byte mutable-buffer allocation
 /// quantum, making the result an upper bound for the capacities counted by
 /// DataFusion's `get_record_batch_memory_size`.
-pub(crate) fn estimate_arrow_host_record_batch_memory_bytes(
-    frame: &DataFrame,
-    schema: &ArrowHostSchema,
-) -> Result<usize> {
-    let operation = "arrow_host::estimate_record_batch_memory_bytes";
-    if frame.num_columns() != schema.len() {
-        return Err(Error::new_with(
-            ErrorCode::InvariantViolation,
-            operation,
-            "validated Arrow schema and DataFrame column counts diverged before host materialization",
+///
+/// Sizing allocates no device memory. Fixed-width columns are sized from the
+/// row count alone, and [`load`](Self::load) copies the string and list
+/// offsets of one bounded range to host.
+pub(crate) struct ArrowHostRowRangeSizer<'a> {
+    offset: usize,
+    columns: Vec<RowRangeColumn<'a>>,
+}
+
+struct RowRangeColumn<'a> {
+    name: &'a str,
+    arrow_type: &'a ArrowDataType,
+    nullable: bool,
+    shape: RowRangeShape<'a>,
+}
+
+enum RowRangeShape<'a> {
+    FixedWidth,
+    String { offsets: OffsetsChild<'a> },
+    List { offsets: OffsetsChild<'a>, child_nullable: bool, string_child: Option<ColumnView<'a>> },
+}
+
+/// The offsets child of a STRING or LIST column view, addressed by the
+/// view's logical rows.
+struct OffsetsChild<'a> {
+    view: ColumnView<'a>,
+    first_row: usize,
+}
+
+impl<'a> OffsetsChild<'a> {
+    fn of(parent: &ColumnView<'a>, operation: &'static str) -> Result<Self> {
+        let view = parent.child(0).map_err(|error| error.reanchor(operation))?;
+        let raw_offset = parent.offset().map_err(|error| error.reanchor(operation))?;
+        let first_row = usize::try_from(raw_offset).map_err(|_| {
+            Error::new_with(ErrorCode::IndexOutOfBounds, operation, "column view offset must be non-negative")
+                .with_detail("offset", raw_offset.to_string())
+        })?;
+        Ok(Self { view, first_row })
+    }
+
+    /// Copies the offsets of logical rows `start..=start + rows` to host.
+    fn copy_to_host(&self, start: usize, rows: usize, operation: &'static str) -> Result<Vec<i64>> {
+        let index = self.first_row.checked_add(start).ok_or_else(|| size_overflow(operation, "indexing offsets"))?;
+        let count = rows.checked_add(1).ok_or_else(|| size_overflow(operation, "counting offsets"))?;
+        let index_i32 =
+            i32::try_from(index).map_err(|_| error::range_limit_error(operation, "offset_index", "i32::MAX", index))?;
+        let count_i32 =
+            i32::try_from(count).map_err(|_| error::range_limit_error(operation, "offset_count", "i32::MAX", count))?;
+        let range = self.view.slice_with_operation(index_i32, count_i32, operation)?;
+        let offsets_type = range.data_type().map_err(|error| error.reanchor(operation))?.id();
+        match offsets_type {
+            TypeId::Int32 => Ok(range.to_vec::<i32>()?.into_iter().map(i64::from).collect()),
+            TypeId::Int64 => range.to_vec::<i64>(),
+            _ => Err(Error::new_with(ErrorCode::UnsupportedLayout, operation, "offsets child must be Int32 or Int64")
+                .with_detail("offsets_type", offsets_type.name())),
+        }
+    }
+}
+
+/// String offset of row `row` of a STRING column view, read from the device.
+fn string_offset_at(view: &ColumnView<'_>, row: i64) -> Result<i64> {
+    let operation = ESTIMATE_OPERATION;
+    Ok(OffsetsChild::of(view, operation)?.copy_to_host(offset_as_index(row, operation)?, 0, operation)?[0])
+}
+
+impl<'a> ArrowHostRowRangeSizer<'a> {
+    pub(crate) fn new(frame: &'a DataFrame, schema: &'a ArrowHostSchema, offset: usize) -> Result<Self> {
+        let operation = ESTIMATE_OPERATION;
+        if frame.num_columns() != schema.len() {
+            return Err(Error::new_with(
+                ErrorCode::InvariantViolation,
+                operation,
+                "validated Arrow schema and DataFrame column counts diverged before host materialization",
+            )
+            .with_detail("frame_columns", frame.num_columns().to_string())
+            .with_detail("schema_fields", schema.len().to_string()));
+        }
+        let columns = frame.columns_map();
+        let columns = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let name = field.name();
+                let column = columns.get(name).ok_or_else(|| missing_column_error(operation, name))?;
+                RowRangeColumn::new(column, field.arrow_data_type(), name)
+                    .map_err(|error| error.with_column(name.to_string()))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { offset, columns })
+    }
+
+    /// Estimate for `rows` rows with every string and list empty. The full
+    /// estimate is never smaller, so a row count over the target here is over
+    /// it after [`load`](Self::load) as well.
+    pub(crate) fn lower_bound_bytes(&self, rows: usize) -> Result<usize> {
+        self.columns.iter().try_fold(0usize, |total, column| {
+            let bytes = column.capacity(rows, 0, 0).map_err(|error| error.with_column(column.name.to_string()))?;
+            checked_size_add(total, bytes, ESTIMATE_OPERATION, "accumulating Arrow column capacities")
+        })
+    }
+
+    /// Copies the string and list offsets of rows `[offset, offset + rows)` to
+    /// host so that every prefix of the range can be sized.
+    pub(crate) fn load(&self, rows: usize) -> Result<ArrowHostRowRange<'_, 'a>> {
+        let operation = ESTIMATE_OPERATION;
+        let host_offsets = self
+            .columns
+            .iter()
+            .map(|column| {
+                let load = || -> Result<Option<HostOffsets>> {
+                    let (offsets, string_child) = match &column.shape {
+                        RowRangeShape::FixedWidth => return Ok(None),
+                        RowRangeShape::String { offsets } => (offsets, None),
+                        RowRangeShape::List { offsets, string_child, .. } => (offsets, string_child.as_ref()),
+                    };
+                    let offsets = offsets.copy_to_host(self.offset, rows, operation)?;
+                    // A range without child rows may sit on a child column that
+                    // has no offsets buffer at all.
+                    let child_string_first = match string_child {
+                        Some(child) if offsets[rows] > offsets[0] => Some(string_offset_at(child, offsets[0])?),
+                        _ => None,
+                    };
+                    Ok(Some(HostOffsets { offsets, child_string_first }))
+                };
+                load().map_err(|error| error.with_column(column.name.to_string()))
+            })
+            .collect::<Result<_>>()?;
+        Ok(ArrowHostRowRange { sizer: self, rows, host_offsets })
+    }
+}
+
+impl<'a> RowRangeColumn<'a> {
+    fn new(column: &'a Column, arrow_type: &'a ArrowDataType, name: &'a str) -> Result<Self> {
+        let operation = ESTIMATE_OPERATION;
+        let view = column.view().map_err(|error| error.reanchor(operation))?;
+        let nullable = view.nullable().map_err(|error| error.reanchor(operation))?;
+        let shape = match arrow_type {
+            ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => {
+                RowRangeShape::String { offsets: OffsetsChild::of(&view, operation)? }
+            },
+            ArrowDataType::List(child) | ArrowDataType::LargeList(child) => {
+                let child_view = view.child(1).map_err(|error| error.reanchor(operation))?;
+                let child_nullable = child_view.nullable().map_err(|error| error.reanchor(operation))?;
+                let string_child = list_fixed_width_interop_dtype(child.data_type()).is_none().then_some(child_view);
+                RowRangeShape::List { offsets: OffsetsChild::of(&view, operation)?, child_nullable, string_child }
+            },
+            _ => RowRangeShape::FixedWidth,
+        };
+        Ok(Self { name, arrow_type, nullable, shape })
+    }
+
+    fn capacity(&self, rows: usize, child_rows: usize, chars_bytes: usize) -> Result<usize> {
+        let child_nullable = matches!(self.shape, RowRangeShape::List { child_nullable: true, .. });
+        estimate_arrow_host_column_memory_bytes(
+            self.arrow_type,
+            self.nullable,
+            child_nullable,
+            rows,
+            child_rows,
+            chars_bytes,
+            ESTIMATE_OPERATION,
         )
-        .with_detail("frame_columns", frame.num_columns().to_string())
-        .with_detail("schema_fields", schema.len().to_string()));
     }
+}
 
-    // Native operators may represent an empty string/list column without the
-    // offset buffers that exist in a non-empty cuDF column. No values can be
-    // copied in this case, so size the typed Arrow destination directly from
-    // its validated external schema. Subtracting cuDF structural payloads
-    // cannot work here, because those payloads are legitimately absent.
-    if frame.num_rows() == 0 {
-        return schema.fields().iter().try_fold(0usize, |total, field| {
-            let column_bytes = estimate_empty_arrow_host_column_memory_bytes(field.arrow_data_type(), operation)?;
-            checked_size_add(total, column_bytes, operation, "accumulating empty Arrow column capacities")
-        });
-    }
+struct HostOffsets {
+    offsets: Vec<i64>,
+    /// String offset of the first child row of a `List<String>` range.
+    child_string_first: Option<i64>,
+}
 
-    let mut total = 0usize;
-    for field in schema.fields() {
-        let series = frame
-            .series(field.name())
-            .map_err(|error| error.reanchor(operation).with_column(field.name().to_string()))?;
-        let view = series.view().map_err(|error| error.reanchor(operation).with_column(field.name().to_string()))?;
-        let payload_bytes = series
-            .as_column()
-            .payload_size_bytes()
-            .map_err(|error| error.reanchor(operation).with_column(field.name().to_string()))?;
-        let column_bytes =
-            estimate_arrow_host_column_memory_bytes(&view, payload_bytes, field.arrow_data_type(), operation)
-                .map_err(|error| error.with_column(field.name().to_string()))?;
-        total = checked_size_add(total, column_bytes, operation, "accumulating Arrow column capacities")?;
+/// Host offsets of one bounded row range, loaded by
+/// [`ArrowHostRowRangeSizer::load`].
+pub(crate) struct ArrowHostRowRange<'s, 'a> {
+    sizer: &'s ArrowHostRowRangeSizer<'a>,
+    rows: usize,
+    host_offsets: Vec<Option<HostOffsets>>,
+}
+
+impl ArrowHostRowRange<'_, '_> {
+    /// Estimate for the first `rows` rows of the loaded range. A `List<String>`
+    /// column with child rows in that prefix reads one child string offset
+    /// from the device per call.
+    pub(crate) fn bytes(&self, rows: usize) -> Result<usize> {
+        let operation = ESTIMATE_OPERATION;
+        if rows > self.rows {
+            return Err(Error::new_with(
+                ErrorCode::InvariantViolation,
+                operation,
+                "sized row count exceeds the range whose offsets were loaded",
+            )
+            .with_detail("rows", rows.to_string())
+            .with_detail("loaded_rows", self.rows.to_string()));
+        }
+        self.sizer.columns.iter().zip(&self.host_offsets).try_fold(0usize, |total, (column, host)| {
+            let bytes = (|| {
+                let Some(host) = host else {
+                    return column.capacity(rows, 0, 0);
+                };
+                let span = offset_span(&host.offsets, rows, operation)?;
+                match (&column.shape, host.child_string_first) {
+                    (RowRangeShape::String { .. }, _) => column.capacity(rows, 0, span),
+                    (RowRangeShape::List { string_child: Some(child), .. }, Some(first)) if span > 0 => {
+                        let last = string_offset_at(child, host.offsets[rows])?;
+                        column.capacity(rows, span, offset_as_index(last - first, operation)?)
+                    },
+                    _ => column.capacity(rows, span, 0),
+                }
+            })()
+            .map_err(|error| error.with_column(column.name.to_string()))?;
+            checked_size_add(total, bytes, operation, "accumulating Arrow column capacities")
+        })
     }
-    Ok(total)
+}
+
+const ESTIMATE_OPERATION: &str = "arrow_host::estimate_record_batch_memory_bytes";
+
+fn offset_span(offsets: &[i64], rows: usize, operation: &'static str) -> Result<usize> {
+    offset_as_index(offsets[rows] - offsets[0], operation)
+}
+
+fn offset_as_index(value: i64, operation: &'static str) -> Result<usize> {
+    usize::try_from(value).map_err(|_| {
+        Error::new_with(ErrorCode::ValueOutOfRange, operation, "offsets must be non-negative and non-decreasing")
+            .with_detail("value", value.to_string())
+            .with_detail("reason", "invalid_offsets")
+    })
+}
+
+/// Arrow buffer capacity of an empty host-copy export, sized from the
+/// validated external schema alone.
+///
+/// Native operators may represent an empty string/list column without the
+/// offset buffers that exist in a non-empty cuDF column, so no cuDF structure
+/// is consulted.
+pub(crate) fn estimate_empty_arrow_host_record_batch_memory_bytes(schema: &ArrowHostSchema) -> Result<usize> {
+    schema.fields().iter().try_fold(0usize, |total, field| {
+        let column_bytes = estimate_empty_arrow_host_column_memory_bytes(field.arrow_data_type(), ESTIMATE_OPERATION)?;
+        checked_size_add(total, column_bytes, ESTIMATE_OPERATION, "accumulating empty Arrow column capacities")
+    })
 }
 
 fn estimate_empty_arrow_host_column_memory_bytes(arrow_type: &ArrowDataType, operation: &'static str) -> Result<usize> {
@@ -445,13 +644,14 @@ fn estimate_empty_arrow_host_column_memory_bytes(arrow_type: &ArrowDataType, ope
 }
 
 fn estimate_arrow_host_column_memory_bytes(
-    view: &ColumnView<'_>,
-    cudf_payload_bytes: usize,
     arrow_type: &ArrowDataType,
+    nullable: bool,
+    child_nullable: bool,
+    rows: usize,
+    child_rows: usize,
+    chars_bytes: usize,
     operation: &'static str,
 ) -> Result<usize> {
-    let rows = view.len().map_err(|error| error.reanchor(operation))?;
-    let nullable = view.nullable().map_err(|error| error.reanchor(operation))?;
     let validity_bytes = estimate_arrow_validity_capacity(rows, nullable, operation)?;
 
     let values_bytes = match arrow_type {
@@ -474,46 +674,23 @@ fn estimate_arrow_host_column_memory_bytes(
         | ArrowDataType::Decimal64(_, _) => estimate_fixed_width_capacity(rows, 8, operation)?,
         ArrowDataType::Decimal128(_, _) => estimate_fixed_width_capacity(rows, 16, operation)?,
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => {
-            let chars_bytes = cudf_string_chars_bytes(view, cudf_payload_bytes, operation)?;
             estimate_arrow_string_buffers(rows, chars_bytes, arrow_type, operation)?
         },
         ArrowDataType::List(child) | ArrowDataType::LargeList(child) => {
-            let child_view = view.list_sliced_child().map_err(|error| error.reanchor(operation))?;
-            let child_rows = child_view.len().map_err(|error| error.reanchor(operation))?;
-            let child_nullable = child_view.nullable().map_err(|error| error.reanchor(operation))?;
-
             let root_offset_width = if matches!(arrow_type, ArrowDataType::LargeList(_)) { 8 } else { 4 };
             let root_offsets = estimate_offset_capacity(rows, root_offset_width, operation)?;
-            if list_fixed_width_interop_dtype(child.data_type()).is_some() {
-                let child_values =
-                    estimate_arrow_list_fixed_width_values_capacity(child_rows, child.data_type(), operation)?;
-                let child_validity = estimate_arrow_validity_capacity(child_rows, child_nullable, operation)?;
-                checked_size_add(
-                    checked_size_add(root_offsets, child_values, operation, "sizing Arrow numeric list values")?,
-                    child_validity,
-                    operation,
-                    "sizing Arrow numeric list child validity",
-                )?
+            let child_buffers = if list_fixed_width_interop_dtype(child.data_type()).is_some() {
+                estimate_arrow_list_fixed_width_values_capacity(child_rows, child.data_type(), operation)?
             } else {
-                let chars_bytes = cudf_list_string_chars_bytes(
-                    rows,
-                    nullable,
-                    child_rows,
-                    child_nullable,
-                    cudf_payload_bytes,
-                    operation,
-                )?;
-
-                let child_buffers =
-                    estimate_arrow_string_buffers(child_rows, chars_bytes, child.data_type(), operation)?;
-                let child_validity = estimate_arrow_validity_capacity(child_rows, child_nullable, operation)?;
-                checked_size_add(
-                    checked_size_add(root_offsets, child_buffers, operation, "sizing Arrow list child buffers")?,
-                    child_validity,
-                    operation,
-                    "sizing Arrow list child validity",
-                )?
-            }
+                estimate_arrow_string_buffers(child_rows, chars_bytes, child.data_type(), operation)?
+            };
+            let child_validity = estimate_arrow_validity_capacity(child_rows, child_nullable, operation)?;
+            checked_size_add(
+                checked_size_add(root_offsets, child_buffers, operation, "sizing Arrow list child buffers")?,
+                child_validity,
+                operation,
+                "sizing Arrow list child validity",
+            )?
         },
         ArrowDataType::FixedSizeList(child, dimension) if *dimension > 0 => {
             let dimension = usize::try_from(*dimension).map_err(|_| {
@@ -542,26 +719,6 @@ fn estimate_arrow_host_column_memory_bytes(
     };
 
     checked_size_add(values_bytes, validity_bytes, operation, "sizing Arrow column validity")
-}
-
-fn cudf_string_chars_bytes(view: &ColumnView<'_>, cudf_payload_bytes: usize, operation: &'static str) -> Result<usize> {
-    let rows = view.len().map_err(|error| error.reanchor(operation))?;
-    let nullable = view.nullable().map_err(|error| error.reanchor(operation))?;
-    let structural = checked_size_add(
-        cudf_offset_payload_bytes(rows, operation)?,
-        cudf_validity_payload_bytes(rows, nullable, operation)?,
-        operation,
-        "sizing cuDF string structure",
-    )?;
-    cudf_payload_bytes.checked_sub(structural).ok_or_else(|| {
-        Error::new_with(
-            ErrorCode::InvariantViolation,
-            operation,
-            "cuDF string payload is smaller than its offsets and validity buffers",
-        )
-        .with_detail("cudf_payload_bytes", cudf_payload_bytes.to_string())
-        .with_detail("structural_bytes", structural.to_string())
-    })
 }
 
 fn estimate_arrow_string_buffers(
@@ -642,59 +799,6 @@ fn estimate_arrow_buffer_capacity(logical_bytes: usize, operation: &'static str)
 
 fn bitpacked_bytes(rows: usize, operation: &'static str) -> Result<usize> {
     rows.checked_add(7).map(|bits| bits / 8).ok_or_else(|| size_overflow(operation, "sizing Arrow bit-packed buffer"))
-}
-
-fn cudf_offset_payload_bytes(rows: usize, operation: &'static str) -> Result<usize> {
-    let count = rows.checked_add(1).ok_or_else(|| size_overflow(operation, "sizing cuDF offset count"))?;
-    checked_size_mul(count, std::mem::size_of::<i32>(), operation, "sizing cuDF offsets")
-}
-
-fn cudf_validity_payload_bytes(rows: usize, nullable: bool, operation: &'static str) -> Result<usize> {
-    if !nullable {
-        return Ok(0);
-    }
-    let words = rows
-        .checked_add(31)
-        .map(|bits| bits / 32)
-        .ok_or_else(|| size_overflow(operation, "sizing cuDF validity word count"))?;
-    checked_size_mul(words, std::mem::size_of::<u32>(), operation, "sizing cuDF validity payload")
-}
-
-fn cudf_list_string_chars_bytes(
-    rows: usize,
-    nullable: bool,
-    child_rows: usize,
-    child_nullable: bool,
-    cudf_payload_bytes: usize,
-    operation: &'static str,
-) -> Result<usize> {
-    let root_structural = checked_size_add(
-        cudf_offset_payload_bytes(rows, operation)?,
-        cudf_validity_payload_bytes(rows, nullable, operation)?,
-        operation,
-        "sizing cuDF list root structure",
-    )?;
-    let child_structural = if child_rows == 0 {
-        0
-    } else {
-        checked_size_add(
-            cudf_offset_payload_bytes(child_rows, operation)?,
-            cudf_validity_payload_bytes(child_rows, child_nullable, operation)?,
-            operation,
-            "sizing cuDF list string child structure",
-        )?
-    };
-    let structural =
-        checked_size_add(root_structural, child_structural, operation, "sizing cuDF list and string child structure")?;
-    cudf_payload_bytes.checked_sub(structural).ok_or_else(|| {
-        Error::new_with(
-            ErrorCode::InvariantViolation,
-            operation,
-            "cuDF List<String> payload is smaller than its structural buffers",
-        )
-        .with_detail("cudf_payload_bytes", cudf_payload_bytes.to_string())
-        .with_detail("structural_bytes", structural.to_string())
-    })
 }
 
 pub(super) fn checked_size_add(

@@ -66,10 +66,6 @@ impl ArrowHostSchema {
         Self { fields, row_count }
     }
 
-    pub(crate) fn with_row_count(&self, row_count: usize) -> Self {
-        Self { fields: self.fields.clone(), row_count }
-    }
-
     /// Validated fields in schema order.
     pub fn fields(&self) -> &[ArrowHostField] {
         &self.fields

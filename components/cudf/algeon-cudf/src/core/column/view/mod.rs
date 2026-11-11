@@ -20,7 +20,7 @@ pub(crate) use testing_hooks::{
     trigger_fixed_width_host_byte_range_overflow_for_test,
 };
 
-use super::{convert::copy_view_to_owned, device_slice::DeviceSlice, owned::Column};
+use super::{device_slice::DeviceSlice, owned::Column};
 use crate::{
     core::{
         error::{
@@ -534,13 +534,6 @@ impl<'a> ColumnView<'a> {
     /// The returned buffer covers only the active logical range of this view.
     pub(crate) fn to_fixed_width_host_bytes(&self) -> Result<Vec<u8>> {
         let dt = self.data_type()?;
-        if self.offset()? != 0 {
-            // Normalize sliced views to a zero-offset owned column first so the
-            // resulting host bytes cover only the active logical range.
-            let normalized = super::convert::copy_view_to_owned(self)?;
-            return normalized.view()?.to_fixed_width_host_bytes();
-        }
-
         let elem_size = usize::try_from(dt.id().size_in_bytes()?.ok_or_else(|| {
             Error::new_with(
                 ErrorCode::UnsupportedDtype,
@@ -683,13 +676,6 @@ impl<'a> ColumnView<'a> {
                 .with_fact(FACT_RIGHT_TYPE_ID, TypeId::String));
         }
 
-        if self.offset()? != 0 {
-            // Normalize sliced views to a zero-offset owned column first so
-            // host string materialization only covers the active logical range.
-            let normalized = copy_view_to_owned(self)?;
-            return normalized.view()?.to_strings_host_raw(operation);
-        }
-
         let size = self.len()?;
         if size == 0 {
             return Ok(Vec::new());
@@ -700,7 +686,15 @@ impl<'a> ColumnView<'a> {
         let offsets_count = size + 1;
         let mut offsets = vec![0i32; offsets_count];
         let offsets_buf_size = std::mem::size_of_val(offsets.as_slice());
-        let (_, chars_size) = self.string_chars_ptr_and_size().map_err(|e| e.reanchor(operation))?;
+        // The span runs from the chars base to the last active offset; a
+        // sliced view's chars start at its first active offset.
+        let (_, chars_end) = self.string_chars_ptr_and_size().map_err(|e| e.reanchor(operation))?;
+        let chars_begin = self.string_first_active_offset(operation)?;
+        let chars_size = chars_end.checked_sub(chars_begin).ok_or_else(|| {
+            foreign_string_view_contract_error(operation, "string chars span ends before its first active offset")
+                .with_detail("chars_begin", chars_begin.to_string())
+                .with_detail("chars_end", chars_end.to_string())
+        })?;
         let expected_total_chars_bytes = i32::try_from(chars_size).map_err(|_| {
             foreign_string_view_contract_error(operation, "string chars span exceeds i32::MAX")
                 .with_detail("chars_size", chars_size.to_string())
@@ -761,6 +755,32 @@ impl<'a> ColumnView<'a> {
         }
 
         Ok(result)
+    }
+
+    /// Chars offset of the first active row. cuDF string offsets start at 0,
+    /// so only a sliced view reads it from the device; the native copy's
+    /// returned total cross-checks the span either way.
+    fn string_first_active_offset(&self, operation: &'static str) -> Result<usize> {
+        let offset = self.offset()?;
+        if offset == 0 {
+            return Ok(0);
+        }
+        let first = self.child(0).map_err(|e| e.reanchor(operation))?.slice_with_operation(offset, 1, operation)?;
+        let value = match first.data_type()?.id() {
+            TypeId::Int32 => i64::from(first.to_vec::<i32>()?[0]),
+            TypeId::Int64 => first.to_vec::<i64>()?[0],
+            other => {
+                return Err(foreign_string_view_contract_error(
+                    operation,
+                    "string offsets child must be INT32 or INT64",
+                )
+                .with_fact(FACT_TYPE_ID, other));
+            },
+        };
+        usize::try_from(value).map_err(|_| {
+            foreign_string_view_contract_error(operation, "string offset is negative")
+                .with_detail("offset_value", value.to_string())
+        })
     }
 
     /// Copy string data to host as `Vec<Option<String>>`, distinguishing null

@@ -722,11 +722,10 @@ cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(cudf_column_view_han
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     cudf::strings_column_view scv(*view);
-    cudf::size_type first_offset = 0;
-    cudf::size_type last_offset  = 0;
-    auto const offsets = cudf::strings::detail::get_first_and_last_offset(scv, exec->stream);
-    first_offset       = static_cast<cudf::size_type>(offsets.first);
-    last_offset        = static_cast<cudf::size_type>(offsets.second);
+    // Large-string columns carry INT64 offsets, so the span must not be
+    // narrowed to cudf::size_type.
+    auto const [first_offset, last_offset] =
+      cudf::strings::detail::get_first_and_last_offset(scv, exec->stream);
     if (first_offset < 0 || last_offset < first_offset) {
       set_error("string chars span is invalid");
       return CUDF_ERROR_INVALID_OPERATION;
