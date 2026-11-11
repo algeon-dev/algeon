@@ -1,6 +1,7 @@
 //! Parquet file I/O.
 
 mod evidence;
+mod footer;
 mod options;
 mod read;
 mod remote;
@@ -10,6 +11,8 @@ mod write;
 mod tests;
 
 pub use evidence::{ParquetPruningEvidence, ParquetReadEvidence};
+pub(crate) use footer::ParquetFooter;
+pub use footer::ParquetFooterCache;
 pub use options::ParquetTableReadOptions;
 pub(crate) use options::{ParquetMultiTableInput, ParquetMultiTableReadOptions};
 pub use read::read_parquet_table;

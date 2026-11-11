@@ -105,6 +105,10 @@ static int cudf_rust_c_header_smoke(void) {
   SMOKE_CHECK_FN(cudf_status_t, cudf_ast_operation_binary_create, cudf_ast_operator_t, cudf_ast_expression_handle, cudf_ast_expression_handle, cudf_ast_expression_handle*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_ast_expression_destroy, cudf_ast_expression_handle);
 
+  // Parquet footers
+  SMOKE_CHECK_FN(cudf_status_t, cudf_io_read_parquet_footer, char const*, cudf_io_parquet_footer_handle*);
+  SMOKE_CHECK_FN(cudf_status_t, cudf_io_parquet_footer_destroy, cudf_io_parquet_footer_handle);
+
   // Join operations
   SMOKE_CHECK_VAL(cudf_join_kind_t, CUDF_JOIN_KIND_INNER_JOIN);
   SMOKE_CHECK_VAL(cudf_nullable_join_t, CUDF_NULLABLE_JOIN_YES);

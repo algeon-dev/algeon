@@ -33,6 +33,50 @@ fn bounded_native_query_executes_non_aggregate_source_plan() {
 }
 
 #[test]
+fn bounded_native_query_parses_a_split_file_footer_once_per_attempt() {
+    let dir = unique_temp_dir("query-engine-bounded-footer-reuse");
+    let path = dir.join("input.parquet");
+    let row_groups = 8;
+    let rows_per_row_group = 1024;
+    let schema = write_uncompressed_row_grouped_input_parquet(&path, row_groups, rows_per_row_group);
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![12 * 1024; row_groups])
+                .with_row_group_rows(vec![rows_per_row_group as u64; row_groups]),
+        ],
+        Arc::clone(&schema),
+        vec!["key".into(), "value".into()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source).unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
+        max_source_chunk_bytes: 64 * 1024 * 1024,
+        max_row_groups_per_chunk: 2,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let admitted = context.admit_plan(&plan).unwrap();
+
+    let result = execute_query_plan(&admitted, &plan).unwrap();
+
+    assert_eq!(result.metrics().source_chunks_committed, 4);
+    assert_eq!(admitted.parquet_footer_cache().parsed_footer_count(), 1);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should return a RecordBatch");
+    };
+    let expected = (0..(row_groups * rows_per_row_group) as i64).collect::<Vec<_>>();
+    assert_eq!(int64_array(batch, 1).values().as_ref(), expected.as_slice());
+    admitted.finish();
+    drop(admitted);
+    wait_for_ledger_release(context.policy);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_preserves_multi_file_source_order() {
     let dir = unique_temp_dir("query-engine-bounded-multi-file-source-order");
     let first_path = dir.join("part-000.parquet");

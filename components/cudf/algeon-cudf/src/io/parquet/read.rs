@@ -193,6 +193,7 @@ struct SingleReadInputs<'a> {
     num_rows: i64,
     row_groups: Option<&'a Vec<i32>>,
     predicate: cudf_sys::cudf_ast_expression_handle,
+    footer: cudf_sys::cudf_io_parquet_footer_handle,
     exec_options: &'a cudf_sys::cudf_exec_options_t,
 }
 
@@ -238,8 +239,9 @@ fn invoke_single_read(inputs: &SingleReadInputs<'_>, outputs: &mut SingleReadOut
     } else if let Some(filepath) = inputs.path_input {
         // SAFETY: filepath is a valid CString. col_ptrs is either null or a
         // valid pointer to num_cols CString pointers. rg_ptr is either null
-        // or a valid pointer to num_rg i32 values. predicate is either null
-        // or an owned AST handle retained by options for the duration of this call.
+        // or a valid pointer to num_rg i32 values. predicate and footer are
+        // each either null or an owned handle retained by options for the
+        // duration of this call.
         unsafe {
             cudf_sys::cudf_io_read_parquet_with_metadata_filter_ex(
                 filepath.as_ptr(),
@@ -250,6 +252,7 @@ fn invoke_single_read(inputs: &SingleReadInputs<'_>, outputs: &mut SingleReadOut
                 rg_ptr,
                 num_rg,
                 inputs.predicate,
+                inputs.footer,
                 &mut outputs.table_handle,
                 &mut outputs.names_ptr,
                 &mut outputs.num_names,
@@ -334,6 +337,7 @@ pub(crate) fn read_parquet_table_with_evidence(
         num_rows,
         row_groups: options.row_groups.as_ref(),
         predicate,
+        footer: options.footer.as_ref().map_or(ptr::null_mut(), |footer| footer.raw_handle()),
         exec_options: exec_options.options(),
     };
     let mut outputs = SingleReadOutputs {
@@ -413,6 +417,20 @@ fn validate_multi_inputs(options: &ParquetMultiTableReadOptions) -> Result<()> {
         .with_detail("reason", "row_group_file_count_mismatch")
         .with_detail("file_count", options.inputs.len().to_string())
         .with_detail("row_group_file_count", row_groups_per_file.len().to_string()));
+    }
+    // The native reader reads one footer per file, so a shorter list would be
+    // read past its end.
+    if let Some(footers) = &options.footers
+        && (footers.len() != options.inputs.len() || options.inputs.iter().any(|input| input.remote_source().is_some()))
+    {
+        return Err(Error::new_with(
+            ErrorCode::ColumnLengthMismatch,
+            OPERATION,
+            "multi-file Parquet footers must name every input, and every input must be local",
+        )
+        .with_detail("reason", "footer_input_mismatch")
+        .with_detail("file_count", options.inputs.len().to_string())
+        .with_detail("footer_count", footers.len().to_string()));
     }
     Ok(())
 }
@@ -591,6 +609,8 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
     let exec_options = output_domain.enter_execution()?.with_parquet_pass_read_limit(options.pass_read_limit);
     let predicate = options.predicate.as_ref().map_or(ptr::null_mut(), |predicate| predicate.raw_handle());
     let remote = prepare_multi_remote(options)?;
+    let footer_handles =
+        options.footers.as_ref().map(|footers| footers.iter().map(|footer| footer.raw_handle()).collect::<Vec<_>>());
 
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut c_char = ptr::null_mut();
@@ -599,7 +619,8 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
     let mut pruning_raw_evidence = empty_pruning_evidence_raw();
 
     // SAFETY: filepath_ptrs and column/row-group buffers are valid for this
-    // call. The predicate handle, when present, is retained by options.
+    // call. The predicate and footer handles, when present, are retained by
+    // options.
     let status = if remote.has_explicit_remote_sources() {
         let remote_source_flags = remote.source_flags().expect("remote flags exist when remote sources exist");
         let remote_profile_raw = remote.raw_profiles(&options.inputs);
@@ -636,6 +657,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
                 row_groups_ptr,
                 num_row_groups,
                 predicate,
+                footer_handles.as_ref().map_or(ptr::null(), |handles| handles.as_ptr()),
                 &mut table_handle,
                 &mut names_ptr,
                 &mut num_names,

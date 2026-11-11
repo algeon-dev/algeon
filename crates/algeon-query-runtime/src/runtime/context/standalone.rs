@@ -10,7 +10,7 @@ use std::{
     },
 };
 
-use cudf::{QueryMemoryDomainOptions, Runtime as CudfRuntime};
+use cudf::{QueryMemoryDomainOptions, Runtime as CudfRuntime, io::parquet::ParquetFooterCache};
 use query_planning::{
     chunk::SourceChunkPlanningOptions,
     correlation::{QueryId, TraceId},
@@ -354,6 +354,7 @@ impl StandaloneScopes {
             next_member_id: AtomicU64::new(1),
             memory_control_policy,
             cancellation,
+            parquet_footers: ParquetFooterCache::new(),
             observation_owner: None,
         };
         let stream = query.bind_root(runtime)?;

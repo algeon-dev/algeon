@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, fs, slice, sync::Arc};
 
 use arrow::{
-    array::{Array, AsArray, Int32Array, Int64Array, LargeListArray, ListArray, new_null_array},
+    array::{Array, AsArray, Int32Array, Int64Array, LargeListArray, ListArray, StringArray, new_null_array},
     datatypes::{
         DataType as ArrowDataType, Date32Type, Decimal128Type, DurationNanosecondType, Field, Int32Type, Int64Type,
         Schema, TimeUnit, TimestampMicrosecondType,
@@ -16,7 +16,7 @@ use cudf::{
     core::{Column, Table},
     frame::dataframe::{GpuRecordBatch, InfoDetail, ParquetSourceChunkReadOutput},
     io::{
-        parquet::{ParquetTableWriteOptions, RemoteParquetProfile, RemoteReadMode, write_parquet},
+        parquet::{ParquetFooterCache, ParquetTableWriteOptions, RemoteParquetProfile, RemoteReadMode, write_parquet},
         source::{
             LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, PredicateDisposition, SourceChunk,
             SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef, SourceColumnRole, SourceOutputColumn,
@@ -2418,9 +2418,191 @@ fn read_parquet_source_chunk_rejects_stale_zero_column_count_metadata() {
     );
 }
 
+/// Eight rows in four row groups of two, with a string column so the footer
+/// carries page indexes, the part libcudf reads only for BYTE_ARRAY columns.
+fn write_id_name_parquet(path: &std::path::Path, ids: &[i32]) {
+    let names = ids.iter().map(|id| format!("name-{id}")).collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", ArrowDataType::Int32, false),
+        Field::new("name", ArrowDataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(ids.to_vec())), Arc::new(StringArray::from(names))],
+    )
+    .unwrap();
+    let properties = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(2))
+        .set_statistics_enabled(EnabledStatistics::Page)
+        .build();
+    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, Some(properties)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+/// Every file selects all of its row groups explicitly, as a batched read
+/// requires.
+fn id_name_source(paths: &[&std::path::Path], row_group_counts: &[usize]) -> LocalParquetSource {
+    LocalParquetSource::data(
+        paths.iter().zip(row_group_counts).enumerate().map(|(index, (path, row_groups))| {
+            LocalParquetFile::new(path, format!("id-name-{index}"), [])
+                .unwrap()
+                .with_row_groups(Some((0..*row_groups).collect()))
+                .with_row_group_metadata(vec![128; *row_groups], vec![2; *row_groups])
+                .unwrap()
+        }),
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("name", dtype(TypeId::String), false).unwrap(),
+        ])
+        .unwrap(),
+        ["id", "name"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("name", SourceColumnRef::ReadColumn(1)).unwrap(),
+        ],
+        [],
+        [],
+    )
+    .unwrap()
+}
+
+fn read_source_chunks(
+    rt: &Runtime,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    footer_cache: Option<&ParquetFooterCache>,
+) -> ParquetSourceChunkReadOutput {
+    let request = SourceRead::new(source, chunks, SourceReadMode::FinalOutput);
+    let request = match footer_cache {
+        Some(cache) => request.with_footer_cache(cache),
+        None => request,
+    };
+    DataFrame::read_parquet_source(request, rt, Exec::RETAINED).unwrap()
+}
+
+fn ids(output: &ParquetSourceChunkReadOutput) -> Vec<i32> {
+    output.frame().series("id").unwrap().to_vec_strict::<i32>().unwrap()
+}
+
+fn read_parquet_source_chunks_of_one_file_share_one_parsed_footer() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("shared_footer.parquet");
+    let rt = sample_runtime();
+    write_id_name_parquet(&path, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    let predicate = AstExpression::greater(
+        AstExpression::left_column(0).unwrap(),
+        AstExpression::literal(rt.scalar(4i32).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let plain = id_name_source(&[&path], &[4]);
+    let filtered = id_name_source(&[&path], &[4]).with_reader_predicate(Arc::new(predicate)).unwrap();
+    let cache = ParquetFooterCache::new();
+
+    for source in [&plain, &filtered] {
+        let plan = plan_local_parquet_source_chunks(source, SourceChunkPlanningPolicy::new(None, 3).unwrap()).unwrap();
+        assert_eq!(plan.chunks().len(), 2);
+        // The second chunk first: the shared footer is renumbered per read, so
+        // reading the file out of order must not shift any row group.
+        for chunk in plan.chunks().iter().rev() {
+            let with_cache = read_source_chunks(&rt, source, slice::from_ref(chunk), Some(&cache));
+            let without_cache = read_source_chunks(&rt, source, slice::from_ref(chunk), None);
+            assert_eq!(with_cache.frame().to_record_batch().unwrap(), without_cache.frame().to_record_batch().unwrap());
+            let evidence = |output: &ParquetSourceChunkReadOutput| output.read_evidence().and_then(|e| e.pruning);
+            assert_eq!(evidence(&with_cache), evidence(&without_cache));
+        }
+    }
+    let plan = plan_local_parquet_source_chunks(&filtered, SourceChunkPlanningPolicy::new(None, 3).unwrap()).unwrap();
+    let first = read_source_chunks(&rt, &filtered, slice::from_ref(&plan.chunks()[0]), Some(&cache));
+    let pruning = first.read_evidence().and_then(|evidence| evidence.pruning).unwrap();
+    assert_eq!(ids(&first), vec![5, 6]);
+    assert_eq!(pruning.input_row_groups, 3);
+    assert_eq!(pruning.row_groups_after_stats_filter, Some(1));
+    assert_eq!(cache.parsed_footer_count(), 1);
+}
+
+fn read_parquet_source_chunk_of_a_whole_file_keeps_no_footer() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("whole_file_footer.parquet");
+    let rt = sample_runtime();
+    write_id_name_parquet(&path, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    let source = id_name_source(&[&path], &[4]);
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    assert_eq!(plan.chunks().len(), 1);
+    let cache = ParquetFooterCache::new();
+
+    let output = read_source_chunks(&rt, &source, plan.chunks(), Some(&cache));
+
+    assert_eq!(ids(&output), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(cache.parsed_footer_count(), 0);
+}
+
+fn read_parquet_source_chunk_parses_the_footer_again_after_the_file_changes() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("changed_footer.parquet");
+    let rt = sample_runtime();
+    write_id_name_parquet(&path, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    let source = id_name_source(&[&path], &[4]);
+    let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::new(None, 1).unwrap()).unwrap();
+    let cache = ParquetFooterCache::new();
+    assert_eq!(ids(&read_source_chunks(&rt, &source, slice::from_ref(&plan.chunks()[1]), Some(&cache))), vec![3, 4]);
+
+    // The longer names give the rewritten file another size, so its footer
+    // is stale even when the modification time does not advance.
+    write_id_name_parquet(&path, &[100_001, 100_002, 100_003, 100_004, 100_005, 100_006, 100_007, 100_008]);
+    let output = read_source_chunks(&rt, &source, slice::from_ref(&plan.chunks()[1]), Some(&cache));
+
+    assert_eq!(ids(&output), vec![100_003, 100_004]);
+    assert_eq!(cache.parsed_footer_count(), 2);
+}
+
+fn read_parquet_source_chunk_batch_shares_footers_with_single_chunk_reads() {
+    let dir = TempDir::new().unwrap();
+    let split = dir.path().join("batch_split.parquet");
+    let whole = dir.path().join("batch_whole.parquet");
+    let rt = sample_runtime();
+    write_id_name_parquet(&split, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    write_id_name_parquet(&whole, &[11, 12, 13, 14]);
+    let source = id_name_source(&[&split, &whole], &[4, 2]);
+    let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::new(None, 2).unwrap()).unwrap();
+    assert_eq!(plan.chunks().len(), 3);
+    let cache = ParquetFooterCache::new();
+    // The first split chunk and the whole second file read together.
+    let batch = [plan.chunks()[0].clone(), plan.chunks()[2].clone()];
+
+    let with_cache = read_source_chunks(&rt, &source, &batch, Some(&cache));
+    let without_cache = read_source_chunks(&rt, &source, &batch, None);
+    assert_eq!(with_cache.frame().to_record_batch().unwrap(), without_cache.frame().to_record_batch().unwrap());
+    assert_eq!(ids(&with_cache), vec![1, 2, 3, 4, 11, 12, 13, 14]);
+    assert_eq!(cache.parsed_footer_count(), 2);
+
+    // The split file's footer is shared; the whole file's was not kept.
+    let rest = read_source_chunks(&rt, &source, slice::from_ref(&plan.chunks()[1]), Some(&cache));
+    assert_eq!(ids(&rest), vec![5, 6, 7, 8]);
+    assert_eq!(cache.parsed_footer_count(), 2);
+    read_source_chunks(&rt, &source, &batch, Some(&cache));
+    assert_eq!(cache.parsed_footer_count(), 3);
+}
+
 #[test]
 fn parquet_source_tests_cases() {
     run_named_cases(&[
+        (
+            "read_parquet_source_chunks_of_one_file_share_one_parsed_footer",
+            read_parquet_source_chunks_of_one_file_share_one_parsed_footer,
+        ),
+        (
+            "read_parquet_source_chunk_of_a_whole_file_keeps_no_footer",
+            read_parquet_source_chunk_of_a_whole_file_keeps_no_footer,
+        ),
+        (
+            "read_parquet_source_chunk_parses_the_footer_again_after_the_file_changes",
+            read_parquet_source_chunk_parses_the_footer_again_after_the_file_changes,
+        ),
+        (
+            "read_parquet_source_chunk_batch_shares_footers_with_single_chunk_reads",
+            read_parquet_source_chunk_batch_shares_footers_with_single_chunk_reads,
+        ),
         (
             "read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_input",
             read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_input,

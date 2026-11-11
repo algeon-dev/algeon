@@ -459,7 +459,9 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
 /// later retry of this call could still need it. The budget token's member
 /// limit also becomes the reader's pass read limit, so cuDF's chunked Parquet
 /// reader sizes its own passes to the same bound the token enforces. The I/O
-/// lease is taken after the token, and only for the read call.
+/// lease is taken after the token, and only for the read call. A chunk that
+/// reads part of its file reuses the file's footer from the attempt's
+/// [`ExecutionContext::parquet_footer_cache`].
 fn read_local_parquet_chunk_uncached(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -543,7 +545,8 @@ fn read_local_parquet_chunk_uncached(
     let outcome = token
         .run("dataframe::read_parquet_source", |exec| {
             let request = SourceRead::new(&cudf_source, slice::from_ref(&cudf_chunk), SourceReadMode::ExecutionFrame)
-                .with_pass_read_limit_for_budget(token.member_limit_bytes()?);
+                .with_pass_read_limit_for_budget(token.member_limit_bytes()?)
+                .with_footer_cache(context.parquet_footer_cache());
             DataFrame::read_parquet_source(request, &runtime, exec)
         })
         .map_err(|error| {
@@ -806,7 +809,8 @@ fn read_local_parquet_chunk_batch_uncached(
     let outcome = token
         .run("dataframe::read_parquet_source", |exec| {
             DataFrame::read_parquet_source(
-                SourceRead::new(&cudf_source, &cudf_chunks, SourceReadMode::ExecutionFrame),
+                SourceRead::new(&cudf_source, &cudf_chunks, SourceReadMode::ExecutionFrame)
+                    .with_footer_cache(context.parquet_footer_cache()),
                 &runtime,
                 exec,
             )
