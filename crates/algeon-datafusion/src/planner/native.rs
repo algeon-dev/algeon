@@ -887,9 +887,10 @@ fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
-    #[cfg(feature = "cugraph")]
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
-    use datafusion::physical_plan::{coop::CooperativeExec, empty::EmptyExec, union::UnionExec};
+    #[cfg(feature = "cugraph")]
+    use datafusion::physical_plan::coop::CooperativeExec;
+    use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
     #[cfg(feature = "cugraph")]
     use query_planning::source::GpuResidentSource;
     use query_planning::{
