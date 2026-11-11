@@ -8,10 +8,13 @@
 #include <cudf/concatenate.hpp>
 #include <cudf/io/datasource.hpp>
 #include <cudf/io/parquet.hpp>
+#include <cudf/io/parquet_metadata.hpp>
+#include <cudf/io/parquet_schema.hpp>
 #include <cudf/io/types.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/utilities/default_stream.hpp>
+#include <cudf/utilities/error.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/span.hpp>
 
@@ -30,6 +33,7 @@
 #include <new>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
@@ -39,6 +43,13 @@
 #include <kvikio/defaults.hpp>
 #include <kvikio/remote_handle.hpp>
 #endif
+
+/// One parsed footer and the path string it was read from. A read compares
+/// the path to its own so a footer never supplies another file's byte ranges.
+struct cudf_io_parquet_footer_handle_state {
+  std::string path;
+  cudf::io::parquet::FileMetaData metadata;
+};
 
 namespace {
 constexpr int32_t CUDF_IO_REMOTE_PARQUET_BACKEND_UNAVAILABLE              = 0;
@@ -147,39 +158,81 @@ cudf::io::table_with_metadata collect_chunked_parquet_reader(cudf::io::chunked_p
 ///
 /// `chunk_read_limit` stays 0: only scratch needs bounding here, and capping
 /// output chunk size too would add concatenation work for nothing.
-cudf::io::table_with_metadata read_parquet_bounded(cudf::io::parquet_reader_options const& options,
-                                                   cudf_exec_context const& exec)
-{
-  cudf::rust::test_support::record_parquet_pass_read_limit(exec.parquet_pass_read_limit);
-  if (exec.parquet_pass_read_limit == 0) {
-    return cudf::io::read_parquet(options, exec.stream, *exec.mr);
-  }
-
-  cudf::io::chunked_parquet_reader reader(
-    /*chunk_read_limit=*/0, exec.parquet_pass_read_limit, options, exec.stream, *exec.mr);
-  return collect_chunked_parquet_reader(reader, exec);
-}
-
-/// `read_parquet_bounded` for the pre-built datasource paths (remote and mixed
-/// local/remote reads), which own their `datasource` objects.
+///
+/// `footers` holds one parsed footer per source, or is empty and libcudf
+/// reads and parses each source's footer itself.
 cudf::io::table_with_metadata read_parquet_bounded(
   std::vector<std::unique_ptr<cudf::io::datasource>>&& sources,
+  std::vector<cudf::io::parquet::FileMetaData>&& footers,
   cudf::io::parquet_reader_options const& options,
   cudf_exec_context const& exec)
 {
   cudf::rust::test_support::record_parquet_pass_read_limit(exec.parquet_pass_read_limit);
   if (exec.parquet_pass_read_limit == 0) {
-    return cudf::io::read_parquet(std::move(sources), {}, options, exec.stream, *exec.mr);
+    return cudf::io::read_parquet(
+      std::move(sources), std::move(footers), options, exec.stream, *exec.mr);
   }
 
   cudf::io::chunked_parquet_reader reader(/*chunk_read_limit=*/0,
                                           exec.parquet_pass_read_limit,
                                           std::move(sources),
-                                          {},
+                                          std::move(footers),
                                           options,
                                           exec.stream,
                                           *exec.mr);
   return collect_chunked_parquet_reader(reader, exec);
+}
+
+/// `read_parquet_bounded` over the datasources libcudf would open for the
+/// options' own source.
+cudf::io::table_with_metadata read_parquet_bounded(
+  cudf::io::parquet_reader_options const& options,
+  std::vector<cudf::io::parquet::FileMetaData>&& footers,
+  cudf_exec_context const& exec)
+{
+  return read_parquet_bounded(
+    cudf::io::make_datasources(options.get_source()), std::move(footers), options, exec);
+}
+
+/// The footer copy one read hands to libcudf, which consumes footers by value.
+///
+/// The copy holds only the selected row groups, in selection order, and
+/// `row_groups` is renumbered in place to index the copy, so a read of a few
+/// row groups of a large file copies those row groups and not the whole
+/// footer. An empty selection reads every row group and copies them all.
+/// `num_rows` becomes the selected row count because libcudf rejects a footer
+/// whose row count disagrees with its row groups. A row group's position in
+/// its file is read only by libcudf's row-index column, which no shim read
+/// requests.
+cudf::io::parquet::FileMetaData footer_for_selection(cudf::io::parquet::FileMetaData const& footer,
+                                                     std::vector<cudf::size_type>& row_groups)
+{
+  if (row_groups.empty()) { return footer; }
+  cudf::io::parquet::FileMetaData selected;
+  selected.version            = footer.version;
+  selected.schema             = footer.schema;
+  selected.key_value_metadata = footer.key_value_metadata;
+  selected.created_by         = footer.created_by;
+  selected.column_orders      = footer.column_orders;
+  selected.row_groups.reserve(row_groups.size());
+  for (auto& row_group : row_groups) {
+    CUDF_EXPECTS(row_group >= 0 and std::cmp_less(row_group, footer.row_groups.size()),
+                 "Invalid row group index",
+                 std::invalid_argument);
+    selected.row_groups.push_back(footer.row_groups[row_group]);
+    selected.num_rows += selected.row_groups.back().num_rows;
+    row_group = static_cast<cudf::size_type>(selected.row_groups.size() - 1);
+  }
+  return selected;
+}
+
+cudf_status_t validate_footer_path(cudf_io_parquet_footer_handle footer, char const* filepath)
+{
+  if (footer->path != filepath) {
+    set_error("Parquet footer was read from a different path than the read names");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  return CUDF_SUCCESS;
 }
 
 cudf_status_t validate_parquet_reader_args(char const** columns,
@@ -797,7 +850,7 @@ cudf_status_t cudf_io_read_parquet_ex(char const* filepath,
 
     {
       auto options         = builder.build();
-      auto [tbl, metadata] = read_parquet_bounded(options, *exec);
+      auto [tbl, metadata] = read_parquet_bounded(options, {}, *exec);
 
       *out = cudf_release_table_handle(std::move(tbl), cudf_capture_exec_provenance(*exec));
     }
@@ -841,7 +894,7 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(void const* host_buffer,
 
     {
       auto options         = builder.build();
-      auto [tbl, metadata] = read_parquet_bounded(options, *exec);
+      auto [tbl, metadata] = read_parquet_bounded(options, {}, *exec);
 
       *out = cudf_release_table_handle(std::move(tbl), cudf_capture_exec_provenance(*exec));
     }
@@ -950,7 +1003,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(char const* filepath,
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = read_parquet_bounded(options, *exec);
+      result       = read_parquet_bounded(options, {}, *exec);
     }
 
     auto const fault = cudf::rust::test_support::take_io_metadata_fault();
@@ -983,6 +1036,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
   int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
+  cudf_io_parquet_footer_handle footer,
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
@@ -1001,6 +1055,10 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
   cudf_status_t const args_status = validate_parquet_reader_args(
     columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
+  if (footer != nullptr) {
+    cudf_status_t const footer_status = validate_footer_path(footer, filepath);
+    if (footer_status != CUDF_SUCCESS) { return footer_status; }
+  }
   kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
@@ -1011,8 +1069,12 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
     auto source  = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
+    std::vector<cudf::size_type> selection(row_groups, row_groups + num_row_groups);
+    std::vector<cudf::io::parquet::FileMetaData> footers;
+    if (footer != nullptr) { footers.push_back(footer_for_selection(footer->metadata, selection)); }
+
     cudf_status_t const config_status = configure_parquet_reader_builder(
-      builder, columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
+      builder, columns, num_columns, skip_rows, num_rows, selection.data(), num_row_groups);
     if (config_status != CUDF_SUCCESS) { return config_status; }
 
     if (predicate != nullptr) { builder.filter(cudf_ast_expression_from_handle(predicate)); }
@@ -1020,7 +1082,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = read_parquet_bounded(options, *exec);
+      result       = read_parquet_bounded(options, std::move(footers), *exec);
     }
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
@@ -1102,7 +1164,7 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result = read_parquet_bounded(std::move(sources), options, *exec);
+      result = read_parquet_bounded(std::move(sources), {}, options, *exec);
     }
     write_remote_read_evidence(out_evidence, evidence_sources);
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
@@ -1139,6 +1201,7 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
   int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
+  cudf_io_parquet_footer_handle const* footers,
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
@@ -1162,6 +1225,13 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
                                                                        row_groups,
                                                                        num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
+  if (footers != nullptr) {
+    for (int32_t i = 0; i < num_files; ++i) {
+      CUDF_RUST_NULL_CHECK(footers[i], "footers entry is null");
+      cudf_status_t const footer_status = validate_footer_path(footers[i], filepaths[i]);
+      if (footer_status != CUDF_SUCCESS) { return footer_status; }
+    }
+  }
   kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
@@ -1186,28 +1256,29 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
       builder.column_names(col_names);
     }
 
+    std::vector<std::vector<cudf::size_type>> grouped_row_groups(num_files);
     if (num_row_group_offsets > 0) {
-      std::vector<std::vector<cudf::size_type>> grouped_row_groups;
-      grouped_row_groups.reserve(num_files);
       for (int32_t file_index = 0; file_index < num_files; ++file_index) {
-        auto const begin = row_group_offsets[file_index];
-        auto const end   = row_group_offsets[file_index + 1];
-        std::vector<cudf::size_type> file_row_groups;
-        file_row_groups.reserve(end - begin);
-        for (int32_t row_group_index = begin; row_group_index < end; ++row_group_index) {
-          file_row_groups.push_back(static_cast<cudf::size_type>(row_groups[row_group_index]));
-        }
-        grouped_row_groups.push_back(std::move(file_row_groups));
+        grouped_row_groups[file_index].assign(row_groups + row_group_offsets[file_index],
+                                              row_groups + row_group_offsets[file_index + 1]);
       }
-      builder.row_groups(std::move(grouped_row_groups));
     }
+    std::vector<cudf::io::parquet::FileMetaData> selected_footers;
+    if (footers != nullptr) {
+      selected_footers.reserve(num_files);
+      for (int32_t file_index = 0; file_index < num_files; ++file_index) {
+        selected_footers.push_back(
+          footer_for_selection(footers[file_index]->metadata, grouped_row_groups[file_index]));
+      }
+    }
+    if (num_row_group_offsets > 0) { builder.row_groups(std::move(grouped_row_groups)); }
 
     if (predicate != nullptr) { builder.filter(cudf_ast_expression_from_handle(predicate)); }
 
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = read_parquet_bounded(options, *exec);
+      result       = read_parquet_bounded(options, std::move(selected_footers), *exec);
     }
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
@@ -1289,6 +1360,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
                                                               row_groups,
                                                               num_row_groups,
                                                               predicate,
+                                                              /*footers=*/nullptr,
                                                               out_table,
                                                               out_names,
                                                               out_num_names,
@@ -1357,7 +1429,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result = read_parquet_bounded(std::move(sources), options, *exec);
+      result = read_parquet_bounded(std::move(sources), {}, options, *exec);
     }
     write_remote_read_evidence(out_evidence, evidence_sources);
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
@@ -1433,7 +1505,7 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = read_parquet_bounded(options, *exec);
+      result       = read_parquet_bounded(options, {}, *exec);
     }
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
@@ -1597,6 +1669,35 @@ cudf_status_t cudf_rust_test_support_io_kvikio_active_io_end(void)
 #endif
 }
 #endif
+
+cudf_status_t cudf_io_read_parquet_footer(char const* filepath, cudf_io_parquet_footer_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
+  kvikio_active_io_guard const active_io;
+  CUDF_RUST_TRY
+  {
+    auto sources = cudf::io::make_datasources(cudf::io::source_info(std::string(filepath)));
+    auto footers = cudf::io::read_parquet_footers(sources);
+    CUDF_EXPECTS(footers.size() == 1, "expected one footer for one Parquet file");
+    auto footer = std::make_unique<cudf_io_parquet_footer_handle_state>(
+      cudf_io_parquet_footer_handle_state{std::string(filepath), std::move(footers.front())});
+    *out = footer.release();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_IO_CATCH
+}
+
+cudf_status_t cudf_io_parquet_footer_destroy(cudf_io_parquet_footer_handle handle)
+{
+  try {
+    delete handle;
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
+}
 
 cudf_status_t cudf_io_probe_path_datasource(const char* filepath,
                                             int64_t preferred_read_size,

@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use cudf::io::parquet::ParquetFooterCache;
 #[cfg(test)]
 use query_planning::policy::PlanningPolicy;
 use query_planning::{correlation::TraceId, error::QueryErrorCode};
@@ -474,6 +475,7 @@ impl QueryHandle {
             plan_identities: Arc::clone(&self.lifetime.admitted_plan_identities),
             memory_control_policy: memory_control_policy_for_grant(self.memory_control_policy(), &memory_grant),
             auxiliary_slots: Arc::clone(&self.lifetime.attempt_auxiliary_slots),
+            parquet_footers: ParquetFooterCache::new(),
             allocation_domain,
             memory_grant,
         };

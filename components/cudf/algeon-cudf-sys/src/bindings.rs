@@ -86,6 +86,8 @@ pub type cudf_aggregation_kind_t = core::ffi::c_uint;
 #[doc = " Null handling policy for groupby keys and for COUNT aggregations."]
 pub type cudf_null_policy_t = core::ffi::c_uint;
 pub type cudf_io_kvikio_compat_mode_t = core::ffi::c_uint;
+#[doc = " The parsed footer of one local Parquet file: its schema, key-value\n metadata, row groups and, when the file has BYTE_ARRAY columns, its page\n indexes. The footer is immutable after creation, so concurrent reads may\n share one handle."]
+pub type cudf_io_parquet_footer_handle = *mut cudf_io_parquet_footer_handle_state;
 #[doc = " How to compare nulls in join keys."]
 pub type cudf_null_equality_t = core::ffi::c_uint;
 #[doc = " Whether all hash-join build/probe inputs may contain nulls."]
@@ -404,6 +406,11 @@ pub struct cudf_io_kvikio_process_config_t {
     pub compat_mode: i32,
     pub thread_count: u32,
     pub task_size_bytes: u64,
+}
+#[repr(C)]
+#[derive(Debug)]
+pub struct cudf_io_parquet_footer_handle_state {
+    _unused: [u8; 0],
 }
 #[repr(C)]
 #[derive(Debug)]
@@ -1843,6 +1850,13 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Read and parse the footer of the local Parquet file at `filepath`, the\n same parse a path read performs on each call without a footer.\n\n This is host work and takes no execution scope. On success `*out` owns the\n footer; release it with `cudf_io_parquet_footer_destroy`. The footer\n describes the file as it was when read; a caller that reuses it is\n responsible for knowing the file has not changed since."]
+    pub fn cudf_io_read_parquet_footer(
+        filepath: *const core::ffi::c_char,
+        out: *mut cudf_io_parquet_footer_handle,
+    ) -> cudf_status_t;
+    #[doc = " Destroy a footer returned by `cudf_io_read_parquet_footer`. NULL is a no-op."]
+    pub fn cudf_io_parquet_footer_destroy(handle: cudf_io_parquet_footer_handle) -> cudf_status_t;
     #[doc = " Read a Parquet file into a table. `columns` is an optional array of\n null-terminated column name strings (pass NULL to read all columns).\n `num_columns` is the length of the `columns` array.\n\n `row_groups` is an optional array of zero-based row group indices to read\n (for the single source file). Pass NULL with `num_row_groups` = 0 to read\n all row groups. Cannot be combined with `skip_rows > 0` or `num_rows >= 0`.\n\n Preconditions:\n - `filepath` must be non-NULL\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `columns` must be non-NULL\n - `skip_rows` must be >= 0\n - `num_rows` must be >= -1 (`-1` means read all remaining rows)\n - if `num_row_groups > 0`, `row_groups` must be non-NULL\n - if `num_row_groups > 0`, `skip_rows` must be 0 and `num_rows` must be -1\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
     pub fn cudf_io_read_parquet_ex(
         filepath: *const core::ffi::c_char,
@@ -1882,7 +1896,7 @@ unsafe extern "C" {
         out_num_names: *mut i32,
         exec_options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Read Parquet with metadata and an optional libcudf AST reader predicate.\n\n `predicate` may be NULL. When non-NULL, it must outlive this call.\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
+    #[doc = " Read Parquet with metadata and an optional libcudf AST reader predicate.\n\n `predicate` may be NULL. When non-NULL, it must outlive this call.\n `footer` may be NULL, in which case the reader reads and parses the file's\n footer itself. When non-NULL, it must have been read from the same\n `filepath` string and is borrowed for this call; the read neither reads nor\n parses the footer again. Pruning evidence counts are the same either way.\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
     pub fn cudf_io_read_parquet_with_metadata_filter_ex(
         filepath: *const core::ffi::c_char,
         columns: *mut *const core::ffi::c_char,
@@ -1892,6 +1906,7 @@ unsafe extern "C" {
         row_groups: *const i32,
         num_row_groups: i32,
         predicate: cudf_ast_expression_handle,
+        footer: cudf_io_parquet_footer_handle,
         out_table: *mut cudf_table_handle,
         out_names: *mut *mut *mut core::ffi::c_char,
         out_num_names: *mut i32,
@@ -1916,7 +1931,7 @@ unsafe extern "C" {
         out_pruning_evidence: *mut cudf_io_parquet_pruning_evidence_t,
         exec_options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Read multiple Parquet files with metadata and an optional libcudf AST reader\n predicate.\n\n `filepaths` must contain `num_files` non-NULL path strings. Row order follows\n the file order and then each file's selected row-group order.\n\n Per-file row groups are represented by `row_group_offsets` and `row_groups`:\n `row_group_offsets` has `num_files + 1` entries and\n `row_groups[row_group_offsets[i]..row_group_offsets[i + 1]]` is the row-group\n selection for file `i`. Pass NULL offsets with zero row groups to read all\n row groups from every file.\n\n `predicate` may be NULL. When non-NULL, it must outlive this call.\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
+    #[doc = " Read multiple Parquet files with metadata and an optional libcudf AST reader\n predicate.\n\n `filepaths` must contain `num_files` non-NULL path strings. Row order follows\n the file order and then each file's selected row-group order.\n\n Per-file row groups are represented by `row_group_offsets` and `row_groups`:\n `row_group_offsets` has `num_files + 1` entries and\n `row_groups[row_group_offsets[i]..row_group_offsets[i + 1]]` is the row-group\n selection for file `i`. Pass NULL offsets with zero row groups to read all\n row groups from every file.\n\n `predicate` may be NULL. When non-NULL, it must outlive this call.\n `footers` is NULL or holds `num_files` non-NULL footers, entry `i` read\n from `filepaths[i]`, with the same contract as the single-file `footer`.\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
     pub fn cudf_io_read_parquet_multi_with_metadata_filter_ex(
         filepaths: *mut *const core::ffi::c_char,
         num_files: i32,
@@ -1927,6 +1942,7 @@ unsafe extern "C" {
         row_groups: *const i32,
         num_row_groups: i32,
         predicate: cudf_ast_expression_handle,
+        footers: *const cudf_io_parquet_footer_handle,
         out_table: *mut cudf_table_handle,
         out_names: *mut *mut *mut core::ffi::c_char,
         out_num_names: *mut i32,

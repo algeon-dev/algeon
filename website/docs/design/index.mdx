@@ -121,6 +121,7 @@ password verification.
 | `algeon-stream-cleanup-d{d}-p{p}` | One per stream pool | Synchronizes returned streams |
 | `algeon-gpu-close` | One per backend | Backend close cleanup |
 | `algeon-observation-completion-observation`, `algeon-observation-completion-activity-tail` | One each per backend | Observation delivery |
+| `algeon-parquet-footer-release` | One per process, started by the first release | Frees the parsed Parquet footers that source reads kept |
 | KvikIO thread pool | 64 per process, started at backend build | Compatibility-mode `pread` tasks and `s3://` range reads |
 
 An `atexit` hook joins registered CUDA-capable workers before libcudart tears

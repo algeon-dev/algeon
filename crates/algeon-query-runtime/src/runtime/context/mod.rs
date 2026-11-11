@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-use cudf::{DeviceId, Error as CudfError, Runtime as CudfRuntime};
+use cudf::{DeviceId, Error as CudfError, Runtime as CudfRuntime, io::parquet::ParquetFooterCache};
 use query_planning::{
     admission::AttemptCapabilityEvidence,
     capability::AggregateStrategyExecutionOptions,
@@ -580,6 +580,15 @@ impl ExecutionContext {
         match &self.query {
             QueryScope::Standalone(query) => &query.cancellation,
             QueryScope::Admitted(attempt) => &attempt.cancellation,
+        }
+    }
+
+    /// Parsed Parquet footers shared by every source read of this context's
+    /// query attempt, released with the attempt.
+    pub fn parquet_footer_cache(&self) -> &ParquetFooterCache {
+        match &self.query {
+            QueryScope::Standalone(query) => &query.parquet_footers,
+            QueryScope::Admitted(attempt) => &attempt.parquet_footers,
         }
     }
 

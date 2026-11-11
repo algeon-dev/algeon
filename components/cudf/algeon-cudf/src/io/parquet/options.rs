@@ -8,7 +8,7 @@ use std::{
 
 use typed_builder::TypedBuilder;
 
-use super::remote::RemoteParquetSource;
+use super::{footer::ParquetFooter, remote::RemoteParquetSource};
 use crate::{
     core::error::{self, Error, ErrorCode, Result},
     ops::ast::AstExpression,
@@ -51,6 +51,8 @@ pub struct ParquetTableReadOptions<'a> {
     #[builder(default, setter(skip))]
     pub(super) pass_read_limit: Option<u64>,
     #[builder(default, setter(skip))]
+    pub(super) footer: Option<Arc<ParquetFooter>>,
+    #[builder(default, setter(skip))]
     _lifetime: PhantomData<&'a [u8]>,
 }
 
@@ -59,7 +61,8 @@ pub struct ParquetTableReadOptions<'a> {
 /// This is the multi-source counterpart to [`ParquetTableReadOptions`] for
 /// path-compatible reads. File order is preserved by libcudf. When row groups are
 /// supplied, each entry in `row_groups_per_file` applies to the corresponding
-/// `inputs` entry.
+/// `inputs` entry. `footers`, when present, holds one footer per input, each
+/// parsed from that input's local path.
 #[derive(Debug, Clone)]
 pub(crate) struct ParquetMultiTableReadOptions {
     pub(crate) inputs: Vec<ParquetMultiTableInput>,
@@ -68,6 +71,7 @@ pub(crate) struct ParquetMultiTableReadOptions {
     pub(crate) predicate: Option<Arc<AstExpression>>,
     pub(crate) runtime: Runtime,
     pub(crate) pass_read_limit: Option<u64>,
+    pub(crate) footers: Option<Vec<Arc<ParquetFooter>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +104,7 @@ impl ParquetMultiTableReadOptions {
         predicate: Option<Arc<AstExpression>>,
         runtime: Runtime,
     ) -> Self {
-        Self { inputs, columns, row_groups_per_file, predicate, runtime, pass_read_limit: None }
+        Self { inputs, columns, row_groups_per_file, predicate, runtime, pass_read_limit: None, footers: None }
     }
 }
 
@@ -109,6 +113,13 @@ impl<'a> ParquetTableReadOptions<'a> {
     /// bytes; `None` leaves it unbounded.
     pub(crate) fn with_pass_read_limit(mut self, limit: Option<u64>) -> Self {
         self.pass_read_limit = limit;
+        self
+    }
+
+    /// Read a `filepath` source with `footer`, parsed from that path, instead
+    /// of parsing the file's footer again. Other sources ignore it.
+    pub(crate) fn with_footer(mut self, footer: Option<Arc<ParquetFooter>>) -> Self {
+        self.footer = footer;
         self
     }
 
@@ -132,6 +143,7 @@ impl<'a> ParquetTableReadOptions<'a> {
             predicate,
             runtime,
             pass_read_limit: None,
+            footer: None,
             _lifetime: PhantomData,
         }
     }
@@ -156,6 +168,7 @@ impl<'a> ParquetTableReadOptions<'a> {
             predicate,
             runtime,
             pass_read_limit: None,
+            footer: None,
             _lifetime: PhantomData,
         }
     }
@@ -180,6 +193,7 @@ impl<'a> ParquetTableReadOptions<'a> {
             predicate,
             runtime,
             pass_read_limit: None,
+            footer: None,
             _lifetime: PhantomData,
         }
     }

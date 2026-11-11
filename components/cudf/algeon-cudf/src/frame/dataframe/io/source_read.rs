@@ -1,5 +1,10 @@
 //! Physical Parquet reads for planned source chunks.
 
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
 use super::{
     super::owned::DataFrame,
     require_reader_schema_names,
@@ -17,7 +22,8 @@ use crate::{
     hash::FastHashSet,
     io::{
         parquet::{
-            self, ParquetMultiTableInput, ParquetMultiTableReadOptions, ParquetReadEvidence, ParquetTableReadOptions,
+            self, ParquetFooter, ParquetFooterCache, ParquetMultiTableInput, ParquetMultiTableReadOptions,
+            ParquetReadEvidence, ParquetTableReadOptions,
         },
         source::{LocalParquetSource, LocalParquetSourceKind, SourceChunk, SourceReadMode, ZERO_COLUMN_COUNT_COLUMN},
     },
@@ -50,13 +56,24 @@ pub struct SourceRead<'a> {
     /// Bound on Parquet read and decompression scratch in bytes. The rows
     /// returned are unchanged; a row group larger than the bound still loads.
     pub pass_read_limit: Option<u64>,
+    /// Footers shared with other reads of the same local files. A path read
+    /// of part of a file takes the file's footer from here, parsing and
+    /// keeping it on first use; without a cache every read parses its file's
+    /// footer.
+    pub footer_cache: Option<&'a ParquetFooterCache>,
 }
 
 impl<'a> SourceRead<'a> {
     /// Read `chunks` of `source` from their paths in `mode`, with unbounded
-    /// read scratch.
+    /// read scratch and no shared footers.
     pub fn new(source: &'a LocalParquetSource, chunks: &'a [SourceChunk], mode: SourceReadMode) -> Self {
-        Self { source, chunks, mode, input: SourceReadInput::Path, pass_read_limit: None }
+        Self { source, chunks, mode, input: SourceReadInput::Path, pass_read_limit: None, footer_cache: None }
+    }
+
+    /// Share parsed footers through `cache`.
+    pub fn with_footer_cache(mut self, cache: &'a ParquetFooterCache) -> Self {
+        self.footer_cache = Some(cache);
+        self
     }
 
     /// Read the one requested chunk from `buffer` as its byte source.
@@ -241,6 +258,7 @@ pub(super) fn read_parquet_source_chunk_frame(
     mode: SourceReadMode,
     input: SourceReadInput<'_>,
     pass_read_limit: Option<u64>,
+    footer_cache: Option<&ParquetFooterCache>,
     operation: &'static str,
 ) -> Result<ParquetSourceChunkReadOutput> {
     source.validate_chunk_partition_values(chunk, operation)?;
@@ -289,8 +307,15 @@ pub(super) fn read_parquet_source_chunk_frame(
                         runtime.clone(),
                     )
                 } else {
+                    let path = PathBuf::from(chunk.reader_path());
+                    // A read of the whole file is the file's only read in this
+                    // source, so it parses the footer itself and keeps nothing.
+                    let footer = footer_cache
+                        .filter(|_| !chunk.selects_all_known_file_row_groups())
+                        .map(|cache| cache.footer(&path, true, operation))
+                        .transpose()?;
                     ParquetTableReadOptions::from_parts(
-                        std::path::PathBuf::from(chunk.reader_path()),
+                        path,
                         Some(physical_read_plan.read_columns.clone()),
                         0,
                         None,
@@ -298,6 +323,7 @@ pub(super) fn read_parquet_source_chunk_frame(
                         source.reader_predicate().cloned(),
                         runtime.clone(),
                     )
+                    .with_footer(footer)
                 }
             },
             SourceReadInput::HostBuffer(buffer) => ParquetTableReadOptions::from_host_buffer_parts(
@@ -358,6 +384,7 @@ pub(super) fn read_parquet_source_chunks_frame(
     chunks: &[SourceChunk],
     mode: SourceReadMode,
     pass_read_limit: Option<u64>,
+    footer_cache: Option<&ParquetFooterCache>,
     operation: &'static str,
 ) -> Result<ParquetSourceChunkReadOutput> {
     if chunks.is_empty() {
@@ -394,6 +421,8 @@ pub(super) fn read_parquet_source_chunks_frame(
     let omit_row_groups = chunks.iter().all(SourceChunk::selects_all_known_file_row_groups);
     let mut inputs = Vec::with_capacity(chunks.len());
     let mut row_groups_per_file = (!omit_row_groups).then(|| Vec::<Vec<i32>>::with_capacity(chunks.len()));
+    // Per input, whether any of its chunks reads only part of its file.
+    let mut input_reads_part_of_file = Vec::with_capacity(chunks.len());
     let mut previous_file_index: Option<usize> = None;
     for chunk in chunks {
         source.validate_chunk_partition_values(chunk, operation)?;
@@ -412,6 +441,11 @@ pub(super) fn read_parquet_source_chunks_frame(
             source_chunk_continues_previous_reader_input(chunk, previous_file_index, omit_row_groups);
         previous_file_index = Some(chunk.file_index());
 
+        let reads_part_of_file = !chunk.selects_all_known_file_row_groups();
+        match input_reads_part_of_file.last_mut() {
+            Some(reads_part) if merges_into_previous => *reads_part |= reads_part_of_file,
+            _ => input_reads_part_of_file.push(reads_part_of_file),
+        }
         if !merges_into_previous {
             if let Some(remote_source) = chunk.remote_source() {
                 let mut remote_source = remote_source.clone();
@@ -420,7 +454,7 @@ pub(super) fn read_parquet_source_chunks_frame(
                 }
                 inputs.push(ParquetMultiTableInput::RemoteSource(remote_source));
             } else {
-                inputs.push(ParquetMultiTableInput::LocalPath(std::path::PathBuf::from(chunk.reader_path())));
+                inputs.push(ParquetMultiTableInput::LocalPath(PathBuf::from(chunk.reader_path())));
             }
         }
         if let Some(row_groups_per_file) = row_groups_per_file.as_mut() {
@@ -445,11 +479,20 @@ pub(super) fn read_parquet_source_chunks_frame(
 
     let physical_read_plan = parquet_multi_physical_read_plan(source, chunks)?;
     if physical_read_plan.requires_per_chunk_batch {
-        return read_parquet_source_chunks_frame_per_chunk(runtime, source, chunks, mode, pass_read_limit, operation);
+        return read_parquet_source_chunks_frame_per_chunk(
+            runtime,
+            source,
+            chunks,
+            mode,
+            pass_read_limit,
+            footer_cache,
+            operation,
+        );
     }
     let (mut frame, read_evidence) = if physical_read_plan.read_columns.is_empty() {
         (runtime.empty_dataframe(), Some(ParquetReadEvidence::local_path_multi_footer_materialized()))
     } else {
+        let footers = multi_read_footers(footer_cache, &inputs, &input_reads_part_of_file, operation)?;
         let table_options = ParquetMultiTableReadOptions::from_inputs(
             inputs,
             Some(physical_read_plan.read_columns.clone()),
@@ -457,7 +500,7 @@ pub(super) fn read_parquet_source_chunks_frame(
             source.reader_predicate().cloned(),
             runtime.clone(),
         );
-        let table_options = ParquetMultiTableReadOptions { pass_read_limit, ..table_options };
+        let table_options = ParquetMultiTableReadOptions { pass_read_limit, footers, ..table_options };
         let result = parquet::read_parquet_multi_table(&table_options).map_err(|error| error.reanchor(operation))?;
         let read_evidence = result.read_evidence().cloned();
         let (table, names) =
@@ -479,12 +522,47 @@ pub(super) fn read_parquet_source_chunks_frame(
     Ok(ParquetSourceChunkReadOutput::new(frame, read_evidence))
 }
 
+/// One footer per input of a multi-file read, or `None` when no input reads
+/// part of its file or an input is remote. libcudf takes footers for every
+/// input or for none, and an input whose chunks cover its whole file gets a
+/// footer parsed for this read alone.
+fn multi_read_footers(
+    footer_cache: Option<&ParquetFooterCache>,
+    inputs: &[ParquetMultiTableInput],
+    input_reads_part_of_file: &[bool],
+    operation: &'static str,
+) -> Result<Option<Vec<Arc<ParquetFooter>>>> {
+    let Some(cache) = footer_cache else {
+        return Ok(None);
+    };
+    let local_paths = inputs
+        .iter()
+        .map(|input| match input {
+            ParquetMultiTableInput::LocalPath(path) => Some(path.as_path()),
+            ParquetMultiTableInput::RemoteSource(_) => None,
+        })
+        .collect::<Option<Vec<&Path>>>();
+    let Some(local_paths) = local_paths else {
+        return Ok(None);
+    };
+    if !input_reads_part_of_file.iter().any(|reads_part| *reads_part) {
+        return Ok(None);
+    }
+    local_paths
+        .into_iter()
+        .zip(input_reads_part_of_file)
+        .map(|(path, reads_part)| cache.footer(path, *reads_part, operation))
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
 fn read_parquet_source_chunks_frame_per_chunk(
     runtime: &Runtime,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
     mode: SourceReadMode,
     pass_read_limit: Option<u64>,
+    footer_cache: Option<&ParquetFooterCache>,
     operation: &'static str,
 ) -> Result<ParquetSourceChunkReadOutput> {
     let mut frames = Vec::with_capacity(chunks.len());
@@ -496,6 +574,7 @@ fn read_parquet_source_chunks_frame_per_chunk(
             mode,
             SourceReadInput::Path,
             pass_read_limit,
+            footer_cache,
             operation,
         )?
         .into_parts();

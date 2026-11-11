@@ -57,6 +57,16 @@ stay within the 2,147,483,647 elements one cuDF column indexes, counted from
 the footer's per-leaf `num_values`. A row group that alone exceeds that count
 fails planning with `size_overflow` and the row group size that fits.
 
+The cuDF reader needs the footer of each file it reads. Within one query
+attempt, the first read of part of a file parses that file's footer, and later
+reads of the file, retries included, reuse the parsed copy. Each read gives the
+reader a copy holding only its own row groups. A read that covers a whole file
+is that file's only read in its source and parses the footer for itself alone.
+Parsed footers occupy host memory outside the query's device grant until the
+attempt ends. A parsed footer stays current while the file keeps the size and
+modification time it had when the footer was parsed; a rewrite that keeps both
+is not detected.
+
 Source sizing uses estimates of decoded columns because dictionary-encoded
 strings can expand substantially during decoding. The
 [native settings](../integration/configuration.mdx#native-settings) define

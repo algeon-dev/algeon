@@ -59,6 +59,9 @@ Bug fixes:
   within-group sorted values in place of the grouped values. ARGMIN and
   ARGMAX, and with them MIN and MAX of a string column, returned another row
   of the group. Grouped values now always keep the key sort order.
+- `read_parquet_footers` moves the footers it parsed out of its temporary
+  reader metadata. Upstream copies them, which for a file with thousands of
+  row groups takes about as long as the parse.
 - cuco exception safety, applied as a build-time patch: temporary storage is
   neither leaked nor double-freed when an allocation throws.
 - A GCC 14.2 internal compiler error in `make_datasources` is avoided by

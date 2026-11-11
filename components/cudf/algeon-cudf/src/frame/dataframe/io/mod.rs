@@ -271,12 +271,20 @@ impl DataFrame {
     ) -> Result<ParquetSourceChunkReadOutput> {
         let operation = "dataframe::read_parquet_source";
         let runtime = runtime.on(exec).map_err(|error| error.reanchor(operation))?;
-        let SourceRead { source, chunks, mode, input, pass_read_limit } = request;
+        let SourceRead { source, chunks, mode, input, pass_read_limit, footer_cache } = request;
         match chunks {
             [] => Ok(ParquetSourceChunkReadOutput::new(empty_parquet_source_frame(&runtime, source, mode)?, None)),
             [chunk] => {
-                let output =
-                    read_parquet_source_chunk_frame(&runtime, source, chunk, mode, input, pass_read_limit, operation)?;
+                let output = read_parquet_source_chunk_frame(
+                    &runtime,
+                    source,
+                    chunk,
+                    mode,
+                    input,
+                    pass_read_limit,
+                    footer_cache,
+                    operation,
+                )?;
                 Ok(output.with_report_facts(single_chunk_report_facts(source, chunk, mode)))
             },
             chunks => {
@@ -290,8 +298,15 @@ impl DataFrame {
                     .with_detail("chunk_count", chunks.len().to_string())
                     .with_detail("remedy", "read each chunk with its own host buffer"));
                 }
-                let output =
-                    read_parquet_source_chunks_frame(&runtime, source, chunks, mode, pass_read_limit, operation)?;
+                let output = read_parquet_source_chunks_frame(
+                    &runtime,
+                    source,
+                    chunks,
+                    mode,
+                    pass_read_limit,
+                    footer_cache,
+                    operation,
+                )?;
                 Ok(output.with_report_facts(parquet_source_batch_budget_context(source, chunks, mode)))
             },
         }

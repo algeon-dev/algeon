@@ -115,9 +115,11 @@ query domain checks allocations against its grant and obtains storage through
 the device's RMM memory resource. RMM is RAPIDS' memory-management library.
 A pool can reuse GPU allocations across operations.
 
-The grant covers allocations in device VRAM. I/O bounce buffers and other host
-staging occupy system RAM, outside this GPU cap. A host buffer pinned for DMA
-is not charged as a device allocation.
+The grant covers allocations in device VRAM. I/O bounce buffers, other host
+staging and the Parquet footers an attempt
+[keeps for its reads](./data-path.mdx#row-groups-source-chunks-and-io-tasks)
+occupy system RAM, outside this GPU cap. A host buffer pinned for DMA is not
+charged as a device allocation.
 
 The query domain's allocator alone enforces the query cap shared by all
 execution lanes. An allocation exceeding the cap returns a typed failure at

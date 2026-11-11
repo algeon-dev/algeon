@@ -69,6 +69,24 @@ typedef struct {
   uint64_t task_size_bytes;
 } cudf_io_kvikio_process_config_t;
 
+/// The parsed footer of one local Parquet file: its schema, key-value
+/// metadata, row groups and, when the file has BYTE_ARRAY columns, its page
+/// indexes. The footer is immutable after creation, so concurrent reads may
+/// share one handle.
+typedef struct cudf_io_parquet_footer_handle_state* cudf_io_parquet_footer_handle;
+
+/// Read and parse the footer of the local Parquet file at `filepath`, the
+/// same parse a path read performs on each call without a footer.
+///
+/// This is host work and takes no execution scope. On success `*out` owns the
+/// footer; release it with `cudf_io_parquet_footer_destroy`. The footer
+/// describes the file as it was when read; a caller that reuses it is
+/// responsible for knowing the file has not changed since.
+cudf_status_t cudf_io_read_parquet_footer(char const* filepath, cudf_io_parquet_footer_handle* out);
+
+/// Destroy a footer returned by `cudf_io_read_parquet_footer`. NULL is a no-op.
+cudf_status_t cudf_io_parquet_footer_destroy(cudf_io_parquet_footer_handle handle);
+
 /// Read a Parquet file into a table. `columns` is an optional array of
 /// null-terminated column name strings (pass NULL to read all columns).
 /// `num_columns` is the length of the `columns` array.
@@ -150,6 +168,10 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(char const* filepath,
 /// Read Parquet with metadata and an optional libcudf AST reader predicate.
 ///
 /// `predicate` may be NULL. When non-NULL, it must outlive this call.
+/// `footer` may be NULL, in which case the reader reads and parses the file's
+/// footer itself. When non-NULL, it must have been read from the same
+/// `filepath` string and is borrowed for this call; the read neither reads nor
+/// parses the footer again. Pruning evidence counts are the same either way.
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
 /// `exec_options->mr` must outlive the returned table.
 cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
@@ -161,6 +183,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
   int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
+  cudf_io_parquet_footer_handle footer,
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
@@ -199,6 +222,8 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
 /// row groups from every file.
 ///
 /// `predicate` may be NULL. When non-NULL, it must outlive this call.
+/// `footers` is NULL or holds `num_files` non-NULL footers, entry `i` read
+/// from `filepaths[i]`, with the same contract as the single-file `footer`.
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
 /// `exec_options->mr` must outlive the returned table.
 cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
@@ -211,6 +236,7 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
   int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
+  cudf_io_parquet_footer_handle const* footers,
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,

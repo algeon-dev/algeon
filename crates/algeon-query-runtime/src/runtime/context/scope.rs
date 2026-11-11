@@ -9,7 +9,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use cudf::{QueryMemoryDomain, Runtime as CudfRuntime, StreamReservationLease};
+use cudf::{QueryMemoryDomain, Runtime as CudfRuntime, StreamReservationLease, io::parquet::ParquetFooterCache};
 use query_planning::{
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
@@ -100,6 +100,7 @@ pub(super) struct StandaloneQuery {
     pub(super) next_member_id: AtomicU64,
     pub(super) memory_control_policy: MemoryControlPolicy,
     pub(super) cancellation: ExecutionCancellation,
+    pub(super) parquet_footers: ParquetFooterCache,
     /// Present when the standalone context owns its runtime observation; the
     /// context then terminalizes the query itself.
     pub(super) observation_owner: Option<RuntimeObservationOwner>,
@@ -171,6 +172,9 @@ pub(in crate::runtime) struct AdmittedAttempt {
     /// Owned by the query handle lifetime and shared by every context of the
     /// attempt, so permits taken on any clone draw from the one `S_d`.
     pub(in crate::runtime) auxiliary_slots: Arc<AttemptAuxiliarySlots>,
+    /// Parquet footers the attempt's source reads share; a retry attempt
+    /// starts empty.
+    pub(in crate::runtime) parquet_footers: ParquetFooterCache,
     pub(in crate::runtime) allocation_domain: AttemptAllocationDomain,
     /// Declared after the allocation domain so the domain's native resources
     /// release before this grant clone returns capacity to the ledger.
