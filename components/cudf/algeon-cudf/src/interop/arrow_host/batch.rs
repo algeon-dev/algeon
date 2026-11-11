@@ -68,17 +68,46 @@ impl DataFrame {
     /// Returns an error if any column has an unsupported type, or if the
     /// underlying GPU-to-host copy fails.
     pub fn to_record_batch(&self) -> Result<RecordBatch> {
-        self.to_record_batch_with_optional_schema(None)
+        self.to_record_batch_with_optional_schema(None, None, self.num_rows())
     }
 
     pub(crate) fn to_record_batch_with_arrow_schema(&self, schema: &ArrowHostSchema) -> Result<RecordBatch> {
-        self.to_record_batch_with_optional_schema(Some(schema))
+        self.to_record_batch_with_optional_schema(Some(schema), None, self.num_rows())
     }
 
-    fn to_record_batch_with_optional_schema(&self, schema: Option<&ArrowHostSchema>) -> Result<RecordBatch> {
+    /// Host-copy export of rows `[offset, offset + rows)`. Each column is read
+    /// through a zero-copy view of that range; no device copy is made.
+    pub(crate) fn to_record_batch_rows_with_arrow_schema(
+        &self,
+        schema: &ArrowHostSchema,
+        offset: usize,
+        rows: usize,
+    ) -> Result<RecordBatch> {
+        let operation = "dataframe::to_record_batch";
+        if offset == 0 && rows == self.num_rows() {
+            return self.to_record_batch_with_optional_schema(Some(schema), None, rows);
+        }
+        let in_bounds = offset.checked_add(rows).is_some_and(|end| end <= self.num_rows());
+        if !in_bounds {
+            return Err(Error::new_with(ErrorCode::IndexOutOfBounds, operation, "export row range is out of bounds")
+                .with_detail("offset", offset.to_string())
+                .with_detail("rows", rows.to_string())
+                .with_detail("num_rows", self.num_rows().to_string()));
+        }
+        let offset =
+            i32::try_from(offset).map_err(|_| error::range_limit_error(operation, "offset", "i32::MAX", offset))?;
+        let length = i32::try_from(rows).map_err(|_| error::range_limit_error(operation, "rows", "i32::MAX", rows))?;
+        self.to_record_batch_with_optional_schema(Some(schema), Some((offset, length)), rows)
+    }
+
+    fn to_record_batch_with_optional_schema(
+        &self,
+        schema: Option<&ArrowHostSchema>,
+        row_range: Option<(i32, i32)>,
+        rows: usize,
+    ) -> Result<RecordBatch> {
         record_host_export_call();
         let names = self.column_names();
-        let rows = self.num_rows();
         let column_count = self.num_columns();
 
         if schema.is_some_and(|schema| schema.len() != column_count) {
@@ -96,6 +125,10 @@ impl DataFrame {
             .map(|(index, &name)| {
                 let col = col_map.get(name).ok_or_else(|| missing_column_error("dataframe::to_record_batch", name))?;
                 let cv = col.view()?;
+                let cv = match row_range {
+                    Some((offset, length)) => cv.slice_with_operation(offset, length, "dataframe::to_record_batch")?,
+                    None => cv,
+                };
                 let dtype = cv.data_type()?;
                 let nullable = cv.nullable()?;
                 let requested_type = schema.and_then(|schema| schema.field(index)).map(ArrowHostField::arrow_data_type);

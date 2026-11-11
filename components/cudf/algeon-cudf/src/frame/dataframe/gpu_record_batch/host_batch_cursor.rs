@@ -4,10 +4,7 @@ use std::sync::Arc;
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 
 use super::GpuRecordBatch;
-use crate::{
-    Exec,
-    core::error::{Error, ErrorCode, Result},
-};
+use crate::core::error::{Error, ErrorCode, Result};
 
 /// Bounds one GPU-to-host materialization step by estimated final Arrow buffer
 /// capacity and row count.
@@ -25,7 +22,9 @@ pub struct HostBatchCursorConfig {
 impl HostBatchCursorConfig {
     pub const DEFAULT_TARGET_MATERIALIZATION_BYTES: usize = 2 * 1024 * 1024;
     pub const DEFAULT_MAX_MATERIALIZATION_BYTES: usize = 4 * 1024 * 1024;
-    pub const DEFAULT_MAX_ROWS: usize = 16 * 1024;
+    /// The default soft target divided by an 8-byte row, so for rows of 8
+    /// bytes or wider the byte target, not this cap, ends a chunk.
+    pub const DEFAULT_MAX_ROWS: usize = 256 * 1024;
 }
 
 impl Default for HostBatchCursorConfig {
@@ -38,16 +37,17 @@ impl Default for HostBatchCursorConfig {
     }
 }
 
-/// A metadata-sized GPU slice ready for one bounded host copy.
+/// A row range of the cursor's GPU batch, sized for one bounded host copy.
 ///
-/// Preparing a step performs no device-to-host value materialization. The
-/// token keeps the exact sliced GPU candidate alive so a caller can reserve
-/// host capacity before asking the originating cursor to copy it.
+/// Preparing a step allocates no device memory and copies no values to host;
+/// sizing reads only the string and list offsets of the candidate range. The
+/// token names a row range of the originating cursor's batch, so a caller can
+/// reserve host capacity before asking that cursor to copy it.
 #[derive(Debug)]
 pub struct PreparedHostBatch {
-    batch: GpuRecordBatch,
     cursor_identity: Arc<()>,
     offset: usize,
+    rows: usize,
     batch_index: usize,
     estimated_materialization_bytes: usize,
 }
@@ -61,20 +61,20 @@ impl PreparedHostBatch {
 
     /// Number of rows in this prepared chunk.
     pub fn num_rows(&self) -> usize {
-        self.batch.num_rows()
+        self.rows
     }
 }
 
 /// Incremental GPU-to-host Arrow materializer.
 ///
-/// The cursor retains the original GPU batch and at most one sliced GPU chunk.
-/// An initially empty GPU batch still yields exactly one schema-preserving host
-/// batch before reaching EOF, matching a full result materialization boundary.
-/// It uses a schema-aware upper bound for final Arrow buffer capacities to
-/// binary-reduce a candidate before copying it to host. A single row may exceed
-/// the soft target, but an unsplittable row that exceeds the hard
-/// materialization ceiling is rejected with a permanent structured resource
-/// error before any host value copy.
+/// The cursor retains the original GPU batch and copies each chunk to host
+/// through zero-copy views of its row range. An initially empty GPU batch
+/// still yields exactly one schema-preserving host batch before reaching EOF,
+/// matching a full result materialization boundary. A schema-aware upper bound
+/// for final Arrow buffer capacities picks the largest row count within the
+/// soft target. A single row may exceed that target, but an unsplittable row
+/// that exceeds the hard materialization ceiling is rejected with a permanent
+/// structured resource error before any host value copy.
 pub struct HostBatchCursor {
     batch: GpuRecordBatch,
     config: HostBatchCursorConfig,
@@ -125,36 +125,15 @@ impl HostBatchCursor {
 
     /// Select and size the next GPU chunk without copying values to host.
     pub fn prepare_next_batch(&self) -> Result<Option<PreparedHostBatch>> {
-        let remaining = self.remaining_rows();
-        let initial_empty_batch = self.batch.num_rows() == 0 && self.emitted_batches == 0;
         if !self.has_next_batch() {
             return Ok(None);
         }
-        let candidate_rows = if initial_empty_batch { 0 } else { remaining.min(self.config.max_rows) };
-        let mut candidate = self.candidate(candidate_rows)?;
-        let mut estimated_bytes = candidate.estimated_materialization_bytes()?;
-        if candidate_rows > 1 && estimated_bytes > self.config.target_materialization_bytes {
-            // Release the oversized GPU slice before allocating binary-search probes.
-            drop(candidate);
-            let mut low = 1usize;
-            let mut high = candidate_rows - 1;
-            let mut best_rows = 1usize;
-            while low <= high {
-                let middle = low + (high - low) / 2;
-                let probe = self.candidate(middle)?;
-                let estimated_bytes = probe.estimated_materialization_bytes()?;
-                // Release each GPU slice before allocating the next probe.
-                drop(probe);
-                if estimated_bytes <= self.config.target_materialization_bytes {
-                    best_rows = middle;
-                    low = middle + 1;
-                } else {
-                    high = middle - 1;
-                }
-            }
-            candidate = self.candidate(best_rows)?;
-            estimated_bytes = candidate.estimated_materialization_bytes()?;
+        let (rows, estimated_bytes) = if self.batch.num_rows() == 0 {
+            self.batch.estimated_empty_materialization_bytes().map(|bytes| (0, bytes))
+        } else {
+            self.size_next_range()
         }
+        .map_err(|error| error.reanchor("dataframe::HostBatchCursor::prepare_next_batch"))?;
 
         if estimated_bytes > self.config.max_materialization_bytes {
             return Err(Error::new_with(
@@ -164,18 +143,32 @@ impl HostBatchCursor {
             )
             .with_detail("reason", "host_materialization_hard_limit_exceeded")
             .with_detail("row_offset", self.offset.to_string())
-            .with_detail("candidate_rows", candidate.num_rows().to_string())
+            .with_detail("candidate_rows", rows.to_string())
             .with_detail("estimated_materialization_bytes", estimated_bytes.to_string())
             .with_detail("max_materialization_bytes", self.config.max_materialization_bytes.to_string()));
         }
 
         Ok(Some(PreparedHostBatch {
-            batch: candidate,
             cursor_identity: Arc::clone(&self.identity),
             offset: self.offset,
+            rows,
             batch_index: self.emitted_batches,
             estimated_materialization_bytes: estimated_bytes,
         }))
+    }
+
+    /// Largest row count from the cursor offset whose estimate fits the soft
+    /// target, at least one row, with that count's estimate.
+    fn size_next_range(&self) -> Result<(usize, usize)> {
+        let candidate_rows = self.remaining_rows().min(self.config.max_rows);
+        let target = self.config.target_materialization_bytes;
+        let sizer = self.batch.host_row_range_sizer(self.offset)?;
+        // Rows past the lower-bound fit exceed the target whatever their
+        // strings and lists hold, so their offsets are never copied to host.
+        let bound = largest_rows_within(candidate_rows, target, |rows| sizer.lower_bound_bytes(rows))?.max(1);
+        let range = sizer.load(bound)?;
+        let rows = largest_rows_within(bound, target, |rows| range.bytes(rows))?.max(1);
+        Ok((rows, range.bytes(rows)?))
     }
 
     /// Copy one previously prepared chunk to host and advance the cursor.
@@ -196,7 +189,7 @@ impl HostBatchCursor {
             .with_detail("prepared_batch_index", prepared.batch_index.to_string()));
         }
 
-        let rows = prepared.batch.num_rows();
+        let rows = prepared.rows;
         let next_offset = self.offset.checked_add(rows).ok_or_else(|| {
             Error::new_with(
                 ErrorCode::SizeOverflow,
@@ -214,7 +207,7 @@ impl HostBatchCursor {
             )
             .with_detail("batch_index", self.emitted_batches.to_string())
         })?;
-        let batch = prepared.batch.to_host_record_batch()?;
+        let batch = self.batch.to_host_record_batch_rows(self.offset, rows)?;
         self.offset = next_offset;
         self.emitted_batches = next_batch_index;
         Ok(batch)
@@ -226,18 +219,29 @@ impl HostBatchCursor {
         };
         self.materialize_prepared_batch(prepared).map(Some)
     }
+}
 
-    fn candidate(&self, rows: usize) -> Result<GpuRecordBatch> {
-        if rows == 0 {
-            debug_assert_eq!(self.batch.num_rows(), 0);
-            return Ok(self.batch.clone());
-        }
-        let frame = self
-            .batch
-            .frame()
-            .on(Exec::RETAINED)
-            .slice(self.offset, rows)
-            .map_err(|error| error.reanchor("dataframe::HostBatchCursor::next_batch"))?;
-        self.batch.with_validated_slice(frame)
+/// Largest row count in `1..=max_rows` whose estimate fits `target`, or 0
+/// when one row does not. The estimate must not decrease as rows grow.
+fn largest_rows_within(
+    max_rows: usize,
+    target: usize,
+    mut estimate: impl FnMut(usize) -> Result<usize>,
+) -> Result<usize> {
+    if estimate(max_rows)? <= target {
+        return Ok(max_rows);
     }
+    let mut low = 1usize;
+    let mut high = max_rows - 1;
+    let mut best = 0usize;
+    while low <= high {
+        let middle = low + (high - low) / 2;
+        if estimate(middle)? <= target {
+            best = middle;
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
+    Ok(best)
 }

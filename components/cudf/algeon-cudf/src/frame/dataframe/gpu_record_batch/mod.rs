@@ -13,7 +13,9 @@ use crate::{
         error::{self, Error, ErrorCode, Result},
         types::TypeId,
     },
-    interop::arrow_host::{ArrowHostSchema, estimate_arrow_host_record_batch_memory_bytes},
+    interop::arrow_host::{
+        ArrowHostRowRangeSizer, ArrowHostSchema, estimate_empty_arrow_host_record_batch_memory_bytes,
+    },
     ops::validation,
     runtime::{ExecutionPlacement, execution_domain::ExecutionDomain},
 };
@@ -30,7 +32,7 @@ pub use list_export::{ValidatedFixedSizeListExport, ValidatedUniformListExport};
 pub(crate) use list_validation::{
     fixed_size_list_structural_proof_build_count_for_test, reset_fixed_size_list_structural_proof_build_count_for_test,
 };
-use list_validation::{rebind_fixed_size_list_structural_proof, validate_list_export, validate_uniform_list_offsets};
+use list_validation::{validate_list_export, validate_uniform_list_offsets};
 use schema_contract::{record_batch_with_schema_contract, validate_frame_schema};
 
 fn validate_list_child_finite(
@@ -104,9 +106,19 @@ pub struct GpuRecordBatch {
 }
 
 impl GpuRecordBatch {
-    pub(super) fn estimated_materialization_bytes(&self) -> Result<usize> {
-        estimate_arrow_host_record_batch_memory_bytes(&self.frame, &self.mapped_schema)
-            .map_err(|error| error.reanchor("dataframe::HostBatchCursor::prepare_next_batch"))
+    pub(super) fn host_row_range_sizer(&self, offset: usize) -> Result<ArrowHostRowRangeSizer<'_>> {
+        ArrowHostRowRangeSizer::new(&self.frame, &self.mapped_schema, offset)
+    }
+
+    pub(super) fn estimated_empty_materialization_bytes(&self) -> Result<usize> {
+        estimate_empty_arrow_host_record_batch_memory_bytes(&self.mapped_schema)
+    }
+
+    /// Host-copy export of rows `[offset, offset + rows)` through zero-copy
+    /// column views of the retained frame.
+    pub(super) fn to_host_record_batch_rows(&self, offset: usize, rows: usize) -> Result<RecordBatch> {
+        let batch = self.frame.to_record_batch_rows_with_arrow_schema(&self.mapped_schema, offset, rows)?;
+        record_batch_with_schema_contract(batch, &self.schema)
     }
 
     /// Consume this GPU batch into a bounded incremental host materializer.
@@ -133,18 +145,6 @@ impl GpuRecordBatch {
             mapped_schema: validated.mapped_schema,
             fixed_size_list_proofs: validated.fixed_size_list_proofs,
         })
-    }
-
-    pub(super) fn with_validated_slice(&self, frame: DataFrame) -> Result<Self> {
-        debug_assert!(self.fixed_size_list_proofs.iter().all(|proof| proof.matches_schema(&self.schema)));
-        let mapped_schema = self.mapped_schema.with_row_count(frame.num_rows());
-        let fixed_size_list_proofs = self
-            .fixed_size_list_proofs
-            .iter()
-            .map(|proof| rebind_fixed_size_list_structural_proof(*proof, &frame))
-            .collect::<Result<Vec<_>>>()?
-            .into();
-        Ok(Self { frame, schema: Arc::clone(&self.schema), mapped_schema, fixed_size_list_proofs })
     }
 
     /// Borrow the wrapped GPU DataFrame.

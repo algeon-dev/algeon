@@ -16,11 +16,13 @@ use std::{
 
 use arrow::{
     array::{
-        Array, BooleanArray, FixedSizeListArray, Float32Array, Int32Array, Int64Array, LargeListBuilder,
-        LargeStringArray, LargeStringBuilder, ListArray, ListBuilder, StringArray, StringBuilder, StringViewArray,
+        Array, BooleanArray, Decimal128Array, FixedSizeListArray, Float32Array, Int32Array, Int32Builder, Int64Array,
+        LargeListBuilder, LargeStringArray, LargeStringBuilder, ListArray, ListBuilder, StringArray, StringBuilder,
+        StringViewArray, TimestampMicrosecondArray,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
-    datatypes::{DataType as ArrowDataType, Field, Schema},
+    compute::concat_batches,
+    datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use cudf::{
@@ -1115,6 +1117,207 @@ fn host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free() {
     assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 0);
 }
 
+fn host_batch_cursor_prepares_and_copies_row_ranges_without_device_allocations() {
+    let stats = stats_memory_resource();
+    let runtime = Runtime::builder().with_memory_resource(stats.clone()).build().unwrap();
+    let rows = 96usize;
+    let mut values = ListBuilder::new(Int32Builder::new());
+    for row in 0..rows {
+        for item in 0..row % 3 {
+            values.values().append_value(i32::try_from(row * 10 + item).unwrap());
+        }
+        values.append(true);
+    }
+    let values = values.finish();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", ArrowDataType::Int64, false),
+        Field::new("name", ArrowDataType::Utf8, false),
+        Field::new("values", values.data_type().clone(), false),
+    ]));
+    let host = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from_iter_values((0..rows).map(|row| i64::try_from(row).unwrap()))) as Arc<dyn Array>,
+            Arc::new(StringArray::from_iter_values((0..rows).map(|row| "n".repeat(row % 17)))),
+            Arc::new(values),
+        ],
+    )
+    .unwrap();
+    let gpu = GpuRecordBatch::new(DataFrame::from_record_batch(&runtime, &host).unwrap(), Arc::clone(&schema)).unwrap();
+    let mut cursor = gpu
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: 1024,
+            max_materialization_bytes: usize::MAX,
+            max_rows: 64,
+        })
+        .unwrap();
+
+    let before = allocation_count(&stats);
+    let mut batches = Vec::new();
+    while let Some(prepared) = cursor.prepare_next_batch().unwrap() {
+        batches.push(cursor.materialize_prepared_batch(prepared).unwrap());
+    }
+
+    assert_eq!(
+        allocation_count(&stats) - before,
+        0,
+        "sizing and copying row ranges must read views of the retained columns, not device copies"
+    );
+    assert!(batches.len() > 2, "the target must split the result into several row ranges");
+    assert_eq!(concat_batches(&schema, &batches).unwrap(), host);
+}
+
+fn host_batch_cursor_exports_unaligned_row_ranges_of_nullable_columns() {
+    let runtime = sample_runtime();
+    let rows = 130usize;
+    let valid = |row: usize| !row.is_multiple_of(3);
+    let mut tags = ListBuilder::new(StringBuilder::new());
+    for row in 0..rows {
+        if row.is_multiple_of(5) {
+            tags.append(false);
+            continue;
+        }
+        for item in 0..row % 4 {
+            if item == 1 {
+                tags.values().append_null();
+            } else {
+                tags.values().append_value(format!("tag-{row}-{item}"));
+            }
+        }
+        tags.append(true);
+    }
+    let tags = tags.finish();
+    let amounts = Decimal128Array::from(
+        (0..rows).map(|row| valid(row).then(|| i128::try_from(row).unwrap() * 12_345 - 700_000)).collect::<Vec<_>>(),
+    )
+    .with_precision_and_scale(15, 2)
+    .unwrap();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("int", ArrowDataType::Int32, true),
+        Field::new("ts", ArrowDataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("amount", ArrowDataType::Decimal128(15, 2), true),
+        Field::new("flag", ArrowDataType::Boolean, true),
+        Field::new("name", ArrowDataType::Utf8, true),
+        Field::new("tags", tags.data_type().clone(), true),
+    ]));
+    let host = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(
+                (0..rows).map(|row| valid(row).then(|| i32::try_from(row).unwrap() - 64)).collect::<Vec<_>>(),
+            )) as Arc<dyn Array>,
+            Arc::new(TimestampMicrosecondArray::from(
+                (0..rows)
+                    .map(|row| valid(row).then(|| 1_700_000_000_000_000 + i64::try_from(row).unwrap() * 1_000_003))
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(amounts),
+            Arc::new(BooleanArray::from((0..rows).map(|row| valid(row).then_some(row % 2 == 0)).collect::<Vec<_>>())),
+            Arc::new(StringArray::from(
+                (0..rows).map(|row| valid(row).then(|| format!("name-{}", "x".repeat(row % 11)))).collect::<Vec<_>>(),
+            )),
+            Arc::new(tags),
+        ],
+    )
+    .unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+
+    // One-row ranges start at every bit offset, including 1, 7, 9 and 63;
+    // 7-, 9- and 63-row ranges end mid-byte.
+    for max_rows in [1usize, 7, 9, 63] {
+        let mut cursor = GpuRecordBatch::new(frame.clone(), Arc::clone(&schema))
+            .unwrap()
+            .into_host_batch_cursor(HostBatchCursorConfig {
+                target_materialization_bytes: usize::MAX,
+                max_materialization_bytes: usize::MAX,
+                max_rows,
+            })
+            .unwrap();
+        let mut offset = 0;
+        while let Some(batch) = cursor.next_batch().unwrap() {
+            assert_eq!(batch, host.slice(offset, batch.num_rows()), "max_rows={max_rows} offset={offset}");
+            offset += batch.num_rows();
+        }
+        assert_eq!(offset, rows, "max_rows={max_rows}");
+    }
+}
+
+fn host_batch_cursor_takes_the_longest_prefix_within_the_target() {
+    let runtime = sample_runtime();
+    let rows = 300usize;
+    let mut notes = ListBuilder::new(StringBuilder::new());
+    for row in 0..rows {
+        for item in 0..row % 3 {
+            notes.values().append_value("w".repeat((row + item) % 23));
+        }
+        notes.append(row % 7 != 0);
+    }
+    let notes = notes.finish();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", ArrowDataType::Int64, false),
+        Field::new("label", ArrowDataType::Utf8, true),
+        Field::new("notes", notes.data_type().clone(), true),
+    ]));
+    let host = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from_iter_values((0..rows).map(|row| i64::try_from(row).unwrap()))) as Arc<dyn Array>,
+            Arc::new(StringArray::from(
+                (0..rows).map(|row| (row % 5 != 0).then(|| "l".repeat(row % 41))).collect::<Vec<_>>(),
+            )),
+            Arc::new(notes),
+        ],
+    )
+    .unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+    let unbounded_estimate = |offset: usize, rows: usize| {
+        let remaining = frame.on(Exec::RETAINED).slice(offset, frame.num_rows() - offset).unwrap();
+        GpuRecordBatch::new(remaining, Arc::clone(&schema))
+            .unwrap()
+            .into_host_batch_cursor(HostBatchCursorConfig {
+                target_materialization_bytes: usize::MAX,
+                max_materialization_bytes: usize::MAX,
+                max_rows: rows,
+            })
+            .unwrap()
+            .prepare_next_batch()
+            .unwrap()
+            .unwrap()
+            .estimated_materialization_bytes()
+    };
+
+    for target in [1024usize, 2048, 4096] {
+        let mut cursor = GpuRecordBatch::new(frame.clone(), Arc::clone(&schema))
+            .unwrap()
+            .into_host_batch_cursor(HostBatchCursorConfig {
+                target_materialization_bytes: target,
+                max_materialization_bytes: usize::MAX,
+                max_rows: usize::MAX,
+            })
+            .unwrap();
+        let mut offset = 0;
+        let mut batches = Vec::new();
+        while let Some(prepared) = cursor.prepare_next_batch().unwrap() {
+            let batch_rows = prepared.num_rows();
+            let estimate = prepared.estimated_materialization_bytes();
+            assert!(estimate <= target, "target={target} offset={offset}: estimate {estimate}");
+            assert_eq!(estimate, unbounded_estimate(offset, batch_rows), "target={target} offset={offset}");
+            if offset + batch_rows < rows {
+                assert!(
+                    unbounded_estimate(offset, batch_rows + 1) > target,
+                    "target={target} offset={offset}: {batch_rows} rows is not the longest prefix within the target"
+                );
+            }
+            let batch = cursor.materialize_prepared_batch(prepared).unwrap();
+            assert!(record_batch_buffer_memory_size(&batch) <= estimate, "target={target} offset={offset}");
+            offset += batch_rows;
+            batches.push(batch);
+        }
+        assert!(batches.len() > 2, "target={target}");
+        assert_eq!(concat_batches(&schema, &batches).unwrap(), host, "target={target}");
+    }
+}
+
 fn host_batch_cursor_estimates_final_string_layouts_before_d2h() {
     let runtime = sample_runtime();
     let values = (0..32).map(|index| (index != 7).then_some("twenty-byte-string!!")).collect::<Vec<_>>();
@@ -2052,6 +2255,18 @@ fn query_backend_contract_tests_cases() {
         (
             "host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free",
             host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free,
+        ),
+        (
+            "host_batch_cursor_prepares_and_copies_row_ranges_without_device_allocations",
+            host_batch_cursor_prepares_and_copies_row_ranges_without_device_allocations,
+        ),
+        (
+            "host_batch_cursor_exports_unaligned_row_ranges_of_nullable_columns",
+            host_batch_cursor_exports_unaligned_row_ranges_of_nullable_columns,
+        ),
+        (
+            "host_batch_cursor_takes_the_longest_prefix_within_the_target",
+            host_batch_cursor_takes_the_longest_prefix_within_the_target,
         ),
         (
             "host_batch_cursor_estimates_final_string_layouts_before_d2h",

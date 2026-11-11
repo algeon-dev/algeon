@@ -187,38 +187,40 @@ fn list_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
         .with_detail("offsets_type", format!("{:?}", offsets_type.id()))
         .with_detail("reason", "unsupported_list_offsets_type"));
     }
-    let host_offsets = offsets_view.to_vec::<i32>()?;
-    let empty_cudf_offsets = host_offsets.is_empty() && len == 0 && root_offset == 0;
-    if !empty_cudf_offsets && host_offsets.len() <= root_end {
-        return Err(Error::new_with(
-            ErrorCode::IndexOutOfBounds,
-            operation,
-            "list offsets child is too small for the active logical range",
-        )
-        .with_detail("offset", root_offset.to_string())
-        .with_detail("row_count", len.to_string())
-        .with_detail("offset_count", host_offsets.len().to_string())
-        .with_detail("reason", "list_offsets_too_small"));
-    }
-
-    let normalized_offsets = if empty_cudf_offsets {
+    // A sliced view shares its parent's whole offsets child, so only the
+    // active `len + 1` offsets are copied.
+    let normalized_offsets = if len == 0 {
         vec![0]
     } else {
-        let base_child_offset = host_offsets[root_offset];
+        let offset_count = offsets_view.len()?;
+        if offset_count <= root_end {
+            return Err(Error::new_with(
+                ErrorCode::IndexOutOfBounds,
+                operation,
+                "list offsets child is too small for the active logical range",
+            )
+            .with_detail("offset", root_offset.to_string())
+            .with_detail("row_count", len.to_string())
+            .with_detail("offset_count", offset_count.to_string())
+            .with_detail("reason", "list_offsets_too_small"));
+        }
+        let active_offsets = offsets_view.slice_with_operation(
+            root_offset_raw,
+            i32::try_from(len + 1)
+                .map_err(|_| error::range_limit_error(operation, "offset_count", "i32::MAX", len + 1))?,
+            operation,
+        )?;
+        let host_offsets = active_offsets.to_vec::<i32>()?;
+        let base_child_offset = host_offsets[0];
         if base_child_offset < 0 {
             return Err(Error::new_with(ErrorCode::ValueOutOfRange, operation, "list offsets must be non-negative")
                 .with_detail("offset_index", root_offset.to_string())
                 .with_detail("offset_value", base_child_offset.to_string())
                 .with_detail("reason", "negative_list_child_offset"));
         }
-        let normalized_offset_count = len.checked_add(1).ok_or_else(|| {
-            Error::new_with(ErrorCode::SizeOverflow, operation, "list offset count overflowed usize")
-                .with_detail("row_count", len.to_string())
-                .with_detail("reason", "list_offset_count_overflow")
-        })?;
-        let mut normalized_offsets = Vec::with_capacity(normalized_offset_count);
+        let mut normalized_offsets = Vec::with_capacity(host_offsets.len());
         let mut previous = base_child_offset;
-        for (position, raw_offset) in host_offsets[root_offset..=root_end].iter().copied().enumerate() {
+        for (position, raw_offset) in host_offsets.into_iter().enumerate() {
             if raw_offset < previous {
                 return Err(Error::new_with(
                     ErrorCode::ValueOutOfRange,

@@ -8,10 +8,7 @@ use rapids_interop::{
     BufferId, ColumnId, ColumnLayout, PhysicalValidity, PreparedAccess, PreparedColumnExport, ProducerReadiness,
 };
 
-use super::{
-    super::DataFrame,
-    list_export::{FixedSizeListStructuralProof, ListExportContract, ListExportParts, UniformListProof},
-};
+use super::list_export::{FixedSizeListStructuralProof, ListExportContract, ListExportParts, UniformListProof};
 use crate::{
     core::{
         Column,
@@ -586,65 +583,6 @@ fn record_fixed_size_list_structural_proof(
         binding_id: producer.execution_domain().binding_id(),
         placement: producer.execution_domain().placement(),
     }
-}
-
-pub(super) fn rebind_fixed_size_list_structural_proof(
-    proof: FixedSizeListStructuralProof,
-    frame: &DataFrame,
-) -> Result<FixedSizeListStructuralProof> {
-    const OPERATION: &str = "dataframe::GpuRecordBatch::with_validated_slice";
-    let (_, producer) = frame.columns_map().get_index(proof.field_index).ok_or_else(|| {
-        Error::new_with(
-            ErrorCode::InvariantViolation,
-            OPERATION,
-            "validated FixedSizeList field disappeared while slicing a GPU record batch",
-        )
-        .with_detail("field_index", proof.field_index.to_string())
-    })?;
-    let view = producer.view().map_err(|error| error.reanchor(OPERATION))?;
-    let rows = view.len().map_err(|error| error.reanchor(OPERATION))?;
-    let child = view.list_sliced_child().map_err(|error| error.reanchor(OPERATION))?;
-    let child_offset_raw = child.offset().map_err(|error| error.reanchor(OPERATION))?;
-    let child_offset = usize::try_from(child_offset_raw).map_err(|_| {
-        error::foreign_invariant_violation(
-            OPERATION,
-            "sliced FixedSizeList child offset must be non-negative",
-            "list_child",
-            "negative_fixed_size_list_child_offset",
-            "retain a valid cudf list slice",
-        )
-        .with_detail("field_index", proof.field_index.to_string())
-        .with_detail("child_offset", child_offset_raw.to_string())
-    })?;
-    let child_len = child.len().map_err(|error| error.reanchor(OPERATION))?;
-    let expected_child_len = rows.checked_mul(proof.dimension as usize).ok_or_else(|| {
-        Error::new_with(ErrorCode::SizeOverflow, OPERATION, "sliced FixedSizeList child length overflowed usize")
-            .with_detail("field_index", proof.field_index.to_string())
-            .with_detail("row_count", rows.to_string())
-            .with_detail("dimension", proof.dimension.to_string())
-    })?;
-    let root_null_count = view.null_count().map_err(|error| error.reanchor(OPERATION))?;
-    if root_null_count == 0 && child_len != expected_child_len {
-        return Err(error::invariant_violation(
-            OPERATION,
-            "slicing a structurally validated FixedSizeList changed its fixed-width child span",
-        )
-        .with_detail("field_index", proof.field_index.to_string())
-        .with_detail("expected_child_len", expected_child_len.to_string())
-        .with_detail("actual_child_len", child_len.to_string()));
-    }
-
-    Ok(FixedSizeListStructuralProof {
-        field_index: proof.field_index,
-        dimension: proof.dimension,
-        element: proof.element,
-        rows,
-        child_offset,
-        child_len,
-        producer_column_identity: Arc::as_ptr(producer) as usize,
-        binding_id: producer.execution_domain().binding_id(),
-        placement: producer.execution_domain().placement(),
-    })
 }
 
 pub(super) fn validate_list_export<'a>(

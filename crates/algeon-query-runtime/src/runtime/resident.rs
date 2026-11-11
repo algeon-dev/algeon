@@ -368,7 +368,8 @@ pub struct GpuHostBatchCursor {
     _graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
 
-/// Metadata-sized GPU output chunk awaiting a reserved device-to-host copy.
+/// Sized row range of a native GPU output awaiting a reserved device-to-host
+/// copy.
 #[derive(Debug)]
 pub struct GpuPreparedHostBatch {
     prepared: CudfPreparedHostBatch,
