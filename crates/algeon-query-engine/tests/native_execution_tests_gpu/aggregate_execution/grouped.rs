@@ -1189,11 +1189,12 @@ fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinal
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    let partial = metrics
+    let partials = metrics
         .aggregate_strategy_decisions
         .iter()
-        .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
-        .expect("source-adjacent partial should record strategy facts");
+        .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+        .collect::<Vec<_>>();
+    let partial = partials.first().expect("source-adjacent partial should record strategy facts");
     assert_eq!(metrics.source_chunks_planned, 2);
     assert_eq!(partial.facts.get("source_adjacent_partition_strategy").map(String::as_str), Some("group_key"));
     assert_eq!(partial.facts.get("source_chunk_row_group_count").map(String::as_str), Some("4"));
@@ -1212,14 +1213,31 @@ fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinal
         partial.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),
         Some("runtime_preflight_exact_grouped_key_facts")
     );
-    assert_eq!(partial.facts.get("prepared_sort_groupby_num_groups").map(String::as_str), Some("4"));
+    // A partial selected by its own preflight reuses that prepared handle;
+    // only a partial selected from earlier evidence prepares separately.
+    let selected_by_preflight = partials
+        .iter()
+        .filter(|decision| {
+            decision.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str)
+                == Some("runtime_preflight_exact_grouped_key_facts")
+        })
+        .count();
+    let prepared_from_evidence = partials
+        .iter()
+        .filter(|decision| {
+            decision.facts.get("selected_strategy").map(String::as_str) == Some("prepared_sort_groupby")
+                && decision.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str)
+                    != Some("runtime_preflight_exact_grouped_key_facts")
+        })
+        .count();
     assert_eq!(
         budgeted_events(metrics, "query_engine.aggregate.prepare_partial.prepared_sort_groupby_runtime_preflight")
             .len(),
-        1
+        selected_by_preflight
     );
-    assert!(
-        budgeted_events(metrics, "query_engine.aggregate.prepare_partial.prepared_sort_groupby").is_empty(),
+    assert_eq!(
+        budgeted_events(metrics, "query_engine.aggregate.prepare_partial.prepared_sort_groupby").len(),
+        prepared_from_evidence,
         "the preflight prepared handle must be reused by aggregate execution"
     );
     assert_eq!(metrics.source_chunks_retried, 0);
@@ -1245,15 +1263,21 @@ fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinal
         })
         .collect::<Vec<_>>();
     actual.sort_by(|left, right| (left.0.as_str(), left.1.as_str()).cmp(&(right.0.as_str(), right.1.as_str())));
-    assert_eq!(
-        actual,
-        vec![
-            ("A".to_string(), "F".to_string(), 600_000, 10.0, 60_000),
-            ("A".to_string(), "O".to_string(), 1_200_000, 20.0, 60_000),
-            ("R".to_string(), "F".to_string(), 1_800_000, 30.0, 60_000),
-            ("R".to_string(), "O".to_string(), 2_400_000, 40.0, 60_000),
-        ]
-    );
+    let rows_per_group = RUNTIME_PREFLIGHT_ROWS / RUNTIME_PREFLIGHT_GROUPS;
+    let expected = (0..RUNTIME_PREFLIGHT_GROUPS)
+        .map(|group| {
+            let flag = if group < RUNTIME_PREFLIGHT_GROUPS / 2 { "A" } else { "R" };
+            let value = i64::try_from(group + 1).unwrap();
+            (
+                flag.to_string(),
+                format!("S{:03}", group % (RUNTIME_PREFLIGHT_GROUPS / 2)),
+                value * i64::try_from(rows_per_group).unwrap(),
+                value as f64,
+                i64::try_from(rows_per_group).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1609,21 +1633,26 @@ fn write_many_row_group_q01_like_parquet(path: &Path, row_group_count: usize) ->
     schema
 }
 
+/// Groups of [`write_runtime_preflight_q01_like_parquet`]: 1,250 groups per
+/// million rows, above the source-adjacent local-reduction threshold and below
+/// the prepared sort-groupby threshold.
+const RUNTIME_PREFLIGHT_GROUPS: usize = 300;
+const RUNTIME_PREFLIGHT_ROWS: usize = 240_000;
+
+/// Row `r` belongs to group `g = r % RUNTIME_PREFLIGHT_GROUPS`, keyed by flag
+/// `A` or `R` and status `S{g % 150}`, with value `g + 1`.
 fn write_runtime_preflight_q01_like_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("flag", DataType::Utf8, false),
         Field::new("status", DataType::Utf8, false),
         Field::new("value", DataType::Int64, false),
     ]));
-    let row_count = 240_000usize;
-    let flags = (0..row_count).map(|row| if row % 4 < 2 { "A" } else { "R" });
-    let statuses = (0..row_count).map(|row| if row % 2 == 0 { "F" } else { "O" });
-    let values = (0..row_count).map(|row| match row % 4 {
-        0 => 10i64,
-        1 => 20,
-        2 => 30,
-        _ => 40,
-    });
+    let group = |row: usize| row % RUNTIME_PREFLIGHT_GROUPS;
+    let flags =
+        (0..RUNTIME_PREFLIGHT_ROWS).map(|row| if group(row) < RUNTIME_PREFLIGHT_GROUPS / 2 { "A" } else { "R" });
+    let statuses =
+        (0..RUNTIME_PREFLIGHT_ROWS).map(|row| format!("S{:03}", group(row) % (RUNTIME_PREFLIGHT_GROUPS / 2)));
+    let values = (0..RUNTIME_PREFLIGHT_ROWS).map(|row| i64::try_from(group(row) + 1).unwrap());
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
@@ -1975,36 +2004,49 @@ fn bounded_native_query_uses_configured_source_cap_when_budget_model_allows_it()
 
 #[test]
 fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and_reduces_skewed_keys_locally() {
+    fn string_key_sum_plan(path: &Path, input_schema: Arc<Schema>) -> QueryPlan {
+        let projected_schema = Arc::new(Schema::new(vec![
+            Field::new("l_returnflag", DataType::Utf8, false),
+            Field::new("value", DataType::Int64, false),
+        ]));
+        let aggregated_schema = Arc::new(Schema::new(vec![
+            Field::new("l_returnflag", DataType::Utf8, false),
+            Field::new("sum_value", DataType::Int64, true),
+        ]));
+        // Footer row counts and projected bytes size the first batch before any
+        // decoded observation exists, as adapter lowering supplies them.
+        let source = fixture_local_parquet_source::from_files(
+            vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+            input_schema,
+            vec!["flag".to_string(), "value".to_string()],
+        );
+        let projection = vec![Expr::column("flag").alias("l_returnflag"), Expr::column("value")];
+        let aggregate = AggregateSpec::new(
+            vec![Expr::column("l_returnflag")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+        );
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+        let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
+        builder.finish_with_host_sink(aggregate).unwrap()
+    }
+
+    fn partial_strategies(metrics: &QueryMetrics) -> Vec<String> {
+        metrics
+            .aggregate_strategy_decisions
+            .iter()
+            .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+            .map(|decision| decision.facts.get("source_adjacent_partition_strategy").cloned().unwrap_or_default())
+            .collect()
+    }
+
     let dir = unique_temp_dir("query-engine-bounded-source-adjacent-raw-batch-feedback");
     let path = dir.join("input.parquet");
     let row_groups = 64;
     let rows_per_row_group = 65_536;
     let input_schema = write_skewed_string_key_row_grouped_parquet(&path, row_groups, rows_per_row_group);
-    let projected_schema = Arc::new(Schema::new(vec![
-        Field::new("l_returnflag", DataType::Utf8, false),
-        Field::new("value", DataType::Int64, false),
-    ]));
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("l_returnflag", DataType::Utf8, false),
-        Field::new("sum_value", DataType::Int64, true),
-    ]));
-    // Footer row counts and projected bytes size the first batch before any
-    // decoded observation exists, as adapter lowering supplies them.
-    let source = fixture_local_parquet_source::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
-        Arc::clone(&input_schema),
-        vec!["flag".to_string(), "value".to_string()],
-    );
-    let projection = vec![Expr::column("flag").alias("l_returnflag"), Expr::column("value")];
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("l_returnflag")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
-    );
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
-    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
-    let plan = builder.finish_with_host_sink(aggregate).unwrap();
+    let plan = string_key_sum_plan(&path, input_schema);
 
     // Adaptive defaults must account for decoded rows and staged copies under
     // this small grant before a raw read reaches the allocator limit.
@@ -2037,14 +2079,11 @@ fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and
         .expect("incremental merge reports retained partial bound");
     assert!((1..=16).contains(&max_pending_partials));
 
-    let partial_strategies = metrics
-        .aggregate_strategy_decisions
-        .iter()
-        .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
-        .map(|decision| decision.facts.get("source_adjacent_partition_strategy").cloned().unwrap_or_default())
-        .collect::<Vec<_>>();
-    assert!(partial_strategies.iter().any(|strategy| strategy == "group_key"), "{partial_strategies:?}");
-    assert!(partial_strategies.iter().any(|strategy| strategy == "local_reduction"), "{partial_strategies:?}");
+    // No batch precedes the first one, so its key sample decides: two keys
+    // reduce it whole, and no raw batch of the run is hash-partitioned.
+    let skewed_strategies = partial_strategies(metrics);
+    assert!(!skewed_strategies.is_empty());
+    assert!(skewed_strategies.iter().all(|strategy| strategy == "local_reduction"), "{skewed_strategies:?}");
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -2057,6 +2096,19 @@ fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and
         let expected = if keys.value(row) == "F" { expected_f } else { expected_o };
         assert_eq!(sums.value(row), expected, "sum for key {}", keys.value(row));
     }
+
+    // A distinct key per row keeps the first batch on group-key partitions.
+    let distinct_path = dir.join("distinct.parquet");
+    let distinct_row_groups = 8;
+    let distinct_schema =
+        write_cardinality_shift_string_key_parquet(&distinct_path, distinct_row_groups, rows_per_row_group, 0);
+    let result = execute_query_plan(&context, &string_key_sum_plan(&distinct_path, distinct_schema)).unwrap();
+    let distinct_strategies = partial_strategies(result.metrics());
+    assert_eq!(distinct_strategies.first().map(String::as_str), Some("group_key"), "{distinct_strategies:?}");
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), distinct_row_groups * rows_per_row_group);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2078,7 +2130,12 @@ fn assert_bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_r
     let path = dir.join("input.parquet");
     let row_groups = 64;
     let rows_per_row_group = 65_536;
-    let input_schema = write_cardinality_shift_string_key_parquet(&path, row_groups, rows_per_row_group);
+    let input_schema = write_cardinality_shift_string_key_parquet(
+        &path,
+        row_groups,
+        rows_per_row_group,
+        row_groups * rows_per_row_group / 2,
+    );
     let projected_schema = Arc::new(Schema::new(vec![
         Field::new("l_returnflag", DataType::Utf8, false),
         Field::new("value", DataType::Int64, false),
