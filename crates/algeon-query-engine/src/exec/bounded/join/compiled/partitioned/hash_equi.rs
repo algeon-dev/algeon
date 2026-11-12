@@ -11,22 +11,32 @@
 //!   are collected into a `PartitionedStreamed` state.
 //! - A frame-stream probe, or a build side that was partitioned while it streamed in
 //!   (`..._probe_from_frame_stream`, `..._probe_from_split_build_frame_stream`): a lazy
-//!   `PartitionedLazyStream` state. A pull joins one partition of one probe chunk
+//!   `PartitionedLazyStream` state. A pull joins one probe piece against every build partition
 //!   (`PartitionedHashEquiJoinProbeStreamSource`). Several eager chunks can instead be probed in
 //!   parallel lanes against one shared build (`parallel_partitioned_lazy_drain`).
 //!
 //! Only inner joins and left joins that preserve the probe side stream, because their output for
 //! one probe chunk does not depend on the other chunks (`partitioned_streaming_probe_supported`).
 //!
-//! Every partition pair runs the one-shot sequence of `one_shot.rs` (hash table over the build
-//! partition, probe-size call, probe with that size, gather). The table is rebuilt for each pair
-//! and dropped before the gather. The partition count follows `partitioned_join_partition_count`
-//! (see `partitioned/mod.rs`); for a stream probe the probe size is an estimate, and an unknown
-//! estimate leaves the build size to decide.
+//! Every partition pair runs the one-shot sequence of `one_shot.rs`: hash table over the build
+//! partition, probe-size call, probe with that size, gather. A resident join probes each partition
+//! once, so its table is built for the pair and dropped before the gather. A streamed probe keeps
+//! the table of each build partition from the first probe piece on and joins every later piece
+//! against it (`hash_tables.rs`); a partition whose table is not kept gets a table built for the
+//! pair. A retry below a whole build partition builds its own table for each child.
 //!
-//! The partitioned build side stays resident until the probe finishes, together with the current
-//! probe piece in partitioned form until its last partition is joined. Per-partition outputs wait
-//! in a queue until they are pulled.
+//! The partition count follows `partitioned_join_partition_count` (see `partitioned/mod.rs`); for a
+//! stream probe the probe size is an estimate, and an unknown estimate leaves the build size to
+//! decide.
+//!
+//! A streamed probe holds its build side as one frame per partition, with the kept tables, until
+//! the probe finishes, and the current probe piece in partitioned form until its last partition is
+//! joined. The partition outputs of one piece are concatenated into one frame, so a downstream
+//! consumer sees as many frames as this join sees probe pieces.
+
+use std::sync::Arc;
+
+use query_runtime::runtime::resident::GpuHashJoinBuildHandle;
 
 use super::{
     BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
@@ -34,18 +44,19 @@ use super::{
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, BoundedPartitionRowPolicy,
     CompiledEqualityJoinPreflightIndices, GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide,
     JoinStrategy, KeyedHashJoinStrategyOptions, NodeId, PARTITIONED_HASH_EQUI_STRATEGY,
-    PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput,
-    PartitionedJoinProbeChunk, PartitionedJoinSide, ResidentFrameStreamPayload, ResidentFrameStreamSource,
-    ResidentGpuFrame, Result, StreamedPartitionedJoinSummary, VecDeque, bounded_invariant_violation,
-    compiled_join_input_columns, concatenate_streamed_hash_join_outputs, hash_partition_join_side, join_keys_for_side,
-    materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_partitioned_join_partition_with_retry,
-    observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
-    partitioned_streaming_probe_supported, prepare_bounded_join_side_input_from_resident_frame, probe_side,
+    PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinDriverPlan, PartitionedJoinHashTables,
+    PartitionedJoinPartitionOutput, PartitionedJoinProbeChunk, PartitionedJoinSide, ResidentFrameStreamPayload,
+    ResidentFrameStreamSource, ResidentGpuFrame, Result, RetainedPartitionHashTables, StreamedPartitionedJoinSummary,
+    VecDeque, bounded_invariant_violation, compiled_join_input_columns, compiled_keyed_equality_hash_join_options,
+    concatenate_streamed_hash_join_outputs, hash_partition_join_side, join_keys_for_side,
+    materialize_partitioned_join_partition_with_retry, observe_device_memory_bytes, partitioned_join_partition_count,
+    partitioned_join_target_bytes_for_context, partitioned_streaming_probe_supported,
+    prepare_bounded_join_side_input_from_resident_frame, probe_compiled_keyed_equality_join_indices, probe_side,
     record_partitioned_join_operator_metrics, record_streamed_partitioned_hash_join_metrics,
-    release_partitioned_join_side, run_partitioned_join_driver, stream_bounded_join_leaf_local_parquet_source_serial,
-    validate_partitioned_hash_equi_join,
+    release_partitioned_join_side, run_partitioned_join_driver, split_partitioned_join_side,
+    stream_bounded_join_leaf_local_parquet_source_serial, validate_partitioned_hash_equi_join,
 };
-use crate::exec::bounded::{compiled::lanes::AggregateLaneDispatch, release_bounded_compiled_join_probe_state};
+use crate::exec::bounded::{compiled::lanes::AggregateLaneDispatch, join::hash::build_bounded_hash_join};
 
 /// Joins two resident sides partition by partition and concatenates the partition outputs into one
 /// frame.
@@ -98,9 +109,9 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
 /// Partitions both sides, joins every pair through the driver, and reports the join metrics.
 ///
 /// The partition count comes from the two sides' bytes. The driver consumes both frames and
-/// releases the partitioned sides on success and on error. Metrics are recorded after
-/// concatenation; the reported output bytes then reflect the concatenated frame when
-/// `preserve_stream` is false.
+/// releases the partitioned sides on success and on error. Each partition is probed once, so no
+/// table is kept. Metrics are recorded after concatenation; the reported output bytes then
+/// reflect the concatenated frame when `preserve_stream` is false.
 fn execute_compiled_partitioned_hash_equi_join_materialize_output(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -120,8 +131,20 @@ fn execute_compiled_partitioned_hash_equi_join_materialize_output(
         partition_count,
         partition_target_bytes: partitioned_join_target_bytes_for_context(execution.context()),
     };
+    let mut hash_table_builds = 0;
     let mut result =
-        run_partitioned_join_driver(execution, plan, left, right, materialize_partitioned_hash_equi_join_partition)?;
+        run_partitioned_join_driver(execution, plan, left, right, |execution, node_id, node, left, right, _| {
+            materialize_partitioned_hash_equi_join_partition(
+                execution,
+                node_id,
+                node,
+                left,
+                right,
+                None,
+                &mut hash_table_builds,
+            )
+        })?;
+    result.summary.hash_table_build_count = hash_table_builds;
     let mut stream_outputs = Some(result.outputs);
     let output = if preserve_stream {
         None
@@ -149,30 +172,66 @@ fn execute_compiled_partitioned_hash_equi_join_materialize_output(
 /// retry after a retryable resource error. Every failure path rolls the transaction back before the
 /// error returns. `output_reservation_bytes` is an upper bound recorded for observation; nothing is
 /// reserved.
+///
+/// `kept_table` is the table kept over the whole build partition that the build slice is. Without
+/// one, a table is built over the build slice for this pair, counted in `hash_table_builds` and
+/// the query's hash-join build count, and dropped on return.
 fn materialize_partitioned_hash_equi_join_partition(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
+    kept_table: Option<&GpuHashJoinBuildHandle>,
+    hash_table_builds: &mut u64,
 ) -> Result<PartitionedJoinPartitionOutput> {
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
+    let build_side = node.spec.build_side;
     let exec_runtime = execution.context().runtime()?;
     let overrides = exec_runtime.exec();
     let timer = Instant::now();
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     let (left, right) = txn.sides();
-    let preflight_indices = match materialize_compiled_keyed_equality_join_indices_with_preflight(
-        execution,
-        node,
-        left,
-        right,
-        node.spec.build_side,
-        &left_keys,
-        &right_keys,
-        overrides,
-    ) {
+    let (build, build_keys, probe, probe_keys) = match build_side {
+        JoinSide::Left => (left, &left_keys, right, &right_keys),
+        JoinSide::Right => (right, &right_keys, left, &left_keys),
+    };
+    let preflight_indices = match kept_table {
+        Some(hash_join) => probe_compiled_keyed_equality_join_indices(
+            node,
+            hash_join.hash_join(),
+            build_side,
+            &probe.frame,
+            probe_keys,
+            overrides,
+        ),
+        None => match build_bounded_hash_join(
+            execution,
+            node,
+            &build.frame,
+            build_keys,
+            compiled_keyed_equality_hash_join_options(node),
+            build_side,
+            overrides,
+            false,
+        ) {
+            Ok((hash_join, _)) => {
+                *hash_table_builds += 1;
+                execution.metrics().record_hash_join_build();
+                probe_compiled_keyed_equality_join_indices(
+                    node,
+                    hash_join.hash_join(),
+                    build_side,
+                    &probe.frame,
+                    probe_keys,
+                    overrides,
+                )
+            },
+            Err(error) => Err(error),
+        },
+    };
+    let preflight_indices = match preflight_indices {
         Ok(indices) => indices,
         Err(error) => {
             txn.rollback();
@@ -229,19 +288,89 @@ fn materialize_partitioned_hash_equi_join_partition(
     })
 }
 
+/// Joins one hash-partitioned probe piece against every build partition and returns the piece's
+/// output as one frame.
+///
+/// Each partition runs under the driver's retry, joined with its kept table when `tables` has one.
+/// The partition outputs are concatenated, so the concatenation holds the piece's output twice at
+/// its peak. Table builds are added to `summary` whatever the outcome; the output counters only
+/// once the piece's frame exists, because a leaf chunk that fails is read again in smaller pieces.
+fn join_partitioned_probe_piece(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    plan: PartitionedJoinDriverPlan<'_>,
+    build_partitioned: &PartitionedJoinSide,
+    tables: &RetainedPartitionHashTables,
+    probe_partitioned: &PartitionedJoinSide,
+    summary: &mut StreamedPartitionedJoinSummary,
+) -> Result<ResidentGpuFrame> {
+    let (left_partitioned, right_partitioned) = match plan.node.spec.build_side {
+        JoinSide::Left => (build_partitioned, probe_partitioned),
+        JoinSide::Right => (probe_partitioned, build_partitioned),
+    };
+    let mut hash_table_builds = 0;
+    let mut outputs = Vec::new();
+    let mut joined = Ok(());
+    for partition in 0..plan.partition_count {
+        let mut materialize = |execution: &mut BoundedExecutionAttempt<'_>,
+                               node_id: NodeId,
+                               node: &JoinNode,
+                               left: BoundedJoinSideFrame,
+                               right: BoundedJoinSideFrame,
+                               whole_build_partition: Option<usize>| {
+            materialize_partitioned_hash_equi_join_partition(
+                execution,
+                node_id,
+                node,
+                left,
+                right,
+                whole_build_partition.and_then(|partition| tables.table(partition)),
+                &mut hash_table_builds,
+            )
+        };
+        match materialize_partitioned_join_partition_with_retry(
+            execution,
+            plan,
+            left_partitioned,
+            right_partitioned,
+            partition,
+            &mut materialize,
+        ) {
+            Ok(partition_outputs) => outputs.extend(partition_outputs),
+            Err(error) => {
+                joined = Err(error);
+                break;
+            },
+        }
+    }
+    summary.record_hash_table_builds(hash_table_builds);
+    joined?;
+    let mut committed = summary.clone();
+    let frames = outputs
+        .into_iter()
+        .map(|output| {
+            committed.record_output(&output);
+            output.frame
+        })
+        .collect::<Vec<_>>();
+    let frame = concatenate_streamed_hash_join_outputs(execution, plan.node_id, frames)?;
+    *summary = committed;
+    Ok(frame)
+}
+
 /// Partitions the resident build frame once and joins a deferred Parquet leaf chunk by chunk.
 ///
 /// The partition count is sized from the build bytes and the leaf's estimated read bytes (zero when
-/// unknown) and is at least the hash-frame-stream minimum. Each chunk is projected,
-/// hash-partitioned to the same count, and joined partition by partition against the build
-/// partitions with the driver's retry. The chunk's partitioned copy is released after its last
-/// partition. The leaf stream may call the consumer again with a smaller piece of the same chunk
-/// after a retryable resource error. A chunk's outputs and summary counters are therefore published
-/// only after every partition succeeded.
+/// unknown) and is at least the hash-frame-stream minimum. The build partitions are copied into
+/// one frame each and their tables are kept when the leaf has more than one chunk. Each chunk is
+/// projected, hash-partitioned to the same count, and joined as one probe piece
+/// (`join_partitioned_probe_piece`). The chunk's partitioned copy is released after the piece. The
+/// leaf stream may call the consumer again with a smaller piece of the same chunk after a
+/// retryable resource error. A chunk's output and summary counters are therefore published only
+/// after the piece succeeded.
 ///
-/// The build partitions are released before returning, on success and on error. The result is a
-/// `PartitionedStreamed` state that holds outputs and a summary, with no GPU state besides the
-/// outputs.
+/// The build partitions and the kept tables are released before returning, on success and on
+/// error. The result is a `PartitionedStreamed` state that holds outputs and a summary, with no GPU
+/// state besides the outputs.
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_probe_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -273,6 +402,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let overrides = exec_runtime.exec();
     let build_partitioned =
         hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, overrides)?;
+    let build_partitioned = split_partitioned_join_side(execution, build_side, build_partitioned)?;
     let build_partitioned_bytes = build_partitioned.device_bytes();
     let mut outputs = Vec::new();
     let mut summary =
@@ -296,7 +426,28 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         ]),
     );
 
-    let probe_columns = compiled_join_input_columns(node, JoinStrategy::PartitionedHashEqui, probe_side)?;
+    let probe_columns = match compiled_join_input_columns(node, JoinStrategy::PartitionedHashEqui, probe_side) {
+        Ok(columns) => columns,
+        Err(error) => {
+            release_partitioned_join_side(build_partitioned);
+            return Err(error);
+        },
+    };
+    let mut hash_tables = PartitionedJoinHashTables::undecided();
+    let tables = match hash_tables.decide(
+        execution,
+        node,
+        build_side,
+        &build_partitioned,
+        stream.chunk_count() > 1,
+        &mut summary,
+    ) {
+        Ok(tables) => tables,
+        Err(error) => {
+            release_partitioned_join_side(build_partitioned);
+            return Err(error);
+        },
+    };
     let stream_result = stream_bounded_join_leaf_local_parquet_source_serial(execution, stream, |input, execution| {
         let probe = prepare_bounded_join_side_input_from_resident_frame(execution, input, &probe_columns, probe_side)?;
         let probe_rows = probe.rows;
@@ -304,71 +455,41 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         let probe_partitioned =
             hash_partition_join_side(execution, probe_side, probe, &probe_keys, partition_count, overrides)?;
         let probe_partitioned_bytes = probe_partitioned.device_bytes();
-        // A chunk that fails here is re-read in smaller pieces by the leaf
-        // stream, so its outputs and summary are kept only after every
-        // partition succeeds; a failed chunk's outputs drop before the retry.
-        let mut chunk_outputs = Vec::new();
-        for partition in 0..partition_count {
-            let (left_partitioned, right_partitioned) = match build_side {
-                JoinSide::Left => (&build_partitioned, &probe_partitioned),
-                JoinSide::Right => (&probe_partitioned, &build_partitioned),
-            };
-            match materialize_partitioned_join_partition_with_retry(
-                execution,
-                plan,
-                left_partitioned,
-                right_partitioned,
-                partition,
-                &mut materialize_partitioned_hash_equi_join_partition,
-            ) {
-                Ok(partition_outputs) => chunk_outputs.extend(partition_outputs),
-                Err(error) => {
-                    release_partitioned_join_side(probe_partitioned);
-                    return Err(error);
-                },
-            }
-        }
+        let output = join_partitioned_probe_piece(
+            execution,
+            plan,
+            &build_partitioned,
+            &tables,
+            &probe_partitioned,
+            &mut summary,
+        );
         release_partitioned_join_side(probe_partitioned);
+        outputs.push(output?);
         summary.record_probe_partitioned_chunk(probe_rows, probe_bytes, probe_partitioned_bytes);
-        for output in chunk_outputs {
-            summary.record_output(&output);
-            outputs.push(output.frame);
-        }
         Ok(())
     });
-    match stream_result {
-        Ok(()) => {
-            execution.metrics().record_join_strategy_decision(
-                node_id,
-                &BTreeMap::from([
-                    ("join_strategy", "partitioned_hash_equi".to_string()),
-                    ("partition_count", partition_count.to_string()),
-                    ("partition_target_bytes", partition_target_bytes.to_string()),
-                    ("probe_partition_batch_count", summary.probe_partition_batch_count.to_string()),
-                    ("probe_partitioned_bytes", summary.probe_partitioned_bytes.to_string()),
-                ]),
-            );
-            release_partitioned_join_side(build_partitioned);
-            Ok(BoundedCompiledJoinProbeState::PartitionedStreamed {
-                build_side,
-                build_rows,
-                build_bytes,
-                outputs,
-                summary,
-            })
-        },
-        Err(error) => {
-            release_partitioned_join_side(build_partitioned);
-            Err(error)
-        },
-    }
+    release_partitioned_join_side(build_partitioned);
+    stream_result?;
+    execution.metrics().record_join_strategy_decision(
+        node_id,
+        &BTreeMap::from([
+            ("join_strategy", "partitioned_hash_equi".to_string()),
+            ("partition_count", partition_count.to_string()),
+            ("partition_target_bytes", partition_target_bytes.to_string()),
+            ("probe_partition_batch_count", summary.probe_partition_batch_count.to_string()),
+            ("probe_partitioned_bytes", summary.probe_partitioned_bytes.to_string()),
+        ]),
+    );
+    Ok(BoundedCompiledJoinProbeState::PartitionedStreamed { build_side, build_rows, build_bytes, outputs, summary })
 }
 
 /// Partitions the resident build frame once and returns a lazy `PartitionedLazyStream` state. No
 /// probe chunk is joined yet.
 ///
-/// The inputs' largest frame size stands in for the probe size when sizing the partition count. If
-/// the probe columns cannot be resolved, the inputs and the build partitions are released here.
+/// The inputs' largest frame size stands in for the probe size when sizing the partition count.
+/// The partitions are copied into one frame each, which their kept tables refer to. If that copy
+/// fails or the probe columns cannot be resolved, the inputs and the build partitions are released
+/// here.
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -400,7 +521,15 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let exec_runtime = execution.context().runtime()?;
     let overrides = exec_runtime.exec();
     let build_partitioned =
-        hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, overrides)?;
+        match hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, overrides)
+            .and_then(|partitioned| split_partitioned_join_side(execution, build_side, partitioned))
+        {
+            Ok(partitioned) => partitioned,
+            Err(error) => {
+                inputs.release_all(execution);
+                return Err(error);
+            },
+        };
     let build_partitioned_bytes = build_partitioned.device_bytes();
     execution.metrics().record_join_strategy_decision(
         node_id,
@@ -426,6 +555,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         build_rows,
         build_bytes,
         build_partitioned,
+        hash_tables: PartitionedJoinHashTables::undecided(),
         build_partitioned_bytes,
         inputs,
         partition_count,
@@ -492,6 +622,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         build_rows: build.rows,
         build_bytes: build.bytes,
         build_partitioned: build.partitioned,
+        hash_tables: PartitionedJoinHashTables::undecided(),
         build_partitioned_bytes,
         inputs,
         partition_count: build.partition_count,
@@ -502,42 +633,30 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     }))
 }
 
-/// Wraps a lazy probe state in a `ResidentFrameStreamPayload` whose producer joins one partition
-/// per pull. The payload's frame size hint is the partition byte target, because each yielded frame
-/// is one partition's output.
+/// Releases a lazy probe that will not be drained: the unread inputs, the build partitions and the
+/// kept tables, whose charges return to the attempt.
+pub(in crate::exec::bounded::join::compiled) fn release_partitioned_hash_equi_join_frame_stream_probe_state(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    probe: PartitionedHashEquiJoinFrameStreamProbeState,
+) {
+    let PartitionedHashEquiJoinFrameStreamProbeState { build_partitioned, inputs, .. } = probe;
+    inputs.release_all(execution);
+    release_partitioned_join_side(build_partitioned);
+}
+
+/// Wraps a lazy probe state in a `ResidentFrameStreamPayload` whose producer joins one probe piece
+/// per pull. Each yielded frame is one input piece's output, so the payload's frame size hint is the
+/// inputs' hint.
 pub(in crate::exec::bounded::join::compiled) fn partitioned_hash_equi_join_frame_stream_probe_to_payload(
     node_id: NodeId,
     node: &JoinNode,
     probe: PartitionedHashEquiJoinFrameStreamProbeState,
 ) -> ResidentFrameStreamPayload {
-    let max_frame_bytes_hint = Some(probe.partition_target_bytes);
+    let max_frame_bytes_hint = probe.inputs.max_frame_bytes_hint();
     let total_bytes_hint = probe.inputs.total_bytes_hint();
     let aggregate_num_rows = probe.inputs.num_rows();
     let num_columns = node.spec.output_projection.len();
-    let source = PartitionedHashEquiJoinProbeStreamSource {
-        node_id,
-        node: node.clone(),
-        build_side: probe.build_side,
-        build_rows: probe.build_rows,
-        build_bytes: probe.build_bytes,
-        build_partitioned: Some(probe.build_partitioned),
-        inputs: Some(probe.inputs),
-        partition_count: probe.partition_count,
-        partition_target_bytes: probe.partition_target_bytes,
-        strategy_options: probe.strategy_options,
-        probe_columns: probe.probe_columns,
-        probe_keys: probe.probe_keys,
-        active_probe_partitioned: None,
-        pending_probe_chunk: None,
-        pending_outputs: VecDeque::new(),
-        next_partition: 0,
-        summary: StreamedPartitionedJoinSummary::new(
-            probe.partition_count,
-            probe.partition_target_bytes,
-            probe.build_partitioned_bytes,
-        ),
-        metrics_recorded: false,
-    };
+    let source = PartitionedHashEquiJoinProbeStreamSource::new(node_id, node, probe, true);
     ResidentFrameStreamPayload::from_producer(
         max_frame_bytes_hint,
         total_bytes_hint,
@@ -547,18 +666,19 @@ pub(in crate::exec::bounded::join::compiled) fn partitioned_hash_equi_join_frame
     )
 }
 
-/// Producer behind a lazy partitioned probe. Each pull yields one partition's output frame.
+/// Producer behind a lazy partitioned probe. Each pull yields one probe piece's output frame.
 ///
-/// Per probe piece, `load_next_probe_chunk` reads the next chunk, prepares it and hash-partitions
-/// it into `active_probe_partitioned`. `materialize_next_active_partition` then joins partition
-/// `next_partition` against the build partitions and queues the outputs, and the partitioned copy
-/// is released after its last partition is joined. A chunk that fails to partition under a resource
-/// limit is split into row ranges (`pending_probe_chunk`) and its pieces are partitioned in order.
+/// Per probe piece, `load_next_probe_piece` reads the next chunk, prepares it and hash-partitions
+/// it, and `join_partitioned_probe_piece` joins it against the build partitions. The first piece
+/// decides the kept tables, keeping none when no other piece can follow. A chunk that fails to
+/// partition under a resource limit is split into row ranges (`pending_probe_chunk`) and its pieces
+/// are partitioned and joined in order, one frame each.
 ///
-/// The source retains the build partitions, the unread inputs, the active partitioned piece and the
-/// queued outputs until `release`. The owning payload calls it after the stream drains, on early
-/// stop and on error, and the source also releases itself at exhaustion and on its own errors.
-/// Metrics are recorded once, at exhaustion.
+/// The source retains the build partitions, the kept tables and the unread inputs until `release`.
+/// The owning payload calls it after the stream drains, on early stop and on error, and the source
+/// also releases itself at exhaustion and on its own errors. A source that `reports_metrics`
+/// records the join metric row once, at exhaustion; a lane's source leaves its summary to the
+/// coordinator.
 struct PartitionedHashEquiJoinProbeStreamSource {
     node_id: NodeId,
     node: JoinNode,
@@ -566,23 +686,53 @@ struct PartitionedHashEquiJoinProbeStreamSource {
     build_rows: u64,
     build_bytes: u64,
     build_partitioned: Option<PartitionedJoinSide>,
+    hash_tables: PartitionedJoinHashTables,
     inputs: Option<ResidentFrameStreamPayload>,
     partition_count: usize,
     partition_target_bytes: u64,
     strategy_options: KeyedHashJoinStrategyOptions,
     probe_columns: Vec<String>,
     probe_keys: Vec<String>,
-    active_probe_partitioned: Option<PartitionedJoinSide>,
     pending_probe_chunk: Option<PartitionedJoinProbeChunk>,
-    pending_outputs: VecDeque<ResidentGpuFrame>,
-    next_partition: usize,
     summary: StreamedPartitionedJoinSummary,
+    reports_metrics: bool,
     metrics_recorded: bool,
 }
 
 impl PartitionedHashEquiJoinProbeStreamSource {
+    fn new(
+        node_id: NodeId,
+        node: &JoinNode,
+        probe: PartitionedHashEquiJoinFrameStreamProbeState,
+        reports_metrics: bool,
+    ) -> Self {
+        Self {
+            node_id,
+            node: node.clone(),
+            build_side: probe.build_side,
+            build_rows: probe.build_rows,
+            build_bytes: probe.build_bytes,
+            build_partitioned: Some(probe.build_partitioned),
+            hash_tables: probe.hash_tables,
+            inputs: Some(probe.inputs),
+            partition_count: probe.partition_count,
+            partition_target_bytes: probe.partition_target_bytes,
+            strategy_options: probe.strategy_options,
+            probe_columns: probe.probe_columns,
+            probe_keys: probe.probe_keys,
+            pending_probe_chunk: None,
+            summary: StreamedPartitionedJoinSummary::new(
+                probe.partition_count,
+                probe.partition_target_bytes,
+                probe.build_partitioned_bytes,
+            ),
+            reports_metrics,
+            metrics_recorded: false,
+        }
+    }
+
     fn record_success_metrics(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        if self.metrics_recorded {
+        if !self.reports_metrics || self.metrics_recorded {
             return;
         }
         self.metrics_recorded = true;
@@ -598,10 +748,11 @@ impl PartitionedHashEquiJoinProbeStreamSource {
         );
     }
 
-    /// Makes the next probe piece the active partitioned piece. `None` means the inputs are
-    /// exhausted; `Some(Ok(true))` means `active_probe_partitioned` is set and `next_partition` is
-    /// 0.
-    fn load_next_probe_chunk(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<bool>> {
+    /// Hash-partitions the next probe piece. `None` means the inputs are exhausted.
+    fn load_next_probe_piece(
+        &mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+    ) -> Option<Result<PartitionedJoinSide>> {
         if self.pending_probe_chunk.is_none() {
             let inputs = self.inputs.as_mut()?;
             let input = match inputs.next_frame(execution) {
@@ -620,7 +771,6 @@ impl PartitionedHashEquiJoinProbeStreamSource {
             };
             self.pending_probe_chunk = Some(PartitionedJoinProbeChunk::new(probe));
         }
-        let pending = self.pending_probe_chunk.as_mut().expect("probe retry input should be present");
         let plan = PartitionedJoinDriverPlan {
             node_id: self.node_id,
             node: &self.node,
@@ -629,6 +779,7 @@ impl PartitionedHashEquiJoinProbeStreamSource {
             partition_count: self.partition_count,
             partition_target_bytes: self.partition_target_bytes,
         };
+        let pending = self.pending_probe_chunk.as_mut().expect("probe retry input should be present");
         let (probe_partitioned, probe_rows, probe_bytes) =
             match pending.next_partitioned(execution, plan, &self.probe_keys) {
                 Ok(Some(output)) => output,
@@ -640,28 +791,28 @@ impl PartitionedHashEquiJoinProbeStreamSource {
         }
         let probe_partitioned_bytes = probe_partitioned.device_bytes();
         self.summary.record_probe_partitioned_chunk(probe_rows, probe_bytes, probe_partitioned_bytes);
-        self.active_probe_partitioned = Some(probe_partitioned);
-        self.next_partition = 0;
-        Some(Ok(true))
+        Some(Ok(probe_partitioned))
     }
 
-    /// Joins the active piece's next partition against its build partition with the driver's retry
-    /// and queues the outputs. The piece's partitioned copy is released once its last partition is
-    /// joined. On error the copy stays in place for `release`.
-    fn materialize_next_active_partition(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<()> {
-        let partition = self.next_partition;
-        self.next_partition += 1;
-        let is_last_active_partition = self.next_partition >= self.partition_count;
+    /// Joins one partitioned probe piece, deciding the kept tables at the first piece. Another
+    /// piece can follow while a retry range or an input frame remains.
+    fn join_probe_piece(
+        &mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        probe_partitioned: &PartitionedJoinSide,
+    ) -> Result<ResidentGpuFrame> {
+        let more_pieces =
+            self.pending_probe_chunk.is_some() || self.inputs.as_ref().is_some_and(|inputs| !inputs.is_empty());
         let build_partitioned =
             self.build_partitioned.as_ref().expect("partitioned hash join build side released before stream end");
-        let probe_partitioned = self
-            .active_probe_partitioned
-            .as_ref()
-            .expect("partitioned hash join probe chunk missing before stream end");
-        let (left_partitioned, right_partitioned) = match self.build_side {
-            JoinSide::Left => (build_partitioned, probe_partitioned),
-            JoinSide::Right => (probe_partitioned, build_partitioned),
-        };
+        let tables = self.hash_tables.decide(
+            execution,
+            &self.node,
+            self.build_side,
+            build_partitioned,
+            more_pieces,
+            &mut self.summary,
+        )?;
         let plan = PartitionedJoinDriverPlan {
             node_id: self.node_id,
             node: &self.node,
@@ -670,75 +821,42 @@ impl PartitionedHashEquiJoinProbeStreamSource {
             partition_count: self.partition_count,
             partition_target_bytes: self.partition_target_bytes,
         };
-        let outputs = materialize_partitioned_join_partition_with_retry(
-            execution,
-            plan,
-            left_partitioned,
-            right_partitioned,
-            partition,
-            &mut materialize_partitioned_hash_equi_join_partition,
-        )?;
-        if is_last_active_partition {
-            self.release_active_probe_partitioned();
-        }
-        for output in outputs {
-            self.summary.record_output(&output);
-            self.pending_outputs.push_back(output.frame);
-        }
-        Ok(())
-    }
-
-    fn release_active_probe_partitioned(&mut self) {
-        if let Some(probe_partitioned) = self.active_probe_partitioned.take() {
-            release_partitioned_join_side(probe_partitioned);
-        }
+        join_partitioned_probe_piece(execution, plan, build_partitioned, &tables, probe_partitioned, &mut self.summary)
     }
 }
 
 impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
-        loop {
-            if let Err(error) =
-                execution.context().check_cancellation("query_engine.exec.bounded.partitioned_join_probe_stream")
-            {
+        if let Err(error) =
+            execution.context().check_cancellation("query_engine.exec.bounded.partitioned_join_probe_stream")
+        {
+            self.release(execution);
+            return Some(Err(error));
+        }
+        let probe_partitioned = match self.load_next_probe_piece(execution) {
+            Some(Ok(probe_partitioned)) => probe_partitioned,
+            Some(Err(error)) => {
                 self.release(execution);
                 return Some(Err(error));
-            }
-            if let Some(output) = self.pending_outputs.pop_front() {
-                return Some(Ok(output));
-            }
-            if self.active_probe_partitioned.is_some() {
-                if self.next_partition < self.partition_count {
-                    match self.materialize_next_active_partition(execution) {
-                        Ok(()) => continue,
-                        Err(error) => {
-                            self.release(execution);
-                            return Some(Err(error));
-                        },
-                    }
-                }
-                self.release_active_probe_partitioned();
-            }
-
-            match self.load_next_probe_chunk(execution) {
-                Some(Ok(true)) => {},
-                Some(Ok(false)) => unreachable!("partitioned hash stream probe chunk loading is boolean-true only"),
-                Some(Err(error)) => {
-                    self.release(execution);
-                    return Some(Err(error));
-                },
-                None => {
-                    self.record_success_metrics(execution);
-                    self.release(execution);
-                    return None;
-                },
-            }
+            },
+            None => {
+                self.record_success_metrics(execution);
+                self.release(execution);
+                return None;
+            },
+        };
+        let output = self.join_probe_piece(execution, &probe_partitioned);
+        release_partitioned_join_side(probe_partitioned);
+        match output {
+            Ok(output) => Some(Ok(output)),
+            Err(error) => {
+                self.release(execution);
+                Some(Err(error))
+            },
         }
     }
 
     fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        self.pending_outputs.clear();
-        self.release_active_probe_partitioned();
         self.pending_probe_chunk = None;
         if let Some(input) = self.inputs.take() {
             input.release_all(execution);
@@ -746,6 +864,7 @@ impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
         if let Some(build_partitioned) = self.build_partitioned.take() {
             release_partitioned_join_side(build_partitioned);
         }
+        self.hash_tables = PartitionedJoinHashTables::undecided();
     }
 }
 
@@ -765,32 +884,61 @@ pub(in crate::exec::bounded) fn partitioned_parallel_probe_supported(node: &Join
 struct PartitionedProbeWorkState {
     pending: VecDeque<ResidentGpuFrame>,
     outputs: Vec<ResidentGpuFrame>,
+    summary: StreamedPartitionedJoinSummary,
 }
 
 /// Minimal Send+Sync view of a split partitioned build shared across lanes.
 ///
-/// Partitions are immutable `DataFrame` clones behind `Arc` columns; each
-/// lane supplies its own stream and workspace. No new `unsafe` impl.
+/// Partitions are immutable `DataFrame` clones behind `Arc` columns, and the kept tables are
+/// `Arc`-shared cuDF hash joins that probes only read. Each lane supplies its own stream and
+/// workspace. No new `unsafe` impl.
 struct SharedPartitionedBuild {
     build_side: JoinSide,
     build_rows: u64,
     build_bytes: u64,
     partitioned: PartitionedJoinSide,
+    tables: RetainedPartitionHashTables,
+    build_partitioned_bytes: u64,
     partition_count: usize,
     partition_target_bytes: u64,
     strategy_options: KeyedHashJoinStrategyOptions,
+    probe_columns: Vec<String>,
+    probe_keys: Vec<String>,
 }
 
 impl SharedPartitionedBuild {
-    fn from_state(state: &PartitionedHashEquiJoinFrameStreamProbeState) -> Self {
+    fn from_state(state: &PartitionedHashEquiJoinFrameStreamProbeState, tables: RetainedPartitionHashTables) -> Self {
         Self {
             build_side: state.build_side,
             build_rows: state.build_rows,
             build_bytes: state.build_bytes,
             partitioned: clone_partitioned_side(&state.build_partitioned),
+            tables,
+            build_partitioned_bytes: state.build_partitioned_bytes,
             partition_count: state.partition_count,
             partition_target_bytes: state.partition_target_bytes,
             strategy_options: state.strategy_options,
+            probe_columns: state.probe_columns.clone(),
+            probe_keys: state.probe_keys.clone(),
+        }
+    }
+
+    /// A one-chunk probe state for a lane. The partitions and the tables are clones that share the
+    /// coordinator's device buffers.
+    fn lane_probe(&self, chunk: ResidentGpuFrame) -> PartitionedHashEquiJoinFrameStreamProbeState {
+        PartitionedHashEquiJoinFrameStreamProbeState {
+            build_side: self.build_side,
+            build_rows: self.build_rows,
+            build_bytes: self.build_bytes,
+            build_partitioned: clone_partitioned_side(&self.partitioned),
+            hash_tables: PartitionedJoinHashTables::shared(self.tables.clone()),
+            build_partitioned_bytes: self.build_partitioned_bytes,
+            inputs: ResidentFrameStreamPayload::new(vec![chunk]),
+            partition_count: self.partition_count,
+            partition_target_bytes: self.partition_target_bytes,
+            strategy_options: self.strategy_options,
+            probe_columns: self.probe_columns.clone(),
+            probe_keys: self.probe_keys.clone(),
         }
     }
 }
@@ -812,15 +960,15 @@ fn clone_partitioned_side(side: &PartitionedJoinSide) -> PartitionedJoinSide {
 
 /// Drain a partitioned lazy stream's eager chunks in parallel.
 ///
-/// The caller retains ownership of `probe` while lanes run; each lane clones
-/// the shared split build and drains exactly one probe chunk through the
-/// existing single-chunk lazy pipeline (partition, probe partitions
-/// serially, collect). Outputs keep chunk order; the build is constructed
-/// once regardless of chunk count. The `outer` dispatcher contract matches
-/// the hash parallel probe.
+/// The coordinator decides the kept tables first, on its own stream, and the lanes then share them
+/// with the split build; each lane drains exactly one probe chunk through the lazy source (partition,
+/// join the piece, one frame per piece). A partition without a kept table is joined with a table the
+/// lane builds for its pair. Outputs keep chunk order. The lanes' summaries are merged into one join
+/// metric row, recorded once the run succeeded. The `outer` dispatcher contract matches the hash
+/// parallel probe.
 ///
-/// A failure does not run a source `release`: the shared build and the frames still queued drop
-/// with this call's scope.
+/// The build partitions and the kept tables are released once the dispatcher has joined every lane
+/// job, on success and on error. The frames still queued at a failure drop with this call's scope.
 pub(in crate::exec::bounded) fn parallel_partitioned_lazy_drain(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -828,20 +976,31 @@ pub(in crate::exec::bounded) fn parallel_partitioned_lazy_drain(
     mut probe: PartitionedHashEquiJoinFrameStreamProbeState,
     outer: Option<&AggregateLaneDispatch>,
 ) -> Result<Vec<ResidentGpuFrame>> {
-    // Take probe inputs out first so `probe` stays usable for the shared-view
-    // construction; the frames move into lane work while partitions live on
-    // in `shared` through `Arc` columns.
     let inputs = std::mem::replace(&mut probe.inputs, ResidentFrameStreamPayload::new(Vec::new()));
     let frames = inputs.into_remaining_frames_owned(execution)?;
     if frames.len() <= 1 {
         return serial_partitioned_single_stream(execution, node_id, node, probe, frames.into());
     }
-    let shared = std::sync::Arc::new(SharedPartitionedBuild::from_state(&probe));
-    // `probe` (with empty inputs) is no longer needed; its build partitions
-    // live on in `shared` through `Arc` columns while lanes run.
-    drop(probe);
+    let mut summary = StreamedPartitionedJoinSummary::new(
+        probe.partition_count,
+        probe.partition_target_bytes,
+        probe.build_partitioned_bytes,
+    );
+    let tables =
+        match probe.hash_tables.decide(execution, node, probe.build_side, &probe.build_partitioned, true, &mut summary)
+        {
+            Ok(tables) => tables,
+            Err(error) => {
+                release_partitioned_hash_equi_join_frame_stream_probe_state(execution, probe);
+                return Err(error);
+            },
+        };
+    let build_side = probe.build_side;
+    let build_rows = probe.build_rows;
+    let build_bytes = probe.build_bytes;
+    let shared = Arc::new(SharedPartitionedBuild::from_state(&probe, tables));
     let node_owned = node.clone();
-    let mut state = PartitionedProbeWorkState { pending: frames.into(), outputs: Vec::new() };
+    let mut state = PartitionedProbeWorkState { pending: frames.into(), outputs: Vec::new(), summary };
     let chunk_count = state.pending.len();
     let mut run_on = |dispatch: &AggregateLaneDispatch, execution: &mut BoundedExecutionAttempt<'_>| {
         let width = dispatch.width();
@@ -858,24 +1017,37 @@ pub(in crate::exec::bounded) fn parallel_partitioned_lazy_drain(
             &mut state,
             |state, _| Ok(state.pending.pop_front()),
             {
-                let shared = std::sync::Arc::clone(&shared);
+                let shared = Arc::clone(&shared);
                 let node_owned = node_owned.clone();
                 move |lane_execution, chunk| {
                     partitioned_probe_one_chunk(lane_execution, node_id, &node_owned, &shared, chunk)
                 }
             },
-            |state, _, mut chunk_outputs| {
+            |state, _, (mut chunk_outputs, lane_summary)| {
                 state.outputs.append(&mut chunk_outputs);
+                state.summary.merge_probe_counters(&lane_summary);
                 Ok(())
             },
         )
     };
-    match outer {
-        Some(dispatch) => run_on(dispatch, execution)?,
+    let result = match outer {
+        Some(dispatch) => run_on(dispatch, execution),
         None => {
-            AggregateLaneDispatch::with_available_lanes(execution, |dispatch, execution| run_on(dispatch, execution))?
+            AggregateLaneDispatch::with_available_lanes(execution, |dispatch, execution| run_on(dispatch, execution))
         },
-    }
+    };
+    release_partitioned_hash_equi_join_frame_stream_probe_state(execution, probe);
+    result?;
+    record_streamed_partitioned_hash_join_metrics(
+        node_id,
+        node,
+        build_side,
+        probe_side(build_side),
+        build_rows,
+        build_bytes,
+        &state.summary,
+        execution.metrics(),
+    );
     Ok(state.outputs)
 }
 
@@ -898,48 +1070,24 @@ fn serial_partitioned_single_stream(
     Ok(outputs)
 }
 
-/// Lane body: joins one probe chunk against a clone of the shared build.
+/// Lane body: joins one probe chunk against the shared build and its kept tables, and returns the
+/// chunk's frames with the lane's counters.
 ///
-/// The chunk goes through the same split-build lazy path as a serial probe, drained to completion.
-/// The cloned partitions alias the shared build's columns. Releasing the lane's state therefore
-/// frees nothing the other lanes read.
+/// The chunk goes through the same lazy source as a serial probe, drained to completion, with the
+/// kept tables already decided. The cloned partitions and tables alias the coordinator's. Releasing
+/// the lane's source therefore frees nothing the other lanes read; only the tables the lane built
+/// for single pairs are its own.
 fn partitioned_probe_one_chunk(
     lane_execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     shared: &SharedPartitionedBuild,
     chunk: ResidentGpuFrame,
-) -> Result<Vec<ResidentGpuFrame>> {
-    let build = BoundedCompiledPartitionedJoinBuildState {
-        strategy_options: shared.strategy_options,
-        side: shared.build_side,
-        rows: shared.build_rows,
-        bytes: shared.build_bytes,
-        partition_count: shared.partition_count,
-        partition_target_bytes: shared.partition_target_bytes,
-        partitioned: clone_partitioned_side(&shared.partitioned),
-        input_chunks: 1,
-    };
-    let single = ResidentFrameStreamPayload::new(vec![chunk]);
-    let lazy = execute_compiled_partitioned_hash_equi_join_probe_from_split_build_frame_stream(
-        lane_execution,
-        node_id,
-        node,
-        build,
-        single,
-    )?;
-    let inner = match lazy {
-        BoundedCompiledJoinProbeState::PartitionedLazyStream(inner) => inner,
-        other => {
-            // Split-build single-chunk probes always return lazy; any other
-            // variant would mean the strategy changed while the lane runs.
-            release_bounded_compiled_join_probe_state(lane_execution, other);
-            return Err(bounded_invariant_violation(
-                "partitioned parallel probe expected a lazy stream for its chunk",
-                "partitioned_parallel_probe_unexpected_state",
-            ));
-        },
-    };
-    let stream = partitioned_hash_equi_join_frame_stream_probe_to_payload(node_id, node, inner);
-    stream.into_remaining_frames_owned(lane_execution)
+) -> Result<(Vec<ResidentGpuFrame>, StreamedPartitionedJoinSummary)> {
+    let mut source = PartitionedHashEquiJoinProbeStreamSource::new(node_id, node, shared.lane_probe(chunk), false);
+    let mut frames = Vec::new();
+    while let Some(frame) = source.next_frame(lane_execution) {
+        frames.push(frame?);
+    }
+    Ok((frames, source.summary))
 }

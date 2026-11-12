@@ -132,6 +132,21 @@ source larger than the cap fails at the last chunk read, because the device
 result is complete before egress copies it to the client. Native execution
 does not provide general disk spilling.
 
+### Kept join tables {/* #kept-join-tables */}
+
+A [partitioned hash join](./gpu-execution.mdx#partitioned-joins) that streams
+its probe side keeps the hash table of each build partition from its first
+probe piece until the probe ends. The tables are allocations of the attempt's
+query domain and count against its grant like any other allocation. In
+addition, the tables an attempt keeps at one time total at most a quarter of
+its grant. Each table is charged at cuDF's pre-build size plus the key columns
+the table copies, before it is built. A partition whose charge does not fit
+keeps no table, and each probe piece builds one for it and drops it after the
+pair. When the allocator rejects a kept table, that partition and the ones
+after it keep none. The tables are released with the build partitions when the
+probe stream ends, stops early or fails, and their charge returns to the
+attempt then.
+
 ## Completion and resident data {/* #resident-handoff-and-release */}
 
 An output may remain on the GPU for another native consumer. Its resident

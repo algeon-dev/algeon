@@ -246,6 +246,7 @@ impl JoinOperatorMetrics {
             "probe_rows": self.probe_rows,
             "probe_bytes": self.probe_bytes,
             "hash_table_bytes": self.hash_table_bytes,
+            "partition_hash_table_build_count": self.partition_hash_table_build_count,
             "filtered_probe_state_bytes": self.filtered_probe_state_bytes,
             "mixed_size_data_bytes": self.mixed_size_data_bytes,
             "gather_map_bytes": self.gather_map_bytes,

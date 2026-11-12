@@ -970,7 +970,28 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
     let (batch, snapshot) = run();
     let label = "serial";
     assert_eq!(int32_strlen_int64_triples_sorted(&batch), expected, "{label} joins every partitioned probe row once");
-    assert_eq!(snapshot.hash_join_build_count, 0, "{label} builds no hash table");
+    let partition_count = snapshot
+        .join_strategy_decisions
+        .iter()
+        .find_map(|decision| {
+            (decision.facts.get("join_strategy").map(String::as_str) == Some("partitioned_hash_equi"))
+                .then(|| decision.facts.get("partition_count"))
+                .flatten()
+        })
+        .expect("the partitioned join records its partition count")
+        .parse::<u64>()
+        .unwrap();
+    // The coordinator builds each partition's table once, and the four chunks'
+    // lanes probe those tables instead of building their own.
+    assert_eq!(snapshot.hash_join_build_count, partition_count, "{label} builds each partition table once");
+    let join = snapshot
+        .operators
+        .iter()
+        .filter_map(|operator| operator.join.as_ref())
+        .find(|join| join.execution_strategy == "bounded_partitioned_hash_equi_join")
+        .expect("the partitioned join records one metric row");
+    assert_eq!(join.partition_hash_table_build_count, partition_count);
+    assert_eq!(join.probe_rows, 6, "the merged row covers every lane's probe rows");
     assert_eq!(
         snapshot.source_chunks_committed, 5,
         "{label} reads four probe files plus one build file as five chunks"

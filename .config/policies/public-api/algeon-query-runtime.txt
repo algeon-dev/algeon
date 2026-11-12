@@ -235,6 +235,7 @@ pub query_runtime::metrics::JoinOperatorMetrics::null_equality: alloc::string::S
 pub query_runtime::metrics::JoinOperatorMetrics::output_bytes: u64
 pub query_runtime::metrics::JoinOperatorMetrics::output_reservation_bytes: core::option::Option<u64>
 pub query_runtime::metrics::JoinOperatorMetrics::output_rows: u64
+pub query_runtime::metrics::JoinOperatorMetrics::partition_hash_table_build_count: u64
 pub query_runtime::metrics::JoinOperatorMetrics::probe_bytes: u64
 pub query_runtime::metrics::JoinOperatorMetrics::probe_rows: u64
 pub query_runtime::metrics::JoinOperatorMetrics::probe_side: alloc::string::String

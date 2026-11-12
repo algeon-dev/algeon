@@ -23,6 +23,7 @@ pub(in crate::exec::bounded) struct BoundedPartitionTargetPolicy {
     partitioned_join_min_target_bytes: u64,
     partitioned_join_max_target_bytes: u64,
     partitioned_join_budget_divisor: u64,
+    partitioned_join_retained_hash_table_budget_divisor: u64,
     reusable_hash_join_stream_min_target_bytes: u64,
     reusable_hash_join_stream_max_target_bytes: u64,
     reusable_hash_join_stream_budget_divisor: u64,
@@ -36,6 +37,7 @@ impl BoundedPartitionTargetPolicy {
     pub(in crate::exec::bounded) const DEFAULT_PARTITIONED_JOIN_MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_PARTITIONED_JOIN_MAX_TARGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_PARTITIONED_JOIN_BUDGET_DIVISOR: u64 = 16;
+    pub(in crate::exec::bounded) const DEFAULT_PARTITIONED_JOIN_RETAINED_HASH_TABLE_BUDGET_DIVISOR: u64 = 4;
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_MAX_TARGET_BYTES: u64 = 512 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_BUDGET_DIVISOR: u64 = 8;
@@ -57,6 +59,15 @@ impl BoundedPartitionTargetPolicy {
     pub(in crate::exec::bounded) fn partitioned_join_target_bytes(self, device_budget_bytes: u64) -> u64 {
         (device_budget_bytes / self.partitioned_join_budget_divisor)
             .clamp(self.partitioned_join_min_target_bytes, self.partitioned_join_max_target_bytes)
+    }
+
+    /// Bytes of partition hash tables that the attempt's partitioned hash joins
+    /// may keep across probe pieces, in total. The rest of the cap stays for
+    /// the build partitions, the probe piece and its gather maps and output; a
+    /// partition whose table does not fit is joined with a table built for
+    /// one probe piece and dropped after it.
+    pub(in crate::exec::bounded) fn partitioned_join_retained_hash_table_bytes(self, device_budget_bytes: u64) -> u64 {
+        device_budget_bytes / self.partitioned_join_retained_hash_table_budget_divisor
     }
 
     /// Output bytes one materialized slice of a reusable hash join may produce.
@@ -89,6 +100,8 @@ impl Default for BoundedPartitionTargetPolicy {
             partitioned_join_min_target_bytes: Self::DEFAULT_PARTITIONED_JOIN_MIN_TARGET_BYTES,
             partitioned_join_max_target_bytes: Self::DEFAULT_PARTITIONED_JOIN_MAX_TARGET_BYTES,
             partitioned_join_budget_divisor: Self::DEFAULT_PARTITIONED_JOIN_BUDGET_DIVISOR,
+            partitioned_join_retained_hash_table_budget_divisor:
+                Self::DEFAULT_PARTITIONED_JOIN_RETAINED_HASH_TABLE_BUDGET_DIVISOR,
             reusable_hash_join_stream_min_target_bytes: Self::DEFAULT_REUSABLE_HASH_JOIN_STREAM_MIN_TARGET_BYTES,
             reusable_hash_join_stream_max_target_bytes: Self::DEFAULT_REUSABLE_HASH_JOIN_STREAM_MAX_TARGET_BYTES,
             reusable_hash_join_stream_budget_divisor: Self::DEFAULT_REUSABLE_HASH_JOIN_STREAM_BUDGET_DIVISOR,

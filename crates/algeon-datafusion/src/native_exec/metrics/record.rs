@@ -1451,7 +1451,12 @@ fn join_runtime_counters(join: &JoinOperatorMetrics) -> JoinRuntimeCounters {
             one_shot_join_output_bytes: join.output_bytes,
             ..Default::default()
         },
-        "partitioned_hash_equi" => JoinRuntimeCounters { partitioned_hash_join_count: 1, ..Default::default() },
+        "partitioned_hash_equi" => JoinRuntimeCounters {
+            partitioned_hash_join_count: 1,
+            hash_join_build_count: join.partition_hash_table_build_count,
+            hash_join_hash_table_bytes: join.hash_table_bytes,
+            ..Default::default()
+        },
         "partitioned_mixed_keyed_residual" => JoinRuntimeCounters {
             partitioned_hash_join_count: 1,
             mixed_join_size_data_bytes: join.mixed_size_data_bytes,

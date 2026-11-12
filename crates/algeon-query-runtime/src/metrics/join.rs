@@ -51,8 +51,14 @@ pub struct JoinOperatorMetrics {
     ///
     /// This is a direct cudf observation. For hash joins it is the retained
     /// hash table; for filtered joins it is the retained filtered-join build
-    /// artifact. It remains `0` for join paths without a reusable build artifact.
+    /// artifact. A partitioned hash join reports the hash tables it kept over
+    /// its build partitions across probe pieces. It remains `0` for join paths
+    /// without a retained build artifact.
     pub hash_table_bytes: u64,
+    /// cuDF hash tables a partitioned hash join built over its build
+    /// partitions, counting each retained table once and each table built for
+    /// a single probe piece once per build. It is `0` for other strategies.
+    pub partition_hash_table_build_count: u64,
     /// Device bytes retained by a filtered-join probe state.
     pub filtered_probe_state_bytes: u64,
     /// Device bytes retained by a mixed join retained size-data state.
@@ -81,7 +87,7 @@ impl QueryMetrics {
         });
     }
 
-    /// Records one reusable hash-join build.
+    /// Records one cuDF hash-join table build.
     pub fn record_hash_join_build(&mut self) {
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(1);
     }

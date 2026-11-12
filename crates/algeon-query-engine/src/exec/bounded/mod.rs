@@ -70,6 +70,7 @@ use aggregate::{
     execute_compiled_source_aggregate_chunk, is_source_adjacent_grouped_aggregate, reduce_merge_fan_in,
 };
 pub(in crate::exec) use attempt::BoundedExecutionAttempt;
+pub(in crate::exec::bounded) use attempt::RetainedJoinTableCharge;
 use chunks::{
     RawSourceInput, chunk_retry_facts, concatenate_source_read_outputs, execute_bounded_raw_source_chunk,
     execute_bounded_raw_source_chunk_batch, is_retryable_chunk_error, join_leaf_prefetch_admitted,

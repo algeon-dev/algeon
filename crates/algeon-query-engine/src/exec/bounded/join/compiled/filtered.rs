@@ -479,6 +479,7 @@ fn record_filtered_join_output_metrics(
             probe_rows: probe.rows,
             probe_bytes: probe.bytes,
             hash_table_bytes: build.hash_table_bytes,
+            partition_hash_table_build_count: 0,
             filtered_probe_state_bytes: probe_state_bytes,
             mixed_size_data_bytes: 0,
             gather_map_bytes,
