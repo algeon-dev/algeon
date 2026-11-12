@@ -11,9 +11,9 @@ use super::{
 /// it.
 ///
 /// A prepared state holds both oriented side frames and has done no cuDF work yet; every strategy
-/// listed here does all of it from `state.left` and `state.right`. `ReusableHashEqui` and
-/// `FilteredSemiAnti` keep their own build and probe state variants; a prepared state that carries
-/// either is an invariant violation (`compiled_join_strategy_state_mismatch`).
+/// listed here does all of it from `state.left` and `state.right`. `ReusableHashEqui`,
+/// `FilteredSemiAnti` and `HashLeftMatch` keep their own build or probe state variants; a prepared
+/// state that carries one of them is an invariant violation (`compiled_join_strategy_state_mismatch`).
 pub(super) fn execute_compiled_prepared_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -54,9 +54,11 @@ pub(super) fn execute_compiled_prepared_join_materialize(
                 state.strategy_options,
             )
         },
-        JoinStrategy::ReusableHashEqui | JoinStrategy::FilteredSemiAnti => Err(bounded_invariant_violation(
-            "compiled prepared join state received an incompatible strategy",
-            "compiled_join_strategy_state_mismatch",
-        )),
+        JoinStrategy::ReusableHashEqui | JoinStrategy::FilteredSemiAnti | JoinStrategy::HashLeftMatch => {
+            Err(bounded_invariant_violation(
+                "compiled prepared join state received an incompatible strategy",
+                "compiled_join_strategy_state_mismatch",
+            ))
+        },
     }
 }

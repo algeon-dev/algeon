@@ -821,7 +821,7 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
     let text = planning.to_tsv();
     let optimizer_cell = planning_native_optimizer_cell(&planning);
     assert!(optimizer_cell.starts_with("rule=semijoin_reduction,considered_count=1,applied_count=1"));
-    assert!(optimizer_cell.contains(";rule=join_build_side_selection,considered_count=1,applied_count=0"));
+    assert!(optimizer_cell.contains(";rule=join_build_side_selection,considered_count=2,applied_count=0"));
     assert!(optimizer_cell.contains(";rule=dimension_derived_row_group_pruning,considered_count=2,applied_count=0"));
     assert!(optimizer_cell.contains(
         ";rule=shared_resident_extraction,considered_count=6,extracted_count=0,rejected_count=0,candidates="

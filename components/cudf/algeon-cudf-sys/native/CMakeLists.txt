@@ -265,6 +265,7 @@ add_library(
   src/join_conditional.cpp
   src/join_mixed.cpp
   src/join_filter.cpp
+  src/join_left_match.cu
   src/unary.cpp
   src/binary.cpp
   src/reduction.cpp
