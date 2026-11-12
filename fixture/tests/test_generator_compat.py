@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -964,6 +965,177 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             REPO_ROOT / "fixture" / "tpc-ds" / "data" / "sf1" / "parquet",
         )
 
+    @unittest.skipUnless(shutil.which("duckdb"), "duckdb CLI is required")
+    def test_sliced_sort_equals_one_global_sort_with_null_and_string_keys(self) -> None:
+        layout_module = load_script_module("tpc_parquet_layout_sliced_sort", TPC_PARQUET_LAYOUT)
+        rng = random.Random(7)
+        ids = list(range(6000))
+        rng.shuffle(ids)
+        int_keys = [None if rng.random() < 0.03 else rng.randrange(40) for _ in ids]
+        str_keys = [None if rng.random() < 0.03 else f"Brand#{rng.randrange(1, 6)}{rng.randrange(1, 6)}" for _ in ids]
+        cases = (("int", "k", int_keys), ("string", "s", str_keys))
+
+        with tempfile.TemporaryDirectory(prefix="algeon_sliced_sort.") as tmp:
+            root = Path(tmp)
+            for label, key, values in cases:
+                with self.subTest(key=label):
+                    raw = root / f"{label}-raw.parquet"
+                    pq.write_table(pa.table({"id": ids, key: values, "pad": [f"row-{i}" for i in ids]}), raw, row_group_size=700)
+                    layout = layout_module.TableLayout("t", (key, "id"))
+                    common = {"source": raw, "layout": layout, "row_group_bytes": 16 * 1024, "compression": "SNAPPY"}
+                    single = root / f"{label}-single.parquet"
+                    sliced = root / f"{label}-sliced.parquet"
+
+                    layout_module.optimize_table_with_duckdb(output_file=single, sort_slice_bytes=10**12, **common)
+                    four_slices = int(raw.stat().st_size * layout_module.SORT_WORKING_SET_PER_SOURCE_BYTE / 4)
+                    with patch.object(layout_module, "run", wraps=layout_module.run) as run:
+                        layout_module.optimize_table_with_duckdb(output_file=sliced, sort_slice_bytes=four_slices, **common)
+
+                    self.assertGreater(run.call_count, 2, "expected one COPY per slice plus the concatenation")
+                    expected_ids = [
+                        row_id
+                        for _, _, row_id in sorted(
+                            (value is None, value if value is not None else 0 if label == "int" else "", row_id)
+                            for row_id, value in zip(ids, values)
+                        )
+                    ]
+                    self.assertEqual(pq.read_table(sliced).column("id").to_pylist(), expected_ids)
+                    self.assertEqual(pq.read_table(single).to_pylist(), pq.read_table(sliced).to_pylist())
+                    self.assertEqual({path.name for path in root.iterdir() if path.name.startswith(".")}, set())
+
+    @unittest.skipUnless(shutil.which("duckdb"), "duckdb CLI is required")
+    def test_spark_writer_keeps_input_order_and_records_its_settings(self) -> None:
+        layout_module = load_script_module("tpc_parquet_layout_spark", TPC_PARQUET_LAYOUT)
+        spark_python = os.environ.get("ALGEON_SPARK_PYTHON", sys.executable)
+        try:
+            layout_module.check_spark_writer(spark_python)
+        except RuntimeError as error:
+            self.skipTest(str(error))
+
+        with tempfile.TemporaryDirectory(prefix="algeon_spark_writer.") as tmp:
+            root = Path(tmp)
+            table_dir = root / "raw" / "t"
+            table_dir.mkdir(parents=True)
+            # Later files are larger: Spark's size-descending split order would read them first.
+            start = 0
+            for index, rows in enumerate((500, 3_000, 45_000)):
+                ids = list(range(start, start + rows))
+                pq.write_table(
+                    pa.table({"id": pa.array(ids, pa.int64()), "k": [i % 7 for i in ids], "pad": [f"row-{i}" for i in ids]}),
+                    table_dir / f"{index:05d}.parquet",
+                    row_group_size=4_000,
+                )
+                start += rows
+            layout = layout_module.TableLayout("t", ("k", "id"))
+            common = {
+                "raw_dir": table_dir.parent,
+                "layouts": (layout,),
+                "row_group_bytes": 16 * 1024,
+                "compression": "SNAPPY",
+                "force": True,
+                "engine": "spark",
+                "spark_python": spark_python,
+            }
+
+            unsorted_dir = root / "unsorted"
+            layout_module.optimize_layout(output_dir=unsorted_dir, scale=0.5, sort_rows=False, **common)
+            self.assertEqual(pq.read_table(unsorted_dir / "t.parquet").column("id").to_pylist(), list(range(start)))
+            manifest = json.loads((unsorted_dir / "_generation.json").read_text())
+            self.assertEqual(manifest["layout"], "single_file_per_table_unsorted")
+            self.assertEqual(manifest["scale_factor"], 0.5)
+            self.assertEqual(manifest["tables"][0]["sort_keys"], [])
+
+            sorted_dir = root / "sorted"
+            three_slices = int(sum(f.stat().st_size for f in table_dir.iterdir()) * layout_module.SORT_WORKING_SET_PER_SOURCE_BYTE / 3)
+            layout_module.optimize_layout(output_dir=sorted_dir, scale=1.0, sort_slice_bytes=three_slices, **common)
+            written = pq.read_table(sorted_dir / "t.parquet")
+            self.assertEqual(written.column("id").to_pylist(), sorted(range(start), key=lambda i: (i % 7, i)))
+            manifest = json.loads((sorted_dir / "_generation.json").read_text())
+            self.assertEqual(manifest["layout"], "single_file_per_table_sorted_row_groups")
+            self.assertEqual(manifest["scale_factor"], 1)
+            self.assertEqual(manifest["tables"][0]["sort_keys"], ["k", "id"])
+            self.assertEqual(
+                {key: manifest[key] for key in ("writer", "spark_version", "parquet_block_size", "parquet_page_size", "parquet_page_row_count_limit")},
+                {
+                    "writer": "spark",
+                    "spark_version": "4.0.1",
+                    "parquet_block_size": 128 * 1024 * 1024,
+                    "parquet_page_size": 1024 * 1024,
+                    "parquet_page_row_count_limit": 20_000,
+                },
+            )
+            self.assertEqual(manifest["parquet_java_version"], "1.15.2")
+            self.assertNotIn("row_group_bytes", manifest)
+
+            for out_dir, require_sorted in ((unsorted_dir, False), (sorted_dir, True)):
+                layout_module.verify_layout(
+                    output_dir=out_dir,
+                    layouts=(layout,),
+                    compression="SNAPPY",
+                    require_sorted=require_sorted,
+                    expected_rows={"t": start},
+                    writer="spark",
+                )
+                self.assertEqual(sorted(path.name for path in out_dir.iterdir()), ["_generation.json", "t.parquet"])
+            self.assertEqual(sorted(path.name for path in root.iterdir()), ["raw", "sorted", "unsorted"])
+
+    def test_verify_page_row_limit_reads_the_offset_index(self) -> None:
+        layout_module = load_script_module("tpc_parquet_layout_page_rows", TPC_PARQUET_LAYOUT)
+        with tempfile.TemporaryDirectory(prefix="algeon_page_rows.") as tmp:
+            file = Path(tmp) / "t.parquet"
+            pq.write_table(
+                pa.table({"id": pa.array(range(70_000), pa.int64()), "s": [f"v{i % 300}" for i in range(70_000)]}),
+                file,
+                row_group_size=50_000,
+                max_rows_per_page=30_000,
+                write_page_index=True,
+            )
+            layout_module.verify_page_row_limit(file, 30_000)
+            with self.assertRaisesRegex(RuntimeError, r"row_group=0 column=id has 2 data pages of 20000 to 30000 rows"):
+                layout_module.verify_page_row_limit(file, 20_000)
+
+            pq.write_table(pa.table({"id": [1, 2]}), file, write_page_index=False)
+            with self.assertRaisesRegex(RuntimeError, "has no offset index"):
+                layout_module.verify_page_row_limit(file, 20_000)
+
+    def test_verify_layout_rejects_files_past_the_row_group_limit(self) -> None:
+        layout_module = load_script_module("tpc_parquet_layout_row_groups", TPC_PARQUET_LAYOUT)
+        with tempfile.TemporaryDirectory(prefix="algeon_row_groups.") as tmp:
+            out_dir = Path(tmp)
+            pq.write_table(pa.table({"id": [1, 2, 3]}), out_dir / "t.parquet", row_group_size=1, compression="snappy")
+            verify = {
+                "output_dir": out_dir,
+                "layouts": (layout_module.TableLayout("t", ("id",)),),
+                "compression": "SNAPPY",
+                "require_sorted": True,
+            }
+            layout_module.verify_layout(**verify)
+            with patch.object(layout_module, "MAX_ROW_GROUPS_PER_FILE", 2):
+                with self.assertRaisesRegex(RuntimeError, "has 3 row groups; the parquet 59 footer decoder"):
+                    layout_module.verify_layout(**verify)
+
+    def test_spark_engine_without_pyspark_fails_before_generation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="algeon_fixture_spark_missing.") as tmp:
+            root = Path(tmp)
+            true_root = fake_tpcgen_root(root, "/bin/true")
+            result = run_cmd(
+                [
+                    sys.executable,
+                    str(GEN_TPCH),
+                    "--scale",
+                    "1",
+                    "--out",
+                    str(root / "tpch"),
+                    "--tpchgen-root",
+                    str(true_root),
+                    "--spark-python",
+                    "/bin/false",
+                ]
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("pip install pyspark==4.0.1", result.stderr)
+            self.assertNotIn("tpch parquet", result.stderr)
+
     def test_fixture_router_calls_generate_raw_without_verification_dependency(self) -> None:
         with tempfile.TemporaryDirectory(prefix="algeon_fixture_router.") as tmp:
             root = Path(tmp)
@@ -1095,6 +1267,8 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                     "--tpchgen-root",
                     str(false_root),
                     "--no-verify",
+                    "--optimize-engine",
+                    "duckdb",
                 ]
             )
             self.assertNotEqual(tpch.returncode, 0)
@@ -1137,6 +1311,8 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                     "--tpchgen-root",
                     str(false_root),
                     "--no-verify",
+                    "--optimize-engine",
+                    "duckdb",
                 ]
             )
             self.assertNotEqual(tpch.returncode, 0)
