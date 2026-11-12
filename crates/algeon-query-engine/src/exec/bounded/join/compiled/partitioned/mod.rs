@@ -14,7 +14,8 @@
 //! retries it with a smaller probe range or with a two-way repartition of that pair.
 //!
 //! A streamed probe holds the partitioned build side for its whole length, plus one probe piece in
-//! partitioned form until its last partition is joined. A resident join holds both partitioned
+//! partitioned form until its last partition is joined, plus the probe slices it defers for the
+//! partitions without a kept table (`hash_tables.rs`). A resident join holds both partitioned
 //! sides until the last pair is joined.
 
 use query_planning::error::ResourceBoundary;
@@ -67,7 +68,7 @@ pub(super) use hash_equi::{
     release_partitioned_hash_equi_join_frame_stream_probe_state,
 };
 pub(super) use hash_tables::PartitionedJoinHashTables;
-use hash_tables::RetainedPartitionHashTables;
+use hash_tables::{DeferredProbePartitions, DeferredProbeSlices, RetainedPartitionHashTables};
 pub(super) use mixed_keyed::{
     execute_compiled_partitioned_mixed_keyed_residual_join_materialize,
     execute_compiled_partitioned_mixed_keyed_residual_join_materialize_preserving_stream,
@@ -303,6 +304,19 @@ pub(super) fn split_partitioned_join_side(
     Ok(PartitionedJoinSide::Split { partitions, device_bytes })
 }
 
+/// A side of `partition_count` partitions whose rows all belong to `partition`, such as a batch of
+/// deferred probe slices of that partition. Its one partition is read without a copy.
+pub(super) fn single_partition_join_side(
+    input: BoundedJoinSideFrame,
+    partition: usize,
+    partition_count: usize,
+) -> PartitionedJoinSide {
+    let BoundedJoinSideFrame { frame, bytes, .. } = input;
+    let rows = frame.num_rows();
+    let offsets = (0..=partition_count).map(|offset| if offset <= partition { 0 } else { rows }).collect();
+    PartitionedJoinSide::Contiguous { frame, device_bytes: bytes, offsets }
+}
+
 pub(super) fn release_partitioned_join_side(side: PartitionedJoinSide) {
     // Release all partitions before the caller starts another allocation on the query domain.
     drop(side);
@@ -310,8 +324,9 @@ pub(super) fn release_partitioned_join_side(side: PartitionedJoinSide) {
 
 /// Returns a row range of one partition as an owned side frame.
 ///
-/// A split partition read in full shares its columns with the stored partition. Every other range
-/// is sliced into a copy. A range outside the partition is an invariant violation
+/// A range that covers a whole stored frame shares its columns: a split partition read in full, or
+/// the one partition of a side built by `single_partition_join_side`. Every other range is sliced
+/// into a copy. A range outside the partition is an invariant violation
 /// (`partition_retry_range_invalid`). The stored partitions are only borrowed; releasing the
 /// returned frame leaves them intact for a retry.
 pub(super) fn slice_partition_join_side_range(
@@ -332,8 +347,8 @@ pub(super) fn slice_partition_join_side_range(
         .with_fact("range_offset", range.offset)
         .with_fact("range_rows", range.len));
     }
-    if matches!(input, PartitionedJoinSide::Split { .. }) && range.offset == 0 && range.len == partition_len {
-        // A split partition already is the whole join input for this partition;
+    if partition_start == 0 && range.offset == 0 && range.len == partition_frame.num_rows() {
+        // The stored frame already is the whole join input for this partition;
         // sharing its columns avoids one partition-sized copy per probe chunk.
         let frame = partition_frame.clone();
         let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics())?;

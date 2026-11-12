@@ -53,7 +53,10 @@ impl BoundedPartitionTargetPolicy {
     /// Bytes of the larger join input per hash partition. One partition pair
     /// is joined with one cuDF hash join whose gather maps scale with matches,
     /// and the partition count this target yields is the logical width from
-    /// which retry repartitioning bisects.
+    /// which retry repartitioning bisects. The same bytes cap the probe slices
+    /// that the attempt's partitioned hash joins defer, in total, for the
+    /// partitions without a kept table, so one batch of deferred probe input is
+    /// no larger than one partition.
     pub(in crate::exec::bounded) fn partitioned_join_target_bytes(self, device_budget_bytes: u64) -> u64 {
         (device_budget_bytes / self.partitioned_join_budget_divisor)
             .clamp(self.partitioned_join_min_target_bytes, self.partitioned_join_max_target_bytes)
@@ -61,11 +64,12 @@ impl BoundedPartitionTargetPolicy {
 
     /// Bytes of partition hash tables that the attempt's partitioned hash joins
     /// may keep across probe pieces, in total. The rest of the cap stays for
-    /// the build partitions, the probe piece and its gather maps and output; a
-    /// partition whose table does not fit is joined with a table built for
-    /// one probe piece and dropped after it. The share is the retained-state
-    /// share of [`MemoryControlPolicy`], which also bounds the shared probe
-    /// frames the planner keeps instead of replaying.
+    /// the build partitions, the deferred probe slices, the probe piece and its
+    /// gather maps and output; a partition whose table does not fit is joined
+    /// with a table built for one batch of deferred probe slices and dropped
+    /// after it. The share is the retained-state share of
+    /// [`MemoryControlPolicy`], which also bounds the shared probe frames the
+    /// planner keeps instead of replaying.
     pub(in crate::exec::bounded) fn partitioned_join_retained_hash_table_bytes(self, device_budget_bytes: u64) -> u64 {
         MemoryControlPolicy::retained_state_share_bytes(device_budget_bytes)
     }

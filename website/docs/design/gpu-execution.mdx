@@ -52,17 +52,25 @@ A partitioned hash join splits its build side by key hash into one frame per
 partition and splits each probe piece the same way, so each pair holds only
 matching keys. When the probe side streams in, the join builds the hash table
 of each build partition at the first probe piece and probes it with every later
-piece. A probe of a single piece keeps no table. The attempt's kept tables stay
-within the share of its grant described in
-[kept join tables](./admission.mdx#kept-join-tables); a partition outside that
-share gets a table built for each pair and dropped after it. A retry that
+piece. The attempt's kept tables stay within the share of its grant described
+in [kept join tables](./admission.mdx#kept-join-tables). A partition outside
+that share builds one table per batch of probe input instead of one per piece.
+The join copies that partition's rows out of each probe piece and holds them.
+When the rows held by the attempt's joins would pass one partitioned-join
+target, the join concatenates the rows of its partition holding the most bytes,
+joins them against a table built for that batch, and drops the table. It
+repeats until the rest fits, and joins the rows still held when the probe input
+ends. A probe of a single piece keeps no table and holds no rows. A retry that
 repartitions a pair builds its own tables for the smaller pairs.
 
 The coordinator builds the kept tables on the root stream before probe chunks
 reach execution lanes. Lanes probe them concurrently on their own streams,
-which only read the table, and build a table themselves only for a partition
-that has none. The outputs of one probe piece's partitions are concatenated
-into one frame, so the next operator receives one frame per probe piece. That
+which only read the table. A lane returns its rows of partitions without a kept
+table to the coordinator, which holds them and joins their batches on the root
+stream. The outputs of one probe piece's partitions, with the batches its rows
+pushed out, are concatenated into one frame. The next operator therefore
+receives at most one frame per probe piece, none for a piece whose rows were
+all held, and one for the batches joined at the end of the input. That
 concatenation holds the piece's output twice at its peak.
 
 ## Runtime dynamic filters
