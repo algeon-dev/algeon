@@ -146,6 +146,17 @@ ones after it keep none. The tables are released with the build partitions when
 the probe stream ends, stops early or fails, and their charge returns to the
 attempt then.
 
+The same quarter of the grant bounds the build chunks that a
+[streaming join build](./gpu-execution.mdx#partitioned-joins) holds whole while
+its estimate allows a large build and its counted size does not prove one. The
+held chunks are ordinary allocations of the query domain. When they reach the
+quarter, the build commits to partitions and partitions each held chunk.
+Until the last held chunk is partitioned, the chunks and their partition slices
+are resident together, up to twice the held bytes plus one chunk's partitioned
+copy. A build input that ends undecided is concatenated and holds twice its
+bytes during the concatenation. The coordinator consumes one build input at a
+time, and holds of different joins do not add up.
+
 A partition without a kept table holds its probe rows until they form a batch.
 The held rows are copies in the query domain. The rows that the attempt's joins
 hold at one time total at most one partitioned-join target, a sixteenth of the

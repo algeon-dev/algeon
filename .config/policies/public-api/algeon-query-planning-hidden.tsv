@@ -68,6 +68,7 @@ query_planning::capability::JoinStrategyChoice	cross-crate	query-planning capabi
 query_planning::capability::JoinStrategyEvidence	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::KeyedHashJoinStrategyInputFacts	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::KeylessConditionalJoinKind	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::capability::ObservedBuildRows	cross-crate	query-planning capability	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::is_cudf_median_input_type	cross-crate	query-planning capability	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::join::KeyedHashJoinStrategyInputFacts.build_key_unique	cross-crate	query-planning capability::join	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::join::KeyedHashJoinStrategyInputFacts.build_side_bytes	cross-crate	query-planning capability::join	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
@@ -79,6 +80,7 @@ query_planning::capability::join::KeyedHashJoinStrategyInputFacts.probe_reuse_co
 query_planning::capability::join::KeyedHashJoinStrategyInputFacts.probe_side_bytes	cross-crate	query-planning capability::join	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::join::KeyedHashJoinStrategyInputFacts.reusable_prebuild_supported	cross-crate	query-planning capability::join	exposed-by: query_planning::capability::KeyedHashJoinStrategyInputFacts	narrow to pub(crate) once no public signature exposes it
 query_planning::capability::keyed_hash_join_build_is_large	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::capability::keyed_hash_join_observed_build_is_large	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::keyed_hash_join_strategy_input_facts_for_plan	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness	cross-crate	query-planning capability	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::capability::keyed_join_filters_matched_pairs	cross-crate	query-planning capability	prod: algeon-datafusion, algeon-query-engine	narrow to pub(crate) once no other workspace crate names it

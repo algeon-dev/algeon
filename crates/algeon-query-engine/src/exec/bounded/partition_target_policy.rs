@@ -74,6 +74,17 @@ impl BoundedPartitionTargetPolicy {
         device_budget_bytes / self.partitioned_join_retained_hash_table_budget_divisor
     }
 
+    /// Bytes of whole build chunks a streaming join build may hold while its
+    /// estimate still allows a large build and its observed size does not
+    /// prove one. Reaching it commits the build to partitions. It equals the
+    /// share kept partition tables use: an undecided build holds no more than
+    /// partitioned joins may retain across probe pieces. Holds of different
+    /// joins do not add up because the coordinator consumes one build stream
+    /// at a time.
+    pub(in crate::exec::bounded) fn undecided_join_build_hold_bytes(self, device_budget_bytes: u64) -> u64 {
+        self.partitioned_join_retained_hash_table_bytes(device_budget_bytes)
+    }
+
     /// Output bytes one materialized slice of a reusable hash join may produce.
     ///
     /// The clamped policy share is further limited to a fraction of

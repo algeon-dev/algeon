@@ -207,20 +207,24 @@ impl Default for KeyedHashJoinStrategyOptions {
 
 /// Size evidence one keyed hash join is chosen from.
 ///
-/// Planning fills the estimates and leaves `observed_build_rows` and
-/// `build_key_unique` empty; the bounded executor refines the same struct once
-/// the build side is materialized, so the choice can move from the planned
-/// strategy to the one the observed sizes justify. A `probe_reuse_count` above
-/// one, or a `build_artifact_id` on the join, means several probes read one
-/// build, and the reusable hash table is then kept whatever its size.
+/// Planning fills the estimates and leaves `observed_build_rows` unobserved
+/// and `build_key_unique` empty; the bounded executor refines the same struct
+/// while the build side streams in and again once it is materialized, so the
+/// choice can move from the planned strategy to the one the observed sizes
+/// justify. Plan estimates bound the build from above. A partial observation
+/// still counts a large estimate as large-build evidence, and only a complete
+/// observation replaces it. A `probe_reuse_count` above one, or a
+/// `build_artifact_id` on the join, means several probes read one build, and
+/// the reusable hash table is then kept whatever its size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyedHashJoinStrategyInputFacts {
     #[doc(hidden)]
     pub estimated_build_rows: Option<u64>,
-    /// Rows counted after the build side materialized; `None` at planning
-    /// time.
     #[doc(hidden)]
-    pub observed_build_rows: Option<u64>,
+    pub observed_build_rows: ObservedBuildRows,
+    /// Build bytes: the estimate at planning time, the larger of the estimate
+    /// and the bytes consumed so far under a partial observation, and the
+    /// materialized bytes under a complete one.
     #[doc(hidden)]
     pub build_side_bytes: Option<u64>,
     #[doc(hidden)]
@@ -241,6 +245,32 @@ pub struct KeyedHashJoinStrategyInputFacts {
     /// reservation; nested Arrow types do not.
     #[doc(hidden)]
     pub reusable_prebuild_supported: bool,
+}
+
+/// How much of a join's build side has been counted when a strategy is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservedBuildRows {
+    /// Nothing is materialized yet, as at planning time.
+    Unobserved,
+    /// Rows of the build chunks consumed so far; more chunks may follow.
+    Partial(u64),
+    /// Rows of the whole materialized build side.
+    Complete(u64),
+}
+
+impl ObservedBuildRows {
+    /// The rows counted so far, if any.
+    pub const fn rows(self) -> Option<u64> {
+        match self {
+            Self::Unobserved => None,
+            Self::Partial(rows) | Self::Complete(rows) => Some(rows),
+        }
+    }
+
+    /// Whether the count covers the whole build side.
+    pub const fn is_complete(self) -> bool {
+        matches!(self, Self::Complete(_))
+    }
 }
 
 /// Join types the keyless conditional executor runs. A left join must build
@@ -456,7 +486,7 @@ pub fn keyed_hash_join_strategy_input_facts_for_plan(
     };
     KeyedHashJoinStrategyInputFacts {
         estimated_build_rows: estimated_output_rows(plan, build_input),
-        observed_build_rows: None,
+        observed_build_rows: ObservedBuildRows::Unobserved,
         build_side_bytes: estimated_output_bytes(plan, build_input),
         probe_side_bytes: estimated_output_bytes(plan, probe_input_for_join(join)),
         estimated_output_rows: estimated_output_rows(plan, node_id),
@@ -474,11 +504,15 @@ fn keyed_equi_strategy_choice(
 ) -> JoinStrategyChoice {
     let large_build = keyed_hash_join_build_is_large(&input, options);
     let small_build = !large_build
-        && (input.observed_build_rows.is_some_and(|rows| rows <= options.small_reusable_hash_build_row_threshold)
+        && (input
+            .observed_build_rows
+            .rows()
+            .is_some_and(|rows| rows <= options.small_reusable_hash_build_row_threshold)
             || input.estimated_build_rows.is_some_and(|rows| rows <= options.small_reusable_hash_build_row_threshold)
             || input.build_side_bytes.is_some_and(|bytes| bytes <= options.small_reusable_hash_build_bytes_threshold));
-    let build_size_known =
-        input.observed_build_rows.is_some() || input.estimated_build_rows.is_some() || input.build_side_bytes.is_some();
+    let build_size_known = input.observed_build_rows.rows().is_some()
+        || input.estimated_build_rows.is_some()
+        || input.build_side_bytes.is_some();
     let large_probe =
         input.probe_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_probe_bytes_threshold);
     let small_probe = !large_probe
@@ -486,6 +520,7 @@ fn keyed_equi_strategy_choice(
     let single_use_without_artifact = join.spec.build_artifact_id.is_none() && input.probe_reuse_count <= 1;
     let one_shot_contained_left_join_build = input
         .observed_build_rows
+        .rows()
         .or(input.estimated_build_rows)
         .is_some_and(|rows| rows <= options.max_small_probe_left_one_shot_build_row_threshold)
         && input
@@ -566,11 +601,15 @@ fn partitioned_mixed_keyed_residual_evidence(
     let large_probe =
         input.probe_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_probe_bytes_threshold);
     let small_build = !large_build
-        && (input.observed_build_rows.is_some_and(|rows| rows <= options.small_reusable_hash_build_row_threshold)
+        && (input
+            .observed_build_rows
+            .rows()
+            .is_some_and(|rows| rows <= options.small_reusable_hash_build_row_threshold)
             || input.estimated_build_rows.is_some_and(|rows| rows <= options.small_reusable_hash_build_row_threshold)
             || input.build_side_bytes.is_some_and(|bytes| bytes <= options.small_reusable_hash_build_bytes_threshold));
-    let build_size_known =
-        input.observed_build_rows.is_some() || input.estimated_build_rows.is_some() || input.build_side_bytes.is_some();
+    let build_size_known = input.observed_build_rows.rows().is_some()
+        || input.estimated_build_rows.is_some()
+        || input.build_side_bytes.is_some();
     if !large_build && !large_probe && (!build_size_known || small_build) {
         return None;
     }
@@ -593,18 +632,30 @@ fn partitioned_mixed_keyed_residual_evidence(
     ))
 }
 
-/// Whether the build side already exceeds the large-build thresholds.
+/// Whether the size evidence allows a build side at or above the large-build
+/// thresholds.
 ///
-/// Large-build evidence is monotone in observed rows and bytes: once a build
-/// is large under partial observation it stays large, so callers may commit to
-/// partition-wise consumption before the whole build side is materialized.
+/// Before the build side is complete, a row estimate at the threshold counts:
+/// an estimate bounds the build from above and cannot rule a large build out.
+/// A complete observation ignores `estimated_build_rows`, because the counted
+/// rows are the build's size. Under a partial observation the evidence only
+/// grows as chunks arrive, so a build large by
+/// [`keyed_hash_join_observed_build_is_large`] stays large once complete.
 pub fn keyed_hash_join_build_is_large(
     input: &KeyedHashJoinStrategyInputFacts,
     options: &KeyedHashJoinStrategyOptions,
 ) -> bool {
-    input.observed_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
-        || input.estimated_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
+    let estimated_large = !input.observed_build_rows.is_complete()
+        && input.estimated_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold);
+    estimated_large
+        || input.observed_build_rows.rows().is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
         || input.build_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_build_bytes_threshold)
+}
+
+/// Whether build rows and bytes actually counted, without any estimate, reach
+/// the large-build thresholds.
+pub fn keyed_hash_join_observed_build_is_large(rows: u64, bytes: u64, options: &KeyedHashJoinStrategyOptions) -> bool {
+    rows >= options.large_keyed_hash_build_row_threshold || bytes >= options.large_keyed_hash_build_bytes_threshold
 }
 
 /// Whether measuring build-key uniqueness could move a keyed left join from
@@ -757,7 +808,7 @@ mod tests {
 
     fn input_facts(
         estimated_build_rows: Option<u64>,
-        observed_build_rows: Option<u64>,
+        observed_build_rows: ObservedBuildRows,
         probe_side_bytes: Option<u64>,
     ) -> KeyedHashJoinStrategyInputFacts {
         KeyedHashJoinStrategyInputFacts {
@@ -800,7 +851,11 @@ mod tests {
     fn known_small_probe_single_use_inner_join_stays_reusable() {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_inner_join(),
-            input_facts(Some(10), None, Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
+            input_facts(
+                Some(10),
+                ObservedBuildRows::Unobserved,
+                Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+            ),
         );
 
         assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
@@ -842,7 +897,11 @@ mod tests {
         ));
         let decision = keyed_hash_join_strategy_decision(
             &join,
-            input_facts(Some(10), None, Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
+            input_facts(
+                Some(10),
+                ObservedBuildRows::Unobserved,
+                Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+            ),
         );
 
         assert_eq!(form(&join), Some(JoinForm::KeyedEquiPostFilter));
@@ -903,7 +962,11 @@ mod tests {
     fn unknown_probe_medium_single_use_inner_join_stays_reusable() {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_inner_join(),
-            input_facts(Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None, None),
+            input_facts(
+                Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2),
+                ObservedBuildRows::Unobserved,
+                None,
+            ),
         );
 
         assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
@@ -911,14 +974,47 @@ mod tests {
 
     #[test]
     fn unknown_probe_tiny_estimated_build_stays_reusable() {
-        let decision = keyed_hash_join_strategy_decision(&single_use_inner_join(), input_facts(Some(10), None, None));
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_inner_join(),
+            input_facts(Some(10), ObservedBuildRows::Unobserved, None),
+        );
 
         assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
     }
 
+    // Plan estimates bound a build from above. A filter the size model cannot
+    // narrow, such as a LIKE over a large dimension, leaves a large estimate on
+    // a build that materializes small; only the complete count decides.
+    #[test]
+    fn complete_build_observation_overrides_a_large_estimate_and_a_partial_one_does_not() {
+        let observed = |observed_build_rows| KeyedHashJoinStrategyInputFacts {
+            build_side_bytes: Some(40 * 1024 * 1024),
+            ..input_facts(Some(100_000_000), observed_build_rows, Some(1024))
+        };
+
+        let complete = keyed_hash_join_strategy_decision(
+            &single_use_inner_join(),
+            observed(ObservedBuildRows::Complete(5_000_000)),
+        );
+        assert_eq!(selected_strategy(complete), JoinStrategy::ReusableHashEqui);
+
+        let partial = keyed_hash_join_strategy_decision(
+            &single_use_inner_join(),
+            observed(ObservedBuildRows::Partial(5_000_000)),
+        );
+        assert_eq!(
+            partial.evidence().map(|evidence| evidence.facts()["reusable_hash_join_rejected_reason"].clone()),
+            Some("build_side_too_large".to_string())
+        );
+        assert_eq!(selected_strategy(partial), JoinStrategy::PartitionedHashEqui);
+    }
+
     #[test]
     fn unknown_probe_tiny_observed_without_estimate_stays_reusable() {
-        let decision = keyed_hash_join_strategy_decision(&single_use_inner_join(), input_facts(None, Some(31), None));
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_inner_join(),
+            input_facts(None, ObservedBuildRows::Complete(31), None),
+        );
 
         assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
     }
@@ -927,7 +1023,11 @@ mod tests {
     fn unknown_probe_medium_observed_without_estimate_stays_reusable() {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_inner_join(),
-            input_facts(None, Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None),
+            input_facts(
+                None,
+                ObservedBuildRows::Complete(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2),
+                None,
+            ),
         );
 
         assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
@@ -938,7 +1038,7 @@ mod tests {
         let join = single_use_inner_join();
         let input = KeyedHashJoinStrategyInputFacts {
             estimated_build_rows: Some(10),
-            observed_build_rows: None,
+            observed_build_rows: ObservedBuildRows::Unobserved,
             build_side_bytes: Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD * 2),
             probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
             estimated_output_rows: None,
@@ -976,7 +1076,7 @@ mod tests {
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
                 estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
-                observed_build_rows: None,
+                observed_build_rows: ObservedBuildRows::Unobserved,
                 build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
                 probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
@@ -996,7 +1096,7 @@ mod tests {
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
                 estimated_build_rows: Some(10),
-                observed_build_rows: None,
+                observed_build_rows: ObservedBuildRows::Unobserved,
                 build_side_bytes: Some(1024),
                 probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
@@ -1016,7 +1116,7 @@ mod tests {
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
                 estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD + 1),
-                observed_build_rows: None,
+                observed_build_rows: ObservedBuildRows::Unobserved,
                 build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD + 1),
                 probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
@@ -1036,7 +1136,7 @@ mod tests {
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
                 estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
-                observed_build_rows: None,
+                observed_build_rows: ObservedBuildRows::Unobserved,
                 build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
                 probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
@@ -1057,7 +1157,7 @@ mod tests {
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
                 estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
-                observed_build_rows: None,
+                observed_build_rows: ObservedBuildRows::Unobserved,
                 build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
                 probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
@@ -1076,7 +1176,7 @@ mod tests {
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
                 estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
-                observed_build_rows: None,
+                observed_build_rows: ObservedBuildRows::Unobserved,
                 build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
                 probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: Some(1),

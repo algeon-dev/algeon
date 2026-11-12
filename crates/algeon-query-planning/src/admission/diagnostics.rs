@@ -90,7 +90,7 @@ fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: 
         if let Some(rows) = input.estimated_build_rows {
             estimated_build_rows.push(label(rows.to_string()));
         }
-        if let Some(rows) = input.observed_build_rows {
+        if let Some(rows) = input.observed_build_rows.rows() {
             observed_build_rows.push(label(rows.to_string()));
         }
         if let Some(bytes) = input.build_side_bytes {

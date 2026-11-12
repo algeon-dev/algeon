@@ -51,7 +51,8 @@ pub(crate) use expr::{
 pub use join::KeyedHashJoinStrategyOptions;
 #[doc(hidden)]
 pub use join::{
-    JoinForm, KeyedHashJoinStrategyInputFacts, KeylessConditionalJoinKind, keyed_hash_join_build_is_large,
+    JoinForm, KeyedHashJoinStrategyInputFacts, KeylessConditionalJoinKind, ObservedBuildRows,
+    keyed_hash_join_build_is_large, keyed_hash_join_observed_build_is_large,
     keyed_hash_join_strategy_input_facts_for_plan,
     keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness, keyed_join_filters_matched_pairs,
 };

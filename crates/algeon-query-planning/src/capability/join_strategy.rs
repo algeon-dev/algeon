@@ -175,7 +175,7 @@ impl JoinStrategyEvidence {
         // distinguish "not measured" from any measured value.
         let optional = [
             ("estimated_build_rows", input.estimated_build_rows.map(|rows| rows.to_string())),
-            ("observed_build_rows", input.observed_build_rows.map(|rows| rows.to_string())),
+            ("observed_build_rows", input.observed_build_rows.rows().map(|rows| rows.to_string())),
             ("build_side_bytes", input.build_side_bytes.map(|bytes| bytes.to_string())),
             ("probe_side_bytes", input.probe_side_bytes.map(|bytes| bytes.to_string())),
             ("estimated_output_rows", input.estimated_output_rows.map(|rows| rows.to_string())),
