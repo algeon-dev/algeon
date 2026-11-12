@@ -43,6 +43,7 @@ pub(super) struct TimedQueryRun {
 pub(super) struct PlannedCpuQuery {
     _ctx: SessionContext,
     plan: Arc<dyn ExecutionPlan>,
+    order_key_columns: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,17 +100,10 @@ pub(super) struct NativeRunFailure {
 pub(super) struct PlannedNativeQuery {
     pub(super) plan: Arc<dyn ExecutionPlan>,
     pub(super) planning_row: NativeDataFusionPlanningRow,
+    pub(super) order_key_columns: Vec<usize>,
 }
 
 pub(super) async fn plan_native_query(
-    metadata: &TpchDatasetMetadata,
-    query: &TpchQuery,
-    config: &NativeTpchBenchmarkConfig,
-) -> DataFusionResult<PlannedNativeQuery> {
-    plan_native_query_with_resources(metadata, query, config, &NativeTpchRuntimeResources::unavailable()).await
-}
-
-async fn plan_native_query_with_resources(
     metadata: &TpchDatasetMetadata,
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
@@ -125,6 +119,7 @@ async fn plan_native_query_with_resources(
     let scale = dataset::register_tpch_tables(&ctx, metadata).await?;
     let df = ctx.sql(&query.sql(scale)).await?;
     let (state, logical) = df.into_parts();
+    let order_key_columns = validation::order_key_columns(&logical);
     let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await?;
     let planning_report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
         query.id,
@@ -132,7 +127,7 @@ async fn plan_native_query_with_resources(
         diagnostics,
     )]);
     let planning_row = select_benchmark_planning_row(query.id, planning_report.rows)?;
-    Ok(PlannedNativeQuery { plan, planning_row })
+    Ok(PlannedNativeQuery { plan, planning_row, order_key_columns })
 }
 
 pub(super) fn native_optimizer_config(
@@ -308,10 +303,11 @@ pub(super) async fn run_cpu_query_iterations(
     for _ in 0..config.iterations {
         let planned = plan_cpu_query(metadata, query, config).await?;
         let schema = planned.plan.schema();
+        let order_key_columns = planned.order_key_columns.clone();
         let started = Instant::now();
         let batches = collect_cpu_plan_once(planned).await?;
         samples.push(started.elapsed());
-        final_measurement = Some(measure_output(&schema, &batches).map_err(cpu_started)?);
+        final_measurement = Some(measure_output(&schema, &order_key_columns, &batches).map_err(cpu_started)?);
     }
     Ok(TimedQueryRun {
         samples,
@@ -329,8 +325,7 @@ pub(super) async fn run_native_query_iterations(
     pending_observations: &mut Vec<(String, ObservationCapture)>,
 ) -> Result<TimedNativeQueryRun, NativeRunFailure> {
     for _ in 0..config.warmup_iterations {
-        let planned =
-            plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
+        let planned = plan_native_query(metadata, query, config, resources).await.map_err(native_not_started)?;
         if planned.planning_row.outcome == Some(CandidateOutcomeKind::Selected) {
             validate_replanned_native_row(query.id, expected_planning_row, &planned.planning_row)
                 .map_err(native_not_started)?;
@@ -353,8 +348,7 @@ pub(super) async fn run_native_query_iterations(
     for iteration in 0..config.iterations {
         let iteration_started = Instant::now();
         let observation_capture = (iteration == 0 && artifact_dir.is_some()).then(|| Arc::new(Mutex::new(None)));
-        let planned =
-            plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
+        let planned = plan_native_query(metadata, query, config, resources).await.map_err(native_not_started)?;
         planning_samples.push(iteration_started.elapsed());
         if planned.planning_row.outcome != Some(CandidateOutcomeKind::Selected) {
             return Err(NativeRunFailure {
@@ -373,7 +367,8 @@ pub(super) async fn run_native_query_iterations(
                 .map_err(native_started)?;
         samples.push(started.elapsed());
         plan_plus_execution_samples.push(iteration_started.elapsed());
-        final_measurement = Some(measure_output(&schema, &batches).map_err(native_started)?);
+        final_measurement =
+            Some(measure_output(&schema, &planned.order_key_columns, &batches).map_err(native_started)?);
         iteration_wall_samples.push(iteration_started.elapsed());
         measured_metrics.push(metrics);
         if let (Some(dir), Some(capture)) = (artifact_dir, observation_capture) {
@@ -425,12 +420,13 @@ async fn plan_cpu_query(
     let ctx = SessionContext::new_with_config_rt(cpu_session_config(config), runtime_env);
     let scale = dataset::register_tpch_tables(&ctx, metadata).await.map_err(cpu_not_started)?;
     let df = ctx.sql(&query.sql(scale)).await.map_err(cpu_not_started)?;
+    let order_key_columns = validation::order_key_columns(df.logical_plan());
     let plan = df.create_physical_plan().await.map_err(cpu_not_started)?;
-    Ok(PlannedCpuQuery { _ctx: ctx, plan })
+    Ok(PlannedCpuQuery { _ctx: ctx, plan, order_key_columns })
 }
 
 async fn collect_cpu_plan_once(planned: PlannedCpuQuery) -> Result<Vec<RecordBatch>, CpuRunFailure> {
-    let PlannedCpuQuery { _ctx, plan } = planned;
+    let PlannedCpuQuery { _ctx, plan, .. } = planned;
     collect(plan, Arc::new(TaskContext::default())).await.map_err(cpu_started)
 }
 
@@ -471,12 +467,16 @@ pub(super) fn cpu_session_config(config: &NativeTpchBenchmarkConfig) -> SessionC
     }
 }
 
-fn measure_output(schema: &SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<QueryMeasurement> {
+fn measure_output(
+    schema: &SchemaRef,
+    order_key_columns: &[usize],
+    batches: &[RecordBatch],
+) -> DataFusionResult<QueryMeasurement> {
     Ok(QueryMeasurement {
         output_batches: batches.len(),
         output_rows: batches.iter().map(RecordBatch::num_rows).sum(),
         output_bytes: batches.iter().map(get_record_batch_memory_size).sum(),
-        output_fingerprint: validation::fingerprint_batches(schema, batches)?,
+        output_fingerprint: validation::fingerprint_batches(schema, order_key_columns, batches)?,
     })
 }
 
