@@ -1838,6 +1838,7 @@ pub fn query_runtime::runtime::ExecutionContext::gpu_executor(&self) -> query_pl
 pub fn query_runtime::runtime::ExecutionContext::is_query_service_admitted(&self) -> bool
 pub fn query_runtime::runtime::ExecutionContext::memory_control_policy(&self) -> query_planning::execution_contracts::MemoryControlPolicy
 pub fn query_runtime::runtime::ExecutionContext::memory_grant(&self) -> query_planning::error::Result<core::option::Option<query_runtime::runtime::gpu::ledger::MemoryGrant>>
+pub fn query_runtime::runtime::ExecutionContext::parquet_footer_cache(&self) -> &cudf::io::parquet::footer::ParquetFooterCache
 pub fn query_runtime::runtime::ExecutionContext::planning_policy(&self) -> query_planning::policy::PlanningPolicy
 pub fn query_runtime::runtime::ExecutionContext::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
 pub fn query_runtime::runtime::ExecutionContext::runtime(&self) -> query_planning::error::Result<cudf::runtime::owner::Runtime>
