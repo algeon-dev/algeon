@@ -1,3 +1,5 @@
+use query_planning::optimizer::NativeOptimizerResult;
+
 use super::*;
 
 #[test]
@@ -827,6 +829,178 @@ fn join_build_side_selection_prefers_bounded_left_anti_other_side_over_grouped_a
         panic!("optimized root should remain the grouped fact/date keyset join");
     };
     assert_eq!(join.spec.build_side, JoinSide::Right);
+}
+
+/// TPC-H q02's correlated subquery joins supplier to `nation ⋈ region` on the
+/// supplier side's 25 distinct nation keys. The join output has no estimate,
+/// but its proved bound of 25 x 5 rows keeps it as the build over a supplier
+/// input that is itself small by bytes.
+#[test]
+fn join_build_side_selection_keeps_proved_small_join_output_as_current_build_side() {
+    let mut builder = QueryPlanBuilder::new();
+    let supplier = builder.add_source(estimated_local_source_with_fields(
+        "supplier",
+        &["s_suppkey", "s_nationkey"],
+        8 * 1024 * 1024,
+        1_000_000,
+    ));
+    let nation_region = add_nation_region_join(&mut builder);
+    let join = builder
+        .add_join(
+            supplier,
+            nation_region,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "s_nationkey", "s_nationkey"),
+                    ColumnRef::input(1, "n_nationkey", "n_nationkey"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(
+                ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                "s_suppkey",
+            )])
+            .with_build_side(JoinSide::Right),
+            schema(&["s_suppkey"]),
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
+
+    let result = optimize_join_build_side_only(plan);
+
+    let candidate = build_side_candidate(&result.diagnostics.join_build_side_selection, join);
+    assert!(!candidate.applied);
+    assert_eq!(candidate.selection_basis, Some(JoinBuildSideSelectionBasis::SmallCurrentSide));
+    assert_eq!(candidate.rejected_reason, Some(JoinBuildSideSelectionRejectedReason::NoBetterBuildSide));
+    assert_eq!(candidate.left_estimated_rows, Some(1_000_000));
+    assert_eq!(candidate.left_proved_rows, Some(1_000_000));
+    assert_eq!(candidate.right_estimated_rows, None);
+    assert_eq!(candidate.right_proved_rows, Some(125));
+    assert_eq!(root_join_build_side(&result.plan), JoinSide::Right);
+}
+
+/// TPC-H q02's outer query joins `nation ⋈ region` to a join output whose
+/// proved bound exceeds the row threshold. Neither side has an estimate; the
+/// 25 x 5 bound alone selects the small side as the build.
+#[test]
+fn join_build_side_selection_selects_proved_small_join_output_as_other_side() {
+    let mut builder = QueryPlanBuilder::new();
+    let nation_region = add_nation_region_join(&mut builder);
+    let supplier = builder.add_source(estimated_local_source_with_fields(
+        "supplier",
+        &["s_suppkey", "s_nationkey"],
+        8 * 1024 * 1024,
+        1_000_000,
+    ));
+    let partsupp = builder.add_source(estimated_local_source_with_fields(
+        "partsupp",
+        &["ps_suppkey", "ps_partkey"],
+        2 * 1024 * 1024 * 1024,
+        80_000_000,
+    ));
+    let supplier_partsupp = builder
+        .add_join(
+            supplier,
+            partsupp,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                    ColumnRef::input(1, "ps_suppkey", "ps_suppkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "s_nationkey", "s_nationkey"), "s_nationkey"),
+                JoinOutputColumn::right(ColumnRef::input(1, "ps_partkey", "ps_partkey"), "ps_partkey"),
+            ])
+            .with_build_side(JoinSide::Left),
+            schema(&["s_nationkey", "ps_partkey"]),
+        )
+        .unwrap();
+    let join = builder
+        .add_join(
+            nation_region,
+            supplier_partsupp,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "n_nationkey", "n_nationkey"),
+                    ColumnRef::input(1, "s_nationkey", "s_nationkey"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::right(
+                ColumnRef::input(1, "ps_partkey", "ps_partkey"),
+                "ps_partkey",
+            )])
+            .with_build_side(JoinSide::Right),
+            schema(&["ps_partkey"]),
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
+
+    let result = optimize_join_build_side_only(plan);
+
+    let candidate = build_side_candidate(&result.diagnostics.join_build_side_selection, join);
+    assert!(candidate.applied);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Left));
+    assert_eq!(candidate.selection_basis, Some(JoinBuildSideSelectionBasis::SmallOtherSide));
+    assert_eq!(candidate.left_estimated_rows, None);
+    assert_eq!(candidate.left_proved_rows, Some(125));
+    assert_eq!(candidate.right_estimated_rows, None);
+    assert_eq!(candidate.right_proved_rows, Some(80_000_000_000_000));
+    assert_eq!(root_join_build_side(&result.plan), JoinSide::Left);
+}
+
+/// Adds `nation ⋈ region`, whose output has no conservative estimate and a
+/// proved bound of 25 x 5 rows.
+fn add_nation_region_join(builder: &mut QueryPlanBuilder) -> NodeId {
+    let nation =
+        builder.add_source(estimated_local_source_with_fields("nation", &["n_nationkey", "n_regionkey"], 1024, 25));
+    let region = builder.add_source(estimated_local_source("region", "r_regionkey", 1024, 5));
+    builder
+        .add_join(
+            nation,
+            region,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "n_regionkey", "n_regionkey"),
+                    ColumnRef::input(1, "r_regionkey", "r_regionkey"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(
+                ColumnRef::input(0, "n_nationkey", "n_nationkey"),
+                "n_nationkey",
+            )])
+            .with_build_side(JoinSide::Right),
+            schema(&["n_nationkey"]),
+        )
+        .unwrap()
+}
+
+fn optimize_join_build_side_only(plan: QueryPlan) -> NativeOptimizerResult {
+    let options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+    optimize_query_plan(
+        plan,
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap()
+}
+
+fn build_side_candidate(
+    diagnostics: &JoinBuildSideSelectionDiagnostics,
+    join: NodeId,
+) -> &JoinBuildSideSelectionCandidateDiagnostics {
+    diagnostics
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == join)
+        .expect("join should be a build-side candidate")
 }
 
 #[test]
