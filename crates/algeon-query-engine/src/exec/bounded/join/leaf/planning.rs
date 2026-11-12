@@ -2,9 +2,10 @@
 //!
 //! Each constructor validates the source, derives the chunk planning policy from the
 //! memory-control policy, planning mode, a `SourceTaskMemoryModel` for the consumer and the
-//! row-group metadata that sizes the chunks, and plans chunks. Planning may load Parquet
-//! footers on the calling thread. The stream starts
-//! with no stages or dynamic filters; later builders add them. The aggregate variants also
+//! row-group metadata that sizes the chunks, and plans chunks. The aggregate variants take the
+//! number of chunks their consumer may run at once on execution lanes, and every such chunk keeps
+//! its own model slots live. Planning may load Parquet footers on the calling thread. The stream
+//! starts with no stages or dynamic filters; later builders add them. The aggregate variants also
 //! cap chunk sizes from the aggregate input hints. Every planned chunk is counted in the
 //! source metrics, and the retry limits of the context are copied into the stream.
 
@@ -43,13 +44,14 @@ pub(in crate::exec::bounded) fn plan_bounded_aggregate_input_local_parquet_sourc
     node_id: NodeId,
     has_source_adjacent_stages: bool,
     chunk_cap_hints: AggregateInputHints,
+    concurrent_chunks: usize,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
         context,
         source,
         node_id,
-        SourceTaskMemoryModel::aggregate_pipeline(has_source_adjacent_stages),
+        SourceTaskMemoryModel::aggregate_pipeline(has_source_adjacent_stages).with_concurrent_chunks(concurrent_chunks),
         Some(chunk_cap_hints),
         metrics,
     )
@@ -61,13 +63,15 @@ pub(in crate::exec::bounded) fn plan_bounded_shared_join_aggregate_local_parquet
     node_id: NodeId,
     has_source_adjacent_stages: bool,
     chunk_cap_hints: AggregateInputHints,
+    concurrent_chunks: usize,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
         context,
         source,
         node_id,
-        SourceTaskMemoryModel::shared_join_aggregate_stream(has_source_adjacent_stages),
+        SourceTaskMemoryModel::shared_join_aggregate_stream(has_source_adjacent_stages)
+            .with_concurrent_chunks(concurrent_chunks),
         Some(chunk_cap_hints),
         metrics,
     )

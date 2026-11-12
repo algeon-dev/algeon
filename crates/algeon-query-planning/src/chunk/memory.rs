@@ -2,8 +2,10 @@
 ///
 /// Each slot represents one live region the size of a chunk's decoded read
 /// columns ([`crate::chunk::decoded`]) that may coexist during the source
-/// task. Stages that widen their input, such as a projection adding columns,
-/// are not modeled. The model is a planning heuristic. It does not record the
+/// task. A consumer that runs several chunks at once keeps every chunk's
+/// regions live together, so the slots count once per concurrent chunk. Stages
+/// that widen their input, such as a projection adding columns, are not
+/// modeled. The model is a planning heuristic. It does not record the
 /// executor's allocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceTaskMemoryModel {
@@ -12,6 +14,7 @@ pub struct SourceTaskMemoryModel {
     downstream_operator_slots: u64,
     retained_output_slots: u64,
     source_read_preflight_slack_slots: u64,
+    concurrent_chunks: u64,
 }
 
 impl SourceTaskMemoryModel {
@@ -26,6 +29,7 @@ impl SourceTaskMemoryModel {
             downstream_operator_slots: 1,
             retained_output_slots: 1,
             source_read_preflight_slack_slots: 1,
+            concurrent_chunks: 1,
         }
     }
 
@@ -37,6 +41,7 @@ impl SourceTaskMemoryModel {
             downstream_operator_slots: 1,
             retained_output_slots: 2,
             source_read_preflight_slack_slots: 1,
+            concurrent_chunks: 1,
         }
     }
 
@@ -48,6 +53,7 @@ impl SourceTaskMemoryModel {
             downstream_operator_slots: 1,
             retained_output_slots: 2,
             source_read_preflight_slack_slots: 1,
+            concurrent_chunks: 1,
         }
     }
 
@@ -66,6 +72,7 @@ impl SourceTaskMemoryModel {
             downstream_operator_slots: 1,
             retained_output_slots: 1,
             source_read_preflight_slack_slots: 1,
+            concurrent_chunks: 1,
         }
     }
 
@@ -94,11 +101,20 @@ impl SourceTaskMemoryModel {
         self.source_read_preflight_slack_slots
     }
 
+    /// Returns this model for a consumer that runs up to `chunks` source
+    /// chunks at once, each keeping its own slots live. Zero counts as one.
+    pub const fn with_concurrent_chunks(mut self, chunks: usize) -> Self {
+        self.concurrent_chunks = if chunks > 1 { chunks as u64 } else { 1 };
+        self
+    }
+
+    /// Returns the live slots of every concurrent chunk together.
     pub const fn live_slot_count(self) -> u64 {
-        self.source_read_slots
+        (self.source_read_slots
             + self.source_adjacent_operator_slots
             + self.downstream_operator_slots
             + self.retained_output_slots
-            + self.source_read_preflight_slack_slots
+            + self.source_read_preflight_slack_slots)
+            * self.concurrent_chunks
     }
 }

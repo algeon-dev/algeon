@@ -186,6 +186,68 @@ fn bounded_native_query_uses_exact_source_owner_instead_of_spurious_chunk_retrie
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// Two execution lanes can run two of the aggregate's chunks at once, so each
+/// chunk gets an eighth of the grant instead of the quarter one lane leaves
+/// it: the three 40 MiB row groups fit one 128 MiB chunk but need one 64 MiB
+/// chunk each.
+#[test]
+fn lane_dispatched_aggregate_sizes_source_chunks_for_concurrent_lanes() {
+    const ROW_GROUP_DECODED_BYTES: u64 = 40 * 1024 * 1024;
+    let dir = unique_temp_dir("query-engine-lane-aggregate-chunk-target");
+    let path = dir.join("input.parquet");
+    let input_schema = write_row_grouped_input_parquet(&path);
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_m00", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_decoded_bytes(vec![ROW_GROUP_DECODED_BYTES; 3])
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap().clone_with_gpu_resident_sink();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
+        max_source_chunk_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
+        max_row_groups_per_chunk: 3,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    })
+    .with_source_work_per_attempt(2);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    assert_eq!(result.metrics().source_chunks_planned, 3);
+    assert_eq!(result.metrics().source_chunks_committed, 3);
+    let QueryOutput::GpuResident(handle) = result.output() else {
+        panic!("GPU sink should retain the aggregate output");
+    };
+    let batch = materialize_gpu_result_to_host(handle.clone(), &mut QueryMetrics::default()).unwrap();
+    let mut sums = int32_array(&batch, 0)
+        .values()
+        .iter()
+        .copied()
+        .zip(int64_array(&batch, 1).values().iter().copied())
+        .collect::<Vec<_>>();
+    sums.sort_unstable();
+    assert_eq!(sums, vec![(1, 400), (2, 700), (3, 1000)]);
+    drop(result);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn bounded_native_query_grants_global_count_source_and_output_owners() {
     let output_schema = Arc::new(Schema::new(vec![
