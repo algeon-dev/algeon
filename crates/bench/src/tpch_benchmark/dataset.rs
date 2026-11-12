@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use workloads::tpch::{TpchDefaultScale, default_tpch_parquet_root};
+use workloads::tpch::{TpchDefaultScale, TpchScaleFactor, default_tpch_parquet_root};
 
 use super::{
     ALGEON_PARQUET_DIR_ENV, ALGEON_TPCH_GENERATION_COMMAND_ENV, ALGEON_TPCH_SCALE_FACTOR_ENV, DataFusionResult,
@@ -281,10 +281,14 @@ fn expected_table_row_counts(scale_factor: NativeTpchScaleFactor) -> &'static [(
     }
 }
 
-pub(super) async fn register_tpch_tables(ctx: &SessionContext, metadata: &TpchDatasetMetadata) -> DataFusionResult<()> {
+/// Registers the described tables and returns the scale factor of their data.
+pub(super) async fn register_tpch_tables(
+    ctx: &SessionContext,
+    metadata: &TpchDatasetMetadata,
+) -> DataFusionResult<TpchScaleFactor> {
     for table in &metadata.tables {
         let layout = TpchTableLayout::from_metadata(table);
         register_tpch_table_layout(ctx, &table.table, &layout).await.map_err(tpch_error)?;
     }
-    Ok(())
+    metadata.scale().map_err(tpch_error)
 }

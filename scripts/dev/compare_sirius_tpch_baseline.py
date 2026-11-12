@@ -21,6 +21,9 @@ import duckdb
 
 
 TABLES = ("customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier")
+# These queries have no scale-dependent substitution parameter, so their
+# catalog files are executable as written. Q11's file holds the [FRACTION]
+# placeholder that only workloads::tpch::TpchQuery::sql substitutes.
 QUERIES = ("q01", "q06", "q15", "q17", "q18", "q03")
 
 
@@ -28,7 +31,11 @@ def sql_by_id(catalog: Path) -> dict[str, str]:
     files = sorted(catalog.glob("q[0-9][0-9].sql"))
     if len(files) != 22:
         raise ValueError(f"expected 22 TPC-H queries in {catalog}")
-    return {path.stem: path.read_text() for path in files}
+    sql = {path.stem: path.read_text() for path in files}
+    for query_id in QUERIES:
+        if "[" in sql[query_id]:
+            raise ValueError(f"{query_id} has a substitution parameter; render it through workloads::tpch::TpchQuery::sql")
+    return sql
 
 
 def connect(dataset: Path, extension: Path | None) -> duckdb.DuckDBPyConnection:

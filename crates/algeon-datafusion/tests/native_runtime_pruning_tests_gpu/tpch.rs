@@ -10,6 +10,7 @@ use cudf::{
 };
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use tokio::runtime::Builder as TestRuntimeBuilder;
+use workloads::tpch::read_tpch_scale_factor;
 
 use super::{fixtures::date32, *};
 
@@ -17,7 +18,7 @@ async fn native_runtime_tpch_q6_tiny_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q6-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
-    assert_tpch_q6_native_parity(&dir.join("lineitem.parquet")).await;
+    assert_tpch_q6_native_parity(&dir).await;
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -25,14 +26,14 @@ async fn native_runtime_tpch_q6_tiny_matches_cpu() {
 async fn native_runtime_tpch_q1_tiny_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q1-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q1 = TPCH_QUERIES.iter().find(|query| query.id == "q01").expect("TPC-H Q1 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q1.sql).await;
+    let q1 = tpch_query_sql(&dir, "q01");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q1).await;
     assert!(
         cpu_batches.iter().map(|batch| batch.num_rows()).sum::<usize>() > 0,
         "tiny TPC-H Q1 should exercise non-empty output parity"
     );
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q1.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q1).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("AlgeonNativeExec"),
         "TPC-H Q1 should be replaced by AlgeonNativeExec"
@@ -51,10 +52,10 @@ async fn native_runtime_tpch_q1_tiny_matches_cpu() {
 async fn native_runtime_tpch_q3_tiny_bounded_join_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q3-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q3 = TPCH_QUERIES.iter().find(|query| query.id == "q03").expect("TPC-H Q3 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q3.sql).await;
+    let q3 = tpch_query_sql(&dir, "q03");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q3).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q3.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q3).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("AlgeonNativeExec"),
         "bounded TPC-H Q3 should be replaced by AlgeonNativeExec"
@@ -72,17 +73,17 @@ async fn native_runtime_tpch_q3_tiny_bounded_join_matches_cpu() {
 async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q7-tiny-bounded");
     write_q7_nonempty_tpch_parquet_dataset(&dir);
-    let q7 = TPCH_QUERIES.iter().find(|query| query.id == "q07").expect("TPC-H Q7 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q7.sql).await;
+    let q7 = tpch_query_sql(&dir, "q07");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q7).await;
     assert_q7_nation_identity_rows(&cpu_batches);
 
-    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q7.sql).await;
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), &q7).await;
     let optimization = optimize_with_pruning_template(physical_plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
     assert_algeon_native_exec(&optimization.plan, "bounded TPC-H Q7 should be replaced by AlgeonNativeExec");
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q7.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q7).await;
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q7 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -214,16 +215,16 @@ fn tpch_cases_2() {
 async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q2-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q2 = TPCH_QUERIES.iter().find(|query| query.id == "q02").expect("TPC-H Q2 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q2.sql).await;
+    let q2 = tpch_query_sql(&dir, "q02");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q2).await;
 
-    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q2.sql).await;
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), &q2).await;
     let optimization = optimize_with_pruning_template(physical_plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
     assert_algeon_native_exec(&optimization.plan, "bounded TPC-H Q2 should be replaced by AlgeonNativeExec");
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q2.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q2).await;
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q2 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -239,10 +240,10 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
 async fn native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q19-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q19 = TPCH_QUERIES.iter().find(|query| query.id == "q19").expect("TPC-H Q19 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q19.sql).await;
+    let q19 = tpch_query_sql(&dir, "q19");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q19).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q19.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q19).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("AlgeonNativeExec"),
         "bounded TPC-H Q19 should be replaced by AlgeonNativeExec"
@@ -260,17 +261,17 @@ async fn native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu(
 async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q04-tiny-bounded");
     write_q04_nonempty_tpch_parquet_dataset(&dir);
-    let q4 = TPCH_QUERIES.iter().find(|query| query.id == "q04").expect("TPC-H Q4 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q4.sql).await;
+    let q4 = tpch_query_sql(&dir, "q04");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q4).await;
     assert_eq!(record_batch_row_count(&cpu_batches), 1, "tiny TPC-H Q4 CPU output should be non-empty");
 
-    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q4.sql).await;
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), &q4).await;
     let optimization = optimize_with_pruning_template(physical_plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
     assert_algeon_native_exec(&optimization.plan, "bounded TPC-H Q4 should be replaced by AlgeonNativeExec");
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q4.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q4).await;
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q4 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -293,10 +294,10 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
 async fn native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q15-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q15 = TPCH_QUERIES.iter().find(|query| query.id == "q15").expect("TPC-H Q15 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q15.sql).await;
+    let q15 = tpch_query_sql(&dir, "q15");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q15).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q15.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q15).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("AlgeonNativeExec"),
         "bounded TPC-H Q15 should be replaced by AlgeonNativeExec"
@@ -314,16 +315,16 @@ async fn native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu() {
 async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q18-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q18 = TPCH_QUERIES.iter().find(|query| query.id == "q18").expect("TPC-H Q18 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q18.sql).await;
+    let q18 = tpch_query_sql(&dir, "q18");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q18).await;
 
-    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q18.sql).await;
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), &q18).await;
     let optimization = optimize_with_pruning_template(physical_plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
     assert_algeon_native_exec(&optimization.plan, "bounded TPC-H Q18 should be replaced by AlgeonNativeExec");
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q18.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q18).await;
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q18 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -347,16 +348,16 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
 async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q20-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q20 = TPCH_QUERIES.iter().find(|query| query.id == "q20").expect("TPC-H Q20 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q20.sql).await;
+    let q20 = tpch_query_sql(&dir, "q20");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q20).await;
 
-    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q20.sql).await;
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), &q20).await;
     let optimization = optimize_with_pruning_template(physical_plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
     assert_algeon_native_exec(&optimization.plan, "bounded TPC-H Q20 should be replaced by AlgeonNativeExec");
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q20.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q20).await;
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q20 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -380,10 +381,10 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
 async fn native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q16-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q16 = TPCH_QUERIES.iter().find(|query| query.id == "q16").expect("TPC-H Q16 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q16.sql).await;
+    let q16 = tpch_query_sql(&dir, "q16");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q16).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q16.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q16).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("AlgeonNativeExec"),
         "bounded TPC-H Q16 should be replaced by AlgeonNativeExec"
@@ -398,14 +399,21 @@ async fn native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// The data has four suppliers (SF 0.0004), so the Q11 threshold is a
+/// quarter of Germany's stock value and drops part 3, which the SF1 fraction
+/// 0.0001 would keep.
 async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q11-tiny-bounded");
-    write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q11.sql).await;
-    assert_eq!(record_batch_row_count(&cpu_batches), 1, "tiny TPC-H Q11 CPU output should be non-empty");
+    write_q11_scale_threshold_tpch_parquet_dataset(&dir);
+    let q11 = tpch_query_sql(&dir, "q11");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q11).await;
+    let part_keys = cpu_batches
+        .iter()
+        .flat_map(|batch| (0..batch.num_rows()).map(|row| array_value(batch.column(0), row)))
+        .collect::<Vec<_>>();
+    assert_eq!(part_keys, ["1", "2"], "Q11 keeps the parts above the scale-adjusted threshold");
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q11).await;
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q11 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -426,10 +434,10 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
 async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q17-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q17 = TPCH_QUERIES.iter().find(|query| query.id == "q17").expect("TPC-H Q17 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q17.sql).await;
+    let q17 = tpch_query_sql(&dir, "q17");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q17).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q17.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q17).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("AlgeonNativeExec"),
         "TPC-H Q17 should be replaced by AlgeonNativeExec"
@@ -448,10 +456,10 @@ async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
 async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
     let dir = unique_temp_dir("algeon-datafusion-native-runtime-tpch-q22-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
-    let q22 = TPCH_QUERIES.iter().find(|query| query.id == "q22").expect("TPC-H Q22 query must exist");
-    let cpu_batches = cpu_tpch_sql_output(&dir, q22.sql).await;
+    let q22 = tpch_query_sql(&dir, "q22");
+    let cpu_batches = cpu_tpch_sql_output(&dir, &q22).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q22.sql).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, &q22).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("AlgeonNativeExec"),
         "TPC-H Q22 should be replaced by AlgeonNativeExec"
@@ -467,20 +475,27 @@ async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// SQL of TPC-H catalog query `query_id` for the dataset under `root`.
+fn tpch_query_sql(root: &std::path::Path, query_id: &str) -> String {
+    let scale = read_tpch_scale_factor(root).unwrap();
+    TPCH_QUERIES.iter().find(|query| query.id == query_id).expect("TPC-H catalog query").sql(scale)
+}
+
 fn record_batch_row_count(batches: &[RecordBatch]) -> usize {
     batches.iter().map(RecordBatch::num_rows).sum()
 }
 
-async fn assert_tpch_q6_native_parity(lineitem_path: &std::path::Path) {
+async fn assert_tpch_q6_native_parity(root: &std::path::Path) {
+    let lineitem_path = &root.join("lineitem.parquet");
     assert!(lineitem_path.exists(), "missing lineitem parquet file: {}", lineitem_path.display());
-    let q6 = TPCH_QUERIES.iter().find(|query| query.id == "q06").expect("TPC-H Q6 query must exist");
-    let cpu_batches = cpu_lineitem_sql_output(lineitem_path, q6.sql).await;
+    let q6 = tpch_query_sql(root, "q06");
+    let cpu_batches = cpu_lineitem_sql_output(lineitem_path, &q6).await;
     assert!(
         cpu_batches.iter().map(|batch| batch.num_rows()).sum::<usize>() > 0,
         "tiny TPC-H Q6 should exercise non-empty output parity"
     );
 
-    let native_plan = native_datafusion_lineitem_sql_plan(lineitem_path, q6.sql).await;
+    let native_plan = native_datafusion_lineitem_sql_plan(lineitem_path, &q6).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("AlgeonNativeExec"),
         "TPC-H Q6 should be replaced by AlgeonNativeExec"
@@ -545,6 +560,33 @@ fn write_q7_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
                 Decimal128Array::from_iter_values([10_000, 20_000, 30_000]).with_precision_and_scale(15, 2).unwrap(),
             ),
             Arc::new(Decimal128Array::from_iter_values([10, 5, 0]).with_precision_and_scale(15, 2).unwrap()),
+        ],
+    );
+}
+
+fn write_q11_scale_threshold_tpch_parquet_dataset(root: &std::path::Path) {
+    write_tiny_tpch_parquet_dataset(root).unwrap();
+    write_tpch_test_table(
+        &root.join("supplier.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("s_suppkey", DataType::Int64, false),
+            Field::new("s_nationkey", DataType::Int64, false),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![1, 2, 3, 4])), Arc::new(Int64Array::from(vec![4, 4, 1, 3]))],
+    );
+    write_tpch_test_table(
+        &root.join("partsupp.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("ps_partkey", DataType::Int64, false),
+            Field::new("ps_suppkey", DataType::Int64, false),
+            Field::new("ps_availqty", DataType::Int32, false),
+            Field::new("ps_supplycost", DataType::Decimal128(15, 2), false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 1])),
+            Arc::new(Int64Array::from(vec![1, 2, 1, 3])),
+            Arc::new(Int32Array::from(vec![60, 30, 10, 100])),
+            Arc::new(Decimal128Array::from_iter_values([100, 100, 100, 100]).with_precision_and_scale(15, 2).unwrap()),
         ],
     );
 }

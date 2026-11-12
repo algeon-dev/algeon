@@ -26,7 +26,6 @@ clickbench-stage-probe = [
   "dep:datafusion",
   "dep:algeon-datafusion",
   "dep:bench",
-  "dep:workloads",
   "dep:query-engine",
   "dep:query-planning",
   "dep:query-runtime",
@@ -40,7 +39,6 @@ shadow-estimate-report = [
   "dep:datafusion",
   "dep:algeon-datafusion",
   "dep:bench",
-  "dep:workloads",
   "dep:query-engine",
   "dep:query-planning",
   "dep:query-runtime",
@@ -85,7 +83,7 @@ otlp-metrics = ["dep:algeon-datafusion", "dep:cudf-sys", "dep:anyhow", "dep:open
 # The production-validation runner is intentionally opt-in. The base feature
 # stays CPU-only so profile parsing, arrival planning, aggregation, and artifact
 # writing are unit-testable without CUDA.
-single-node-multi-gpu-validate = ["dep:workloads"]
+single-node-multi-gpu-validate = []
 # Measured execution on the public backend and attempt API.
 single-node-multi-gpu-validate-run = [
   "single-node-multi-gpu-validate",
@@ -135,7 +133,8 @@ datafusion = { workspace = true, optional = true }
 algeon-datafusion = { workspace = true, optional = true }
 algeon-iceberg = { workspace = true, optional = true }
 bench = { path = "../bench", optional = true }
-workloads = { workspace = true, optional = true }
+# The Flight stress driver renders TPC-H catalog statements for a scale factor.
+workloads = { workspace = true }
 query-engine = { workspace = true, optional = true }
 query-planning = { workspace = true, optional = true }
 query-runtime = { workspace = true, optional = true }

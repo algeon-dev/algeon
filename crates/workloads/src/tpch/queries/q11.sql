@@ -7,7 +7,7 @@ JOIN nation ON s_nationkey = n_nationkey
 WHERE n_name = 'GERMANY'
 GROUP BY ps_partkey
 HAVING SUM(ps_supplycost * ps_availqty) > (
-    SELECT SUM(ps_supplycost * ps_availqty) * 0.0001
+    SELECT SUM(ps_supplycost * ps_availqty) * [FRACTION]
     FROM partsupp
     JOIN supplier ON ps_suppkey = s_suppkey
     JOIN nation ON s_nationkey = n_nationkey

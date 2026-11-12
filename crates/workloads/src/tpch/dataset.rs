@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{WorkloadError, WorkloadResult, fixture::write_tiny_tpch_parquet_dataset};
+use super::{TpchScaleFactor, WorkloadError, WorkloadResult, fixture::write_tiny_tpch_parquet_dataset};
 use crate::{
     ALGEON_PARQUET_DIR_ENV,
     metadata::{DatasetFingerprint, WorkloadDatasetMetadata},
@@ -13,7 +13,8 @@ use crate::{
 /// Canonical TPC-H table names in fixture discovery order.
 pub const TPCH_TABLES: &[&str] =
     &["customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier"];
-/// Reported scale-factor label; it does not change fixture discovery by itself.
+/// Declared scale-factor label, checked against the data's supplier row count;
+/// see [`TpchScaleFactor::from_label`].
 pub const ALGEON_TPCH_SCALE_FACTOR_ENV: &str = "ALGEON_TPCH_SCALE_FACTOR";
 /// Free-form provenance command recorded in dataset metadata.
 pub const ALGEON_TPCH_GENERATION_COMMAND_ENV: &str = "ALGEON_TPCH_GENERATION_COMMAND";
@@ -65,7 +66,8 @@ impl TpchDefaultScale {
 pub struct TpchDatasetMetadata {
     /// Fixture root used for table discovery.
     pub root: PathBuf,
-    /// Report label such as `sf1`, `sf10`, `sf100`, `tiny`, or `unknown`.
+    /// Report label such as `sf1`, `sf10`, `sf100`, `tiny`, or `unknown`. A
+    /// label that declares a scale agrees with [`TpchDatasetMetadata::scale`].
     pub scale_factor: String,
     /// Stable provenance label written to report headers.
     pub provenance: String,
@@ -129,6 +131,14 @@ pub struct TpchTableFileMetadata {
 }
 
 impl TpchDatasetMetadata {
+    /// Scale factor of the described data, from the supplier row count.
+    ///
+    /// Returns an error when the `scale_factor` label declares a different
+    /// scale.
+    pub fn scale(&self) -> WorkloadResult<TpchScaleFactor> {
+        declared_tpch_scale(&self.tables, &self.scale_factor)
+    }
+
     pub fn table_row_counts(&self) -> String {
         format_table_metadata(&self.tables, |table| table.row_count)
     }
@@ -272,7 +282,9 @@ pub fn describe_tpch_dataset(
 /// Describes a complete TPC-H fixture and optionally hashes file contents.
 ///
 /// Metadata fingerprints are cheap and derived from Parquet metadata. Content
-/// fingerprints scan table bytes and emit `content-fnv1a64:*` values.
+/// fingerprints scan table bytes and emit `content-fnv1a64:*` values. Returns
+/// an error when `scale_factor` declares a scale other than the data's; see
+/// [`TpchDatasetMetadata::scale`].
 pub fn describe_tpch_dataset_with_content_fingerprint(
     root: &Path,
     scale_factor: impl Into<String>,
@@ -288,6 +300,7 @@ pub fn describe_tpch_dataset_with_content_fingerprint(
         tables.push(read_tpch_table_metadata(root, table)?);
     }
 
+    declared_tpch_scale(&tables, &scale_factor)?;
     let file_count = tables.iter().map(|table| table.file_count).sum();
     let total_rows = tables.iter().map(|table| table.row_count).sum();
     let total_bytes = tables.iter().map(|table| table.byte_size).sum();
@@ -322,6 +335,20 @@ pub fn describe_tpch_dataset_with_content_fingerprint(
         content_fingerprint,
         tables,
     })
+}
+
+fn declared_tpch_scale(tables: &[TpchTableMetadata], label: &str) -> WorkloadResult<TpchScaleFactor> {
+    let supplier = tables
+        .iter()
+        .find(|table| table.table == "supplier")
+        .ok_or_else(|| WorkloadError::InvalidDataset("TPC-H dataset metadata has no supplier table".to_string()))?;
+    TpchScaleFactor::from_supplier_rows(supplier.row_count)?.check_declared(label)
+}
+
+/// Reads the scale factor of the TPC-H dataset under `root` from the supplier
+/// row count in its Parquet footers.
+pub fn read_tpch_scale_factor(root: &Path) -> WorkloadResult<TpchScaleFactor> {
+    TpchScaleFactor::from_supplier_rows(read_tpch_table_metadata(root, "supplier")?.row_count)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

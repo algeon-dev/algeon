@@ -9,14 +9,20 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionContext},
 };
 
-use super::{TPCH_TABLES, TpchTableLayout, WorkloadError, WorkloadResult, discover_tpch_table_layout};
+use super::{
+    TPCH_TABLES, TpchScaleFactor, TpchTableLayout, WorkloadError, WorkloadResult, discover_tpch_table_layout,
+    read_tpch_scale_factor,
+};
 
-pub async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> WorkloadResult<()> {
+/// Registers the eight TPC-H tables under `root` and returns the scale factor
+/// of the registered data, which [`TpchQuery::sql`](super::TpchQuery::sql)
+/// takes.
+pub async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> WorkloadResult<TpchScaleFactor> {
     for table in TPCH_TABLES {
         let layout = discover_tpch_table_layout(root, table)?;
         register_tpch_table_layout(ctx, table, &layout).await?;
     }
-    Ok(())
+    read_tpch_scale_factor(root)
 }
 
 pub async fn register_tpch_table_layout(

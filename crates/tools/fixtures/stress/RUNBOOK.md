@@ -28,8 +28,8 @@ Device limits and resident charges follow [memory and query lifetime](../../../.
 
 `tpch-sf100-server.toml` keeps the server's derived admission defaults, sets
 `native_required` and registers the eight TPC-H tables through
-`tpch-sf100-init.sql`. Its statements reference the TPC-H catalog files in
-[`crates/workloads/src/tpch/queries`](../../../workloads/src/tpch/queries).
+`tpch-sf100-init.sql`. Its statements name TPC-H catalog queries, which the
+client renders for the profile's `tpch_scale_factor`.
 
 Measured backend profiles allow 30 s after the submission window for existing
 attempts to seal reports. The allowance adds no measurement time or new work.
@@ -262,8 +262,12 @@ do not establish an SLO.
 
 ## Flight profiles and outputs
 
-A Flight profile lists `statements`, each with a `name` and either inline `sql`
-or a `sql_file`; the file must hold 1-16384 bytes of UTF-8. `load.arrival_mode`
+A Flight profile lists `statements`, each with a `name` and one of inline
+`sql`, a `sql_file` or a `tpch_query`; the file must hold 1-16384 bytes of
+UTF-8. A `tpch_query` names a query id of the TPC-H catalog under
+[`crates/workloads/src/tpch/queries`](../../../workloads/src/tpch/queries).
+The client substitutes qgen's values for the profile's `tpch_scale_factor`
+label, such as `sf100`, which must match the server's data. `load.arrival_mode`
 selects the load:
 
 | Mode | Load fields | Run ends |

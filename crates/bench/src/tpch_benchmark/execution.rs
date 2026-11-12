@@ -117,8 +117,8 @@ async fn plan_native_query_with_resources(
     let builder = resources.install_on(builder)?;
     let state = builder.with_algeon_native(optimizer_config).build();
     let ctx = SessionContext::new_with_state(state);
-    dataset::register_tpch_tables(&ctx, metadata).await?;
-    let df = ctx.sql(query.sql).await?;
+    let scale = dataset::register_tpch_tables(&ctx, metadata).await?;
+    let df = ctx.sql(&query.sql(scale)).await?;
     let (state, logical) = df.into_parts();
     let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await?;
     let planning_report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
@@ -406,8 +406,8 @@ fn native_not_started(error: DataFusionError) -> NativeRunFailure {
 
 async fn plan_cpu_query(metadata: &TpchDatasetMetadata, query: &TpchQuery) -> Result<PlannedCpuQuery, CpuRunFailure> {
     let ctx = SessionContext::new_with_config(cpu_session_config());
-    dataset::register_tpch_tables(&ctx, metadata).await.map_err(cpu_not_started)?;
-    let df = ctx.sql(query.sql).await.map_err(cpu_not_started)?;
+    let scale = dataset::register_tpch_tables(&ctx, metadata).await.map_err(cpu_not_started)?;
+    let df = ctx.sql(&query.sql(scale)).await.map_err(cpu_not_started)?;
     let plan = df.create_physical_plan().await.map_err(cpu_not_started)?;
     Ok(PlannedCpuQuery { _ctx: ctx, plan })
 }
