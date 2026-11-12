@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tpc"))
 from parquet_layout import (
     DEFAULT_ROW_GROUP_BYTES,
     TableLayout,
+    check_spark_writer,
     optimize_layout,
     parse_scales,
     print_summary,
@@ -67,6 +69,48 @@ TPCH_EXPECTED_ROWS = {
         "region": 5,
         "supplier": 1_000_000,
     },
+    "sf200": {
+        "customer": 30_000_000,
+        "lineitem": 1_200_018_434,
+        "nation": 25,
+        "orders": 300_000_000,
+        "part": 40_000_000,
+        "partsupp": 160_000_000,
+        "region": 5,
+        "supplier": 2_000_000,
+    },
+    "sf300": {
+        "customer": 45_000_000,
+        "lineitem": 1_799_989_091,
+        "nation": 25,
+        "orders": 450_000_000,
+        "part": 60_000_000,
+        "partsupp": 240_000_000,
+        "region": 5,
+        "supplier": 3_000_000,
+    },
+    # Lineitem rows are the sum of tpchgen's 1-to-7 lines-per-order draws over the
+    # 1,500,000 * SF orders, so they are not a multiple of the scale factor.
+    "sf500": {
+        "customer": 75_000_000,
+        "lineitem": 3_000_028_242,
+        "nation": 25,
+        "orders": 750_000_000,
+        "part": 100_000_000,
+        "partsupp": 400_000_000,
+        "region": 5,
+        "supplier": 5_000_000,
+    },
+    "sf1000": {
+        "customer": 150_000_000,
+        "lineitem": 5_999_989_709,
+        "nation": 25,
+        "orders": 1_500_000_000,
+        "part": 200_000_000,
+        "partsupp": 800_000_000,
+        "region": 5,
+        "supplier": 10_000_000,
+    },
 }
 
 
@@ -84,13 +128,35 @@ def main() -> None:
     parser.add_argument("--profile", choices=("debug", "release"), default="release")
     parser.add_argument("--num-threads", type=int, default=32)
     parser.add_argument("--parts", type=int, help="Generate partitioned raw TPC-H tables before optimization")
-    parser.add_argument("--optimize-engine", choices=("duckdb", "pyarrow"), default="duckdb")
+    parser.add_argument(
+        "--optimize-engine",
+        choices=("spark", "duckdb", "pyarrow"),
+        default="spark",
+        help="spark: DuckDB sorts and Spark writes each file with parquet-java (default)",
+    )
+    parser.add_argument(
+        "--unsorted",
+        action="store_true",
+        help="Keep tpchgen's row order instead of sorting by the pruning keys; needs the spark engine",
+    )
+    parser.add_argument(
+        "--spark-python",
+        default=os.environ.get("ALGEON_SPARK_PYTHON", sys.executable),
+        help="Python interpreter with PySpark for the spark engine (default: $ALGEON_SPARK_PYTHON or this interpreter)",
+    )
     parser.add_argument("--staging-root", type=Path, help="Root for temporary raw parquet staging")
     args = parser.parse_args()
 
     scales = parse_scales(args.scale)
     if args.out is not None and len(scales) != 1:
         parser.error("--out can only be used with exactly one --scale")
+    if args.unsorted and args.optimize_engine != "spark":
+        parser.error("--unsorted needs --optimize-engine spark")
+    if args.optimize_engine == "spark" and args.variant != "raw":
+        try:
+            check_spark_writer(args.spark_python)
+        except RuntimeError as error:
+            parser.exit(2, f"{parser.prog}: error: {error}\n")
 
     cli = args.tpchgen_root / "target" / args.profile / "tpcgen-cli"
     if not cli.exists():
@@ -157,15 +223,19 @@ def main() -> None:
             row_group_bytes=args.row_group_bytes,
             compression=args.compression,
             force=args.force,
+            scale=scale,
             engine=args.optimize_engine,
+            sort_rows=not args.unsorted,
+            spark_python=args.spark_python,
         )
         if not args.no_verify:
             verify_layout(
                 output_dir=output_dir,
                 layouts=TPCH_TABLES,
                 compression=args.compression,
-                require_sorted=True,
+                require_sorted=not args.unsorted,
                 expected_rows=TPCH_EXPECTED_ROWS.get(scale_label(scale)),
+                writer=args.optimize_engine,
             )
         if staging_root.exists():
             shutil.rmtree(staging_root)
