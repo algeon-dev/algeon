@@ -18,7 +18,7 @@
 //! partitions without a kept table (`hash_tables.rs`). A resident join holds both partitioned
 //! sides until the last pair is joined.
 
-use query_planning::error::ResourceBoundary;
+use query_planning::{capability::keyed_hash_join_observed_build_is_large, error::ResourceBoundary};
 
 use super::{
     BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
@@ -185,9 +185,7 @@ pub(super) fn partitioned_join_reusable_rejected_reason(
     probe_bytes: u64,
     options: KeyedHashJoinStrategyOptions,
 ) -> &'static str {
-    if build_rows >= options.large_keyed_hash_build_row_threshold()
-        || build_bytes >= options.large_keyed_hash_build_bytes_threshold()
-    {
+    if keyed_hash_join_observed_build_is_large(build_rows, build_bytes, &options) {
         "build_side_too_large"
     } else if probe_bytes >= options.large_keyed_hash_probe_bytes_threshold()
         && build_rows > options.small_reusable_hash_build_row_threshold()

@@ -3,7 +3,7 @@ use std::time::Instant;
 use cudf::{DuplicateKeepOption, frame::dataframe::DropDuplicatesOptions};
 use query_planning::{
     capability::{
-        JoinForm, JoinStrategyChoice, KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions,
+        JoinForm, JoinStrategyChoice, KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions, ObservedBuildRows,
         keyed_hash_join_strategy_input_facts_for_plan,
         keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
     },
@@ -102,7 +102,7 @@ pub(super) fn join_strategy_needs_build_key_uniqueness_probe(
         form,
         node,
         KeyedHashJoinStrategyInputFacts {
-            observed_build_rows: Some(observed_build_rows),
+            observed_build_rows: ObservedBuildRows::Complete(observed_build_rows),
             build_side_bytes: Some(build_side_bytes),
             build_key_unique: None,
             ..plan_facts

@@ -256,6 +256,7 @@ pub struct TopKFusion {
 mod tests {
     use super::*;
     use crate::{
+        capability::ObservedBuildRows,
         expr::ColumnRef,
         plan::{JoinKey, JoinOutputColumn, JoinSpec, JoinType},
     };
@@ -275,7 +276,7 @@ mod tests {
     fn small_build_facts() -> KeyedHashJoinStrategyInputFacts {
         KeyedHashJoinStrategyInputFacts {
             estimated_build_rows: Some(10),
-            observed_build_rows: Some(10),
+            observed_build_rows: ObservedBuildRows::Complete(10),
             build_side_bytes: Some(1024),
             probe_side_bytes: None,
             estimated_output_rows: None,

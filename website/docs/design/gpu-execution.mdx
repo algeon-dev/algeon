@@ -63,6 +63,19 @@ repeats until the rest fits, and joins the rows still held when the probe input
 ends. A probe of a single piece keeps no table and holds no rows. A retry that
 repartitions a pair builds its own tables for the smaller pairs.
 
+A build side that streams in chunk by chunk decides after each chunk whether to
+partition. Plan row and byte estimates bound the build from above and may far
+exceed it, for example after a `LIKE` filter over a large dimension. The build
+commits to partitions once its counted rows or bytes reach the large-build
+thresholds of `KeyedHashJoinStrategyOptions`. It also commits when its estimate
+allows a large build and the whole chunks it holds reach the quarter of the
+grant that also bounds [kept join tables](./admission.mdx#kept-join-tables).
+From then on each chunk is hash-partitioned as it arrives. A build that never
+commits is concatenated, and its strategy is chosen from the counted rows and
+bytes alone, where a large estimate no longer counts as large-build evidence.
+A build of medium size whose probe is large still ends partitioned, after that
+one concatenation.
+
 The coordinator builds the kept tables on the root stream before probe chunks
 reach execution lanes. Lanes probe them concurrently on their own streams,
 which only read the table. A lane returns its rows of partitions without a kept

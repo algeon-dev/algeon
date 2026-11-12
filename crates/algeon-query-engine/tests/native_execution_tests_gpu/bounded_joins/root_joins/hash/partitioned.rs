@@ -1,7 +1,8 @@
 use super::*;
 
 fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join() {
-    let runtime = backend_runtime();
+    let context = backend_context_with_grant_and_planning_policy(1024 * 1024, planning_policy_with_large_build_rows(3));
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-large-keyed-inner-partitioned-hash");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -13,8 +14,8 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
         Field::new("category", DataType::Utf8, false),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left =
@@ -35,7 +36,6 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(join).unwrap();
-    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -66,8 +66,10 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
     fs::remove_dir_all(dir).unwrap();
 }
 
+// Cases whose builds are large by their counted rows under
+// `planning_policy_with_large_build_rows(3)`; one process installs one policy.
 #[test]
-fn partitioned_cases() {
+fn partitioned_counted_large_build_cases() {
     run_named_cases(&[
         (
             "bounded_joins::root_joins::hash::partitioned::bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join",
@@ -78,20 +80,8 @@ fn partitioned_cases() {
             bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_concat,
         ),
         (
-            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout",
-            bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout,
-        ),
-        (
-            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout",
-            bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout,
-        ),
-        (
             "bounded_joins::root_joins::hash::partitioned::bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_mixed_join",
             bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_mixed_join,
-        ),
-        (
-            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_executes_or_residual_with_mixed_join",
-            bounded_native_query_executes_or_residual_with_mixed_join,
         ),
         (
             "bounded_joins::root_joins::hash::partitioned::bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate",
@@ -100,10 +90,6 @@ fn partitioned_cases() {
         (
             "bounded_joins::root_joins::hash::partitioned::bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild",
             bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild,
-        ),
-        (
-            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filter",
-            bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filter,
         ),
         (
             "bounded_joins::root_joins::hash::partitioned::bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_null_padding",
@@ -116,8 +102,31 @@ fn partitioned_cases() {
     ]);
 }
 
+#[test]
+fn partitioned_cases() {
+    run_named_cases(&[
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout",
+            bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout",
+            bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_executes_or_residual_with_mixed_join",
+            bounded_native_query_executes_or_residual_with_mixed_join,
+        ),
+        (
+            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filter",
+            bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filter,
+        ),
+    ]);
+}
+
 fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_concat() {
-    let runtime = backend_runtime();
+    let context = backend_context_with_grant_and_planning_policy(1024 * 1024, planning_policy_with_large_build_rows(3));
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-root-hash-join-stream-topk");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -128,8 +137,8 @@ fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_conca
         Field::new("qty", DataType::Int32, false),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left =
@@ -151,7 +160,6 @@ fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_conca
     let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("qty"), true, false)])).unwrap();
     let limit = builder.add_limit(sort, LimitSpec::fetch(2)).unwrap();
     let plan = builder.finish_with_host_sink(limit).unwrap();
-    let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -408,7 +416,8 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
 }
 
 fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_mixed_join() {
-    let runtime = backend_runtime();
+    let context = backend_context_with_grant_and_planning_policy(1024 * 1024, planning_policy_with_large_build_rows(3));
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-large-keyed-inner-residual-one-shot");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -420,8 +429,8 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_m
         Field::new("category", DataType::Utf8, false),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left =
@@ -443,7 +452,6 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_m
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(join).unwrap();
-    let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -544,7 +552,9 @@ fn bounded_native_query_executes_or_residual_with_mixed_join() {
 }
 
 fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() {
-    let runtime = backend_runtime();
+    let context =
+        backend_context_with_grant_and_planning_policy(512 * 1024 * 1024, planning_policy_with_large_build_rows(3));
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-partitioned-mixed-stream-aggregate");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -559,8 +569,8 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
         Field::new("line_count", DataType::Int64, false),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left =
@@ -601,7 +611,6 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(aggregate).unwrap();
-    let context = backend_context_with_grant(512 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -631,7 +640,8 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
 }
 
 fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
-    let runtime = backend_runtime();
+    let context = backend_context_with_grant_and_planning_policy(1024 * 1024, planning_policy_with_large_build_rows(3));
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-q72-left-stream-aggregate");
     let left_path = dir.join("catalog_sales.parquet");
     let right_path = dir.join("catalog_returns.parquet");
@@ -652,8 +662,8 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
         Field::new("line_count", DataType::Int64, false),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left =
@@ -707,7 +717,6 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(aggregate).unwrap();
-    let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -797,7 +806,8 @@ fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filt
 }
 
 fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_null_padding() {
-    let runtime = backend_runtime();
+    let context = backend_context_with_grant_and_planning_policy(1024 * 1024, planning_policy_with_large_build_rows(3));
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-large-keyed-left-partitioned-hash");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -809,8 +819,8 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
         Field::new("category", DataType::Utf8, true),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left =
@@ -841,7 +851,6 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(sort).unwrap();
-    let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -872,7 +881,8 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
 }
 
 fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_null_padding() {
-    let runtime = backend_runtime();
+    let context = backend_context_with_grant_and_planning_policy(1024 * 1024, planning_policy_with_large_build_rows(3));
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-large-keyed-full-partitioned-hash");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -885,8 +895,8 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
         Field::new("category", DataType::Utf8, true),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left =
@@ -919,7 +929,6 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(sort).unwrap();
-    let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -977,15 +986,18 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
 
 #[test]
 fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_aggregate() {
-    let context = backend_context_with_memory_and_scheduler_policy(
-        MemoryControlPolicy {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        },
-        SourceSchedulerPolicy::new(3),
+    let (policy, device_budget_bytes) = BackendTestPolicy::from_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let context = backend_context_with_policy_and_grant(
+        policy
+            .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
+            .with_planning_policy(planning_policy_with_large_build_rows(3)),
+        Some(device_budget_bytes),
     );
     let runtime = Arc::new(context.runtime().unwrap());
     let dir = unique_temp_dir("query-engine-bounded-direct-aggregate-stream");
@@ -1002,8 +1014,8 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
         Field::new("order_count", DataType::Int64, false),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(
@@ -1090,13 +1102,16 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
 fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate() {
     // One row group per read gives the partitioned join several probe pieces,
     // and each piece reaches the aggregate as one frame.
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
-        device_budget_bytes: 8 * 1024 * 1024 * 1024,
-        max_source_chunk_bytes: 1,
-        max_row_groups_per_chunk: 1,
-        max_retry_attempts: 1,
-        min_retry_chunk_row_groups: 1,
-    });
+    let context = backend_context_with_memory_control_and_planning_policy(
+        MemoryControlPolicy {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        },
+        planning_policy_with_large_build_rows(3),
+    );
     let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-one-shot-filtered-aggregate-stream");
     let left_path = dir.join("lineitem.parquet");
@@ -1114,8 +1129,8 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         Field::new("order_count", DataType::Int64, false),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(

@@ -85,10 +85,6 @@ fn source_adjacent_cases() {
             "bounded_joins::root_joins::hash::source_adjacent::bounded_native_query_streams_source_adjacent_filter_projection_into_hash_build",
             bounded_native_query_streams_source_adjacent_filter_projection_into_hash_build,
         ),
-        (
-            "bounded_joins::root_joins::hash::source_adjacent::bounded_native_query_streams_source_adjacent_filter_projection_into_partitioned_probe_materialization",
-            bounded_native_query_streams_source_adjacent_filter_projection_into_partitioned_probe_materialization,
-        ),
     ]);
 }
 
@@ -494,8 +490,14 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_buil
     fs::remove_dir_all(dir).unwrap();
 }
 
+// Its planning policy differs from the table's, so it runs in its own process.
+#[test]
 fn bounded_native_query_streams_source_adjacent_filter_projection_into_partitioned_probe_materialization() {
-    let runtime = backend_runtime();
+    let context = backend_context_with_grant_and_planning_policy(
+        8 * 1024 * 1024 * 1024,
+        planning_policy_with_large_build_rows(3),
+    );
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-one-shot-probe-streamed-source-unary");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -506,8 +508,8 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_partition
         Field::new("category", DataType::Utf8, false),
     ]));
 
-    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
-    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row build is large under the policy's build-row threshold.
+    let right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(
@@ -538,7 +540,6 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_partition
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(join).unwrap();
-    let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

@@ -4,6 +4,7 @@ use ::cudf::testing::device_copy;
 use arrow::array::{BooleanArray, Int64Array, StringArray};
 use cudf::testing::run_named_cases;
 use query_planning::{
+    capability::KeyedHashJoinStrategyOptions,
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::SortStrategy,
     policy::PlanningPolicy,
@@ -909,8 +910,7 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
             Arc::clone(&kv_schema),
         )
         .unwrap();
-    let mut build_file = enrich_fixture_local_parquet_file(LocalParquetFile::new(&build_path));
-    build_file.row_group_rows = Some(vec![100_000_000]);
+    let build_file = enrich_fixture_local_parquet_file(LocalParquetFile::new(&build_path));
     let b2 = builder.add_source(SourceNode::LocalParquet(NativeLocalParquetSource::from_files(
         vec![build_file],
         Arc::clone(&build_schema),
@@ -934,13 +934,15 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(join2).unwrap();
-    let decision = admit(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        PlanningPolicy::default(),
-        rapids_analysis_context(PlanningPolicy::default()),
-    )
-    .expect("partitioned chain admission should not error");
+    // The two-row build is large under this build-row threshold.
+    let policy = PlanningPolicy {
+        keyed_hash_join: KeyedHashJoinStrategyOptions::default()
+            .with_small_reusable_hash_build_row_threshold(1)
+            .with_large_keyed_hash_build_row_threshold(2),
+        ..PlanningPolicy::default()
+    };
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), policy, rapids_analysis_context(policy))
+        .expect("partitioned chain admission should not error");
     let admission = decision.admission().expect("partitioned chain uses compiled admission");
     let pipeline = admission.pipeline().clone();
     let runtime = shared_runtime(suite_backend::Runtime::new().expect("partitioned chain runtime"));
