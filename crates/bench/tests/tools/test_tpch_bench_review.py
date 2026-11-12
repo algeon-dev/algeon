@@ -16,8 +16,8 @@ BASE_COLUMNS = [
     "cpu_runtime_started", "native_runtime_started", "runtime_outcome",
     "cpu_failure_code", "runtime_failure_code", "runtime_failure_kind",
     "runtime_failure_operation", "runtime_failure_facts", "parity_status",
-    "cpu_wall_ms", "native_wall_ms", "speedup_vs_cpu",
-    "resident_dataframe_peak_bytes", "allocator_high_water_bytes",
+    "cpu_wall_ms", "native_wall_ms", "cpu_wall_ms_samples", "native_wall_ms_samples",
+    "speedup_vs_cpu", "resident_dataframe_peak_bytes", "allocator_high_water_bytes",
     "max_task_observed_peak_bytes", "max_task_retained_bytes",
     "runtime_operator_class", "retry_count", "retry_resource_exhausted_count",
     "source_read_time_ms", "operator_time_ms", "final_merge_time_ms",
@@ -39,6 +39,7 @@ DEFAULTS = {
     "planning_outcome": "selected", "post_native_execution_path": "native",
     "runtime_outcome": "succeeded", "parity_status": "matched",
     "cpu_wall_ms": "not_run", "native_wall_ms": "not_run", "speedup_vs_cpu": "not_run",
+    "cpu_wall_ms_samples": "not_run", "native_wall_ms_samples": "not_run",
 }
 
 
@@ -101,6 +102,33 @@ class TpchBenchReviewTest(unittest.TestCase):
         self.assertIn("q02", result.stdout)
         self.assertIn("datafusion", result.stdout)
         self.assertIn("disposition=datafusion", result.stdout)
+
+    def test_first_iteration_and_median_of_rest_come_from_sample_columns(self) -> None:
+        module = load_module()
+        rows = [
+            make_row(query_id="q01", cpu_wall_ms="30", native_wall_ms="10", speedup_vs_cpu="3",
+                     cpu_wall_ms_samples="60.000,20.000,40.000,30.000",
+                     native_wall_ms_samples="25.000,5.000,7.000"),
+            make_row(query_id="q02", cpu_wall_ms="20", native_wall_ms="5", speedup_vs_cpu="4",
+                     cpu_wall_ms_samples="20.000", native_wall_ms_samples="5.000"),
+            make_row(query_id="q03", cpu_wall_ms="20", native_wall_ms="not_run",
+                     speedup_vs_cpu="not_run"),
+        ]
+        records, _ = module.summarize({}, rows, 2.0)
+        self.assertEqual((records[0]["cpu_first"], records[0]["cpu_rest"]), (60.0, 30.0))
+        self.assertEqual((records[0]["gpu_first"], records[0]["gpu_rest"]), (25.0, 6.0))
+        self.assertEqual((records[1]["cpu_first"], records[1]["cpu_rest"]), (20.0, None))
+        self.assertEqual((records[2]["gpu_first"], records[2]["gpu_rest"]), (None, None))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tsv = Path(tmp) / "tpch.tsv"
+            write_tsv(tsv, rows)
+            result = run_tool(tsv, "--pretty", "never", "--width", "300")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gpu_med2+", result.stdout)
+        q01 = next(line for line in result.stdout.splitlines() if line.startswith("q01"))
+        self.assertEqual(q01.split()[5:9], ["60.0", "30.0", "25.0", "6.0"])
 
     def test_unknown_memory_is_reported_unknown_not_zero(self) -> None:
         module = load_module()
