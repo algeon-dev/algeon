@@ -108,6 +108,41 @@ build-before-probe barrier. The
 [pipeline compiler](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-planning/src/pipeline/compile.rs)
 owns these task and resource relationships.
 
+### Shared probe inputs {/* #shared-probe-inputs */}
+
+A node read by several joins is collected into one device frame, and that frame
+stays resident until its last reader finishes. The `stream_fanout_replay` rule
+copies such a node's subtree once for each join when three conditions hold:
+each reader is a join probe that pulls its input chunk by chunk under every
+strategy that can run the join, the node has no other reader, and the subtree
+contains only scans, filters, projections and inner joins without residuals.
+Each join then streams its own copy, and the attempt repeats the scan and
+filter work.
+
+When a reading join has a residual predicate, the rule compares the node's
+conservative row and byte estimates with the large-build thresholds of
+`KeyedHashJoinStrategyOptions`, by default 64,000,000 rows or 8 GiB. Keyed hash
+join strategy choice partitions a build above either threshold, and the rule
+replays a shared node of that size. Below both thresholds, and for a node with
+neither estimate, the node stays shared. A filter keeps its input's estimate;
+the comparison counts the rows a scan selects before its predicate.
+
+TPC-H Q21 shows both outcomes. At SF10 and larger scales, an inner join and an
+anti join with a residual both probe its filtered `lineitem` scan. At SF10 the
+scan selects about 60
+million rows and stays shared; replaying it at that scale read 4,656 row groups
+in about 450 ms, against 3,189 row groups in 314 ms when shared. At SF1000 one
+shared frame would need about 3.8 billion rows, more than the 2^31 - 1 rows a
+cuDF column holds, and the rule replays the scan.
+
+The rule's planning report row lists `estimated_rows`, `estimated_bytes` and
+the two thresholds for each candidate, with a `selection_basis`
+(`residual_free_consumers`, `conservative_rows` or `conservative_bytes`) when
+the node is selected and a `rejected_reason` when it stays shared. A node kept
+shared for size reports `ResidualConsumerBelowLargeBuild` or
+`ResidualConsumerUnestimated`. A selected node outside the subtree the sink
+reaches reports `NotReachableFromSink`.
+
 ### Shared resident subplans {/* #shared-resident-subplans */}
 
 When DataFusion inlines a CTE or common subquery across physical units,

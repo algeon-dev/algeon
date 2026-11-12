@@ -43,9 +43,10 @@ use query_planning::{
         SharedResidentExtractionDecision, SharedResidentExtractionDiagnostics, SharedResidentExtractionReason,
         SharedResidentPlan, SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions,
         SharedSubplanMaterializationRejectedReason, SingleDistinctAggregateSplitDiagnostics,
-        SingleDistinctAggregateSplitOptions, StreamFanoutReplayDiagnostics, apply_dimension_derived_pruning_with_stats,
-        dimension_key_filter_from_batch, discover_dimension_derived_pruning_requests, local_parquet_source,
-        optimize_query_plan, seed_dimension_derived_reader_predicates,
+        SingleDistinctAggregateSplitOptions, StreamFanoutReplayDiagnostics, StreamFanoutReplayRejectedReason,
+        apply_dimension_derived_pruning_with_stats, dimension_key_filter_from_batch,
+        discover_dimension_derived_pruning_requests, local_parquet_source, optimize_query_plan,
+        seed_dimension_derived_reader_predicates,
     },
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,

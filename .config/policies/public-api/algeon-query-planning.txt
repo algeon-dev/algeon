@@ -1373,6 +1373,10 @@ pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::Multi
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::NonColumnAggregateArgument
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::NonDecomposableAggregate
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::UnresolvedSchema
+pub enum query_planning::optimizer::StreamFanoutReplayRejectedReason
+pub query_planning::optimizer::StreamFanoutReplayRejectedReason::NotReachableFromSink
+pub query_planning::optimizer::StreamFanoutReplayRejectedReason::ResidualConsumerBelowLargeBuild
+pub query_planning::optimizer::StreamFanoutReplayRejectedReason::ResidualConsumerUnestimated
 pub struct query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics
 pub query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics::aggregate_node_id: query_planning::plan::NodeId
 pub query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics::applied: bool
@@ -1722,6 +1726,7 @@ pub fn query_planning::optimizer::SingleDistinctAggregateSplitOptions::default()
 pub struct query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::applied: bool
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::consumer_count: usize
+pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::rejected_reason: core::option::Option<query_planning::optimizer::StreamFanoutReplayRejectedReason>
 pub struct query_planning::optimizer::StreamFanoutReplayDiagnostics
 pub query_planning::optimizer::StreamFanoutReplayDiagnostics::applied_count: usize
 pub query_planning::optimizer::StreamFanoutReplayDiagnostics::candidates: alloc::vec::Vec<query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics>

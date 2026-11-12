@@ -2,25 +2,31 @@
 //! that streams it.
 //!
 //! The rule matches a node whose only consumers are the probe inputs of two or
-//! more joins without residuals, where every strategy that can run each join
-//! pulls its probe chunk by chunk, and whose subtree is sources, filters,
-//! projections and residual-free inner joins. In the rewrite, the subtree is
-//! cloned once per consuming join, so each join streams its own copy. As a
-//! precondition, the clones compute the same rows, so results are unchanged; the
-//! trade is repeated scan and filter work for streaming. A resident resource with
+//! more joins, where every strategy that can run each join pulls its probe
+//! chunk by chunk, and whose subtree is sources, filters, projections and
+//! residual-free inner joins. In the rewrite, the subtree is cloned once per
+//! consuming join, so each join streams its own copy. As a precondition, the
+//! clones compute the same rows, so results are unchanged; the trade is
+//! repeated scan and filter work for streaming. A resident resource with
 //! several consumers is collected into one frame (`ResourceSharing`), which would
 //! hold the whole probe side in device memory and serialize the joins behind it.
-//! Every clone keeps the facts of the node it copies. The clones have no image
-//! in the rewrite origin, so routes into the replayed subtree are dropped and
-//! rediscovered by the late route discovery pass.
+//! When any consuming join has a residual, the node is replayed only when its
+//! conservative row or byte estimate reaches the large-build threshold of
+//! [`KeyedHashJoinStrategyOptions`]; below it, or without an estimate, it stays
+//! shared. Every clone keeps the facts of the node it copies. The clones have
+//! no image in the rewrite origin, so routes into the replayed subtree are
+//! dropped and rediscovered by the late route discovery pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{consumers_by_node, rewrite};
 use crate::{
-    capability::{classify_join, join_probe_streams_chunks},
+    capability::{KeyedHashJoinStrategyOptions, classify_join, join_probe_streams_chunks},
     error::Result,
-    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan, RewrittenNodes},
+    plan::{
+        JoinNode, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan, RewrittenNodes,
+        estimated_output_bytes, estimated_output_rows,
+    },
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -80,10 +86,58 @@ pub struct StreamFanoutReplayCandidateDiagnostics {
     /// Number of direct consumers of the shared producer node.
     pub consumer_count: usize,
     pub(crate) join_probe_consumer_node_ids: Vec<NodeId>,
-    /// True when the returned plan duplicates the producer subtree. A
-    /// candidate is rejected only when it lies outside the sink-reachable
-    /// subtree.
+    /// Conservative row estimate of the shared producer node, if known.
+    pub(crate) estimated_rows: Option<u64>,
+    /// Conservative byte estimate of the shared producer node, if known.
+    pub(crate) estimated_bytes: Option<u64>,
+    /// Large-build row threshold the estimate is compared with when a
+    /// consuming join has a residual.
+    pub(crate) large_build_rows: u64,
+    /// Large-build byte threshold the estimate is compared with when a
+    /// consuming join has a residual.
+    pub(crate) large_build_bytes: u64,
+    /// Evidence that selected the producer for replay, when it was selected.
+    pub(crate) selection_basis: Option<StreamFanoutReplaySelectionBasis>,
+    /// True when the returned plan duplicates the producer subtree.
     pub applied: bool,
+    /// Why the returned plan keeps the producer shared, when it does.
+    pub rejected_reason: Option<StreamFanoutReplayRejectedReason>,
+}
+
+/// Evidence that selected a shared producer for replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamFanoutReplaySelectionBasis {
+    /// No consuming join has a residual, so the producer is replayed at any size.
+    ResidualFreeConsumers,
+    /// The conservative row estimate reaches the large-build row threshold.
+    ConservativeRows,
+    /// The conservative byte estimate reaches the large-build byte threshold.
+    ConservativeBytes,
+}
+
+impl StreamFanoutReplaySelectionBasis {
+    /// Stable diagnostic string for this basis.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ResidualFreeConsumers => "residual_free_consumers",
+            Self::ConservativeRows => "conservative_rows",
+            Self::ConservativeBytes => "conservative_bytes",
+        }
+    }
+}
+
+/// Reasons a shared producer stays shared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFanoutReplayRejectedReason {
+    /// The producer was selected but lies outside the subtree the sink reaches,
+    /// so no reader copied it.
+    NotReachableFromSink,
+    /// A consuming join has a residual, and the producer's conservative row and
+    /// byte estimates stay below the large-build thresholds.
+    ResidualConsumerBelowLargeBuild,
+    /// A consuming join has a residual, and the producer has neither a
+    /// conservative row nor a conservative byte estimate.
+    ResidualConsumerUnestimated,
 }
 
 pub(crate) struct StreamFanoutReplayResult {
@@ -95,6 +149,7 @@ pub(crate) struct StreamFanoutReplayResult {
 pub(crate) fn optimize_stream_fanout_replay(
     plan: QueryPlan,
     options: &StreamFanoutReplayOptions,
+    join_options: &KeyedHashJoinStrategyOptions,
 ) -> Result<StreamFanoutReplayResult> {
     if !options.enabled {
         return Ok(StreamFanoutReplayResult {
@@ -113,7 +168,20 @@ pub(crate) fn optimize_stream_fanout_replay(
         });
     }
 
-    let fanout_nodes = candidates.keys().copied().collect::<BTreeSet<_>>();
+    let selections = candidates
+        .iter()
+        .map(|(fanout_node_id, candidate)| {
+            let estimated_rows = estimated_output_rows(&plan, *fanout_node_id);
+            let estimated_bytes = estimated_output_bytes(&plan, *fanout_node_id);
+            let selection =
+                replay_selection(estimated_rows, estimated_bytes, candidate.residual_consumer, join_options);
+            (*fanout_node_id, (estimated_rows, estimated_bytes, selection))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let fanout_nodes = selections
+        .iter()
+        .filter_map(|(fanout_node_id, (_, _, selection))| selection.is_ok().then_some(*fanout_node_id))
+        .collect::<BTreeSet<_>>();
     let mut rewriter = StreamFanoutReplayRewriter::new(&plan, fanout_nodes);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     let applied_fanouts = rewriter.applied_fanouts;
@@ -122,18 +190,30 @@ pub(crate) fn optimize_stream_fanout_replay(
 
     let mut diagnostics = StreamFanoutReplayDiagnostics::default();
     let direct_consumers = consumers_by_node(&plan);
-    for (fanout_node_id, join_probe_consumer_node_ids) in candidates {
+    for (fanout_node_id, candidate) in candidates {
         diagnostics.considered_count += 1;
+        let (estimated_rows, estimated_bytes, selection) = selections[&fanout_node_id];
         let applied = applied_fanouts.contains(&fanout_node_id);
         if applied {
             diagnostics.applied_count += 1;
         }
+        let rejected_reason = match selection {
+            Ok(_) if applied => None,
+            Ok(_) => Some(StreamFanoutReplayRejectedReason::NotReachableFromSink),
+            Err(reason) => Some(reason),
+        };
         diagnostics.candidates.push(StreamFanoutReplayCandidateDiagnostics {
             rule_name: STREAM_FANOUT_REPLAY_RULE_NAME,
             fanout_node_id,
             consumer_count: direct_consumers[&fanout_node_id].len(),
-            join_probe_consumer_node_ids,
+            join_probe_consumer_node_ids: candidate.join_probe_consumer_node_ids,
+            estimated_rows,
+            estimated_bytes,
+            large_build_rows: join_options.large_keyed_hash_build_row_threshold(),
+            large_build_bytes: join_options.large_keyed_hash_build_bytes_threshold(),
+            selection_basis: selection.ok(),
             applied,
+            rejected_reason,
         });
     }
 
@@ -225,12 +305,20 @@ enum CloneMode {
     Fresh,
 }
 
-/// Fanout nodes to replay, each with the joins that probe it. A node with any
-/// consumer other than a streaming probe is excluded, because that consumer
-/// would still need the shared frame.
-fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
+/// A shared node whose consumers all stream it as their probe input.
+#[derive(Default)]
+struct ReplayCandidate {
+    join_probe_consumer_node_ids: Vec<NodeId>,
+    /// Whether any consuming join has a residual predicate.
+    residual_consumer: bool,
+}
+
+/// Fanout nodes the rule considers, each with the joins that probe it. A node
+/// with any consumer other than a streaming probe is excluded, because that
+/// consumer would still need the shared frame.
+fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, ReplayCandidate> {
     let direct_consumers = consumers_by_node(plan);
-    let mut probe_consumers = BTreeMap::<NodeId, Vec<NodeId>>::new();
+    let mut probe_consumers = BTreeMap::<NodeId, ReplayCandidate>::new();
     for node in plan.nodes() {
         let PlanNode::Join(join) = &node.kind else {
             continue;
@@ -239,12 +327,15 @@ fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
             continue;
         }
         let probe_input = join.inputs[probe_input_index(join)];
-        probe_consumers.entry(probe_input).or_default().push(node.id);
+        let candidate = probe_consumers.entry(probe_input).or_default();
+        candidate.join_probe_consumer_node_ids.push(node.id);
+        candidate.residual_consumer |= join.spec.residual_predicate.is_some();
     }
 
     probe_consumers
         .into_iter()
-        .filter(|(producer, consumers)| {
+        .filter(|(producer, candidate)| {
+            let consumers = &candidate.join_probe_consumer_node_ids;
             consumers.len() > 1
                 && direct_consumers.get(producer).is_some_and(|all_consumers| all_consumers.len() == consumers.len())
                 && stream_replayable_subtree(plan, *producer)
@@ -253,14 +344,43 @@ fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
 }
 
 /// Whether the join's probe pulls its input chunk by chunk under every
-/// strategy that can execute it. Joins with a residual stay out of the rule
-/// even when their probe streams: replaying the shared lineitem probe of
-/// TPC-H SF10 Q21's residual semi and anti joins read 4656 row groups and took
-/// about 450 ms, compared with 3189 row groups and 314 ms without replay.
+/// strategy that can execute it.
 fn join_probe_stream_capable(node_id: NodeId, join: &JoinNode) -> bool {
-    join.spec.residual_predicate.is_none()
-        && classify_join(node_id, join)
-            .is_ok_and(|form| form.strategies().iter().all(|strategy| join_probe_streams_chunks(join, form, *strategy)))
+    classify_join(node_id, join)
+        .is_ok_and(|form| form.strategies().iter().all(|strategy| join_probe_streams_chunks(join, form, *strategy)))
+}
+
+/// Decides whether a candidate is replayed.
+///
+/// A residual consumer keeps a small producer shared: replaying the shared
+/// lineitem probe of TPC-H SF10 Q21's residual semi and anti joins read 4656
+/// row groups and took about 450 ms, compared with 3189 row groups and 314 ms
+/// without replay. A shared producer is collected into one device frame that
+/// stays resident until its last consumer finishes, and the concatenation
+/// that builds it holds the chunks and the frame at once. The large-build
+/// threshold bounds the same single-frame residency for a hash build, so above
+/// it the rule trades rescans for that memory. Q21's filtered lineitem at
+/// SF1000 is about 3.8 billion rows, beyond cuDF's 2^31 - 1 row limit for one
+/// frame.
+fn replay_selection(
+    estimated_rows: Option<u64>,
+    estimated_bytes: Option<u64>,
+    residual_consumer: bool,
+    join_options: &KeyedHashJoinStrategyOptions,
+) -> std::result::Result<StreamFanoutReplaySelectionBasis, StreamFanoutReplayRejectedReason> {
+    if !residual_consumer {
+        return Ok(StreamFanoutReplaySelectionBasis::ResidualFreeConsumers);
+    }
+    if estimated_rows.is_some_and(|rows| join_options.rows_reach_large_build(rows)) {
+        return Ok(StreamFanoutReplaySelectionBasis::ConservativeRows);
+    }
+    if estimated_bytes.is_some_and(|bytes| join_options.bytes_reach_large_build(bytes)) {
+        return Ok(StreamFanoutReplaySelectionBasis::ConservativeBytes);
+    }
+    if estimated_rows.is_none() && estimated_bytes.is_none() {
+        return Err(StreamFanoutReplayRejectedReason::ResidualConsumerUnestimated);
+    }
+    Err(StreamFanoutReplayRejectedReason::ResidualConsumerBelowLargeBuild)
 }
 
 fn probe_input_index(join: &JoinNode) -> usize {

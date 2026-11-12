@@ -68,6 +68,16 @@ impl KeyedHashJoinStrategyOptions {
         self.large_keyed_hash_build_bytes_threshold
     }
 
+    /// Whether a row count reaches the large-build row threshold.
+    pub(crate) fn rows_reach_large_build(&self, rows: u64) -> bool {
+        rows >= self.large_keyed_hash_build_row_threshold
+    }
+
+    /// Whether a byte count reaches the large-build byte threshold.
+    pub(crate) fn bytes_reach_large_build(&self, bytes: u64) -> bool {
+        bytes >= self.large_keyed_hash_build_bytes_threshold
+    }
+
     /// Probe byte threshold used when considering partitioned execution.
     pub fn large_keyed_hash_probe_bytes_threshold(&self) -> u64 {
         self.large_keyed_hash_probe_bytes_threshold
@@ -602,9 +612,9 @@ pub fn keyed_hash_join_build_is_large(
     input: &KeyedHashJoinStrategyInputFacts,
     options: &KeyedHashJoinStrategyOptions,
 ) -> bool {
-    input.observed_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
-        || input.estimated_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
-        || input.build_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_build_bytes_threshold)
+    input.observed_build_rows.is_some_and(|rows| options.rows_reach_large_build(rows))
+        || input.estimated_build_rows.is_some_and(|rows| options.rows_reach_large_build(rows))
+        || input.build_side_bytes.is_some_and(|bytes| options.bytes_reach_large_build(bytes))
 }
 
 /// Whether measuring build-key uniqueness could move a keyed left join from
