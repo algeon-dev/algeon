@@ -84,7 +84,7 @@ impl<'a> BoundedExecutionAttempt<'a> {
         let ledger = self.retained_join_tables.as_ref()?;
         ledger
             .retained_bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |retained| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |retained| {
                 retained.checked_add(bytes).filter(|total| *total <= ledger.cap_bytes)
             })
             .ok()?;
