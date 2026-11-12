@@ -141,11 +141,24 @@ query domain and count against its grant like any other allocation. In
 addition, the tables an attempt keeps at one time total at most a quarter of
 its grant. Each table is charged at cuDF's pre-build size plus the key columns
 the table copies, before it is built. A partition whose charge does not fit
-keeps no table, and each probe piece builds one for it and drops it after the
-pair. When the allocator rejects a kept table, that partition and the ones
-after it keep none. The tables are released with the build partitions when the
-probe stream ends, stops early or fails, and their charge returns to the
+keeps no table. When the allocator rejects a kept table, that partition and the
+ones after it keep none. The tables are released with the build partitions when
+the probe stream ends, stops early or fails, and their charge returns to the
 attempt then.
+
+A partition without a kept table holds its probe rows until they form a batch.
+The held rows are copies in the query domain. The rows that the attempt's joins
+hold at one time total at most one partitioned-join target, a sixteenth of the
+grant clamped to between 128 MiB and 8 GiB. For a grant of 2 GiB or more, kept
+tables and held rows together take at most five sixteenths of it across probe
+pieces. Joining one batch adds its concatenated copy, at most one more target,
+a table over one build partition, which the partition count sizes to about
+one target, and the batch's gather maps and output. These and the current probe
+piece use the rest of the grant. When the allocator rejects part of that work,
+the batch retries like any partition pair, by splitting its probe rows or
+repartitioning the pair. Held rows are released when their batch is joined, or
+with the probe state when the stream stops early or fails. Execution lanes keep
+no tables and hold no rows; they return their rows to the coordinator.
 
 ## Completion and resident data {/* #resident-handoff-and-release */}
 
