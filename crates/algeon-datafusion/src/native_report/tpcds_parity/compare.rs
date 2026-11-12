@@ -254,12 +254,7 @@ fn sort_tied_rows(rows: &mut [Vec<CanonicalField>], keys: &[ParitySortKey]) {
     while start < rows.len() {
         let mut end = start + 1;
         // Approximate float equality is not transitive and cannot define a tie group.
-        while end < rows.len()
-            && keys.iter().all(|key| {
-                !matches!(rows[start][key.column], CanonicalField::Unsupported(_))
-                    && rows[start][key.column] == rows[end][key.column]
-            })
-        {
+        while end < rows.len() && keys.iter().all(|key| rows[start][key.column] == rows[end][key.column]) {
             end += 1;
         }
         rows[start..end].sort();
@@ -273,9 +268,6 @@ fn float_key_inversion(rows: &[Vec<CanonicalField>], keys: &[ParitySortKey]) -> 
         for key in keys {
             let before = &pair[0][key.column];
             let after = &pair[1][key.column];
-            if matches!(before, CanonicalField::Unsupported(_)) {
-                break;
-            }
             if before == after {
                 continue;
             }
