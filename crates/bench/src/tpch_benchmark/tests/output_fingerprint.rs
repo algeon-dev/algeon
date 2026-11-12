@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use algeon_datafusion::native_report::bench_support::{ParityRowOrdering, ParitySortKey};
 use arrow::{
-    array::{ArrayRef, Decimal128Array, Float64Array, Int32Array, StringArray},
-    datatypes::{DataType, Field, Schema},
+    array::{ArrayRef, Decimal128Array, Float64Array, Int32Array, StringArray, Time64MicrosecondArray},
+    datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use datafusion::prelude::SessionContext;
@@ -144,6 +144,17 @@ fn parity_applies_float_tolerance_only_to_float_values() {
         single_batch_parity(&decimal_batch(12_345_678_901_234), &decimal_batch(12_345_678_901_235)),
         validation::ParityStatus::Mismatched
     );
+}
+
+#[test]
+fn parity_does_not_match_values_of_a_type_it_cannot_compare() {
+    // Different Time64 values must not count as matched just because the comparator has no
+    // canonical form for the type.
+    let time_batch = |value: i64| {
+        let schema = Arc::new(Schema::new(vec![Field::new("t", DataType::Time64(TimeUnit::Microsecond), false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Time64MicrosecondArray::from(vec![value])) as ArrayRef]).unwrap()
+    };
+    assert_eq!(single_batch_parity(&time_batch(1), &time_batch(2)), validation::ParityStatus::Mismatched);
 }
 
 #[tokio::test]

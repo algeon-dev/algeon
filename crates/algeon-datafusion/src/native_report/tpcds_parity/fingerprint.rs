@@ -120,9 +120,5 @@ pub(super) fn hash_field(hasher: &mut StableFnv1a64, field: &CanonicalField) {
             hasher.update_field("binary");
             hasher.update_bytes(bytes);
         },
-        CanonicalField::Unsupported(text) => {
-            hasher.update_field("unsupported");
-            hasher.update_field(text);
-        },
     }
 }
