@@ -1422,6 +1422,7 @@ fn join_strategy_label(join: &JoinOperatorMetrics) -> &'static str {
         "bounded_partitioned_hash_equi_join" => "partitioned_hash_equi",
         "bounded_partitioned_mixed_keyed_residual_join" => "partitioned_mixed_keyed_residual",
         "bounded_reusable_hash_join" | "hash_join" => "reusable_hash_equi",
+        "bounded_hash_left_match_join" => "hash_left_match",
         "bounded_reusable_filtered_join" => "filtered_join",
         "bounded_mixed_keyed_residual_join" | "mixed_join" => "mixed_keyed_residual",
         "bounded_keyless_conditional_join" | "conditional_join" => "keyless_conditional",
@@ -1432,7 +1433,7 @@ fn join_strategy_label(join: &JoinOperatorMetrics) -> &'static str {
 
 fn join_runtime_counters(join: &JoinOperatorMetrics) -> JoinRuntimeCounters {
     match join_strategy_label(join) {
-        "reusable_hash_equi" => JoinRuntimeCounters {
+        "reusable_hash_equi" | "hash_left_match" => JoinRuntimeCounters {
             hash_join_build_count: u64::from(join.hash_table_bytes > 0),
             hash_join_hash_table_bytes: join.hash_table_bytes,
             ..Default::default()

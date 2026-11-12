@@ -56,7 +56,10 @@ use std::{
 };
 
 mod dataframe;
-pub use dataframe::{DataFrameMixedLeftJoinFinalized, DataFrameMixedLeftJoinState};
+pub use dataframe::{
+    DataFrameHashLeftMatchFinalized, DataFrameHashLeftMatchState, DataFrameMixedLeftJoinFinalized,
+    DataFrameMixedLeftJoinState,
+};
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use dataframe::{
     trigger_merge_reassembly_key_count_error_for_test, trigger_projected_cross_join_input_row_limit_for_test,

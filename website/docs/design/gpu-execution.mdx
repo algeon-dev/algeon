@@ -65,9 +65,13 @@ takes no route on either input. Only single-key joins under
 `NullsDoNotMatch` produce a key route. Native execution builds the right input
 of every keyed left outer and mark join. Build-side selection may move a keyed
 semi or anti join's build to its left input, and the route then reduces the
-right input. A key route at a left outer or mark join, or at an anti join that
-builds its right input, would consume the left input and is rejected as
-`UnsupportedJoinShape`.
+right input. A join built on its left input keeps one match flag per left row:
+each right chunk marks the left rows it matches and is released, and the
+output is one gather of the marked rows for a semi join or the unmarked rows
+for an anti join. The join retains no right chunk after marking it. A
+null-aware anti join always builds its right input. A key route at a left
+outer or mark join, or at an anti join that builds its right input, would
+consume the left input and is rejected as `UnsupportedJoinShape`.
 
 Integer bounds and distinct counts classify empty, dense range, small-IN-list
 and larger exact keysets without copying the key column to the host. Resident

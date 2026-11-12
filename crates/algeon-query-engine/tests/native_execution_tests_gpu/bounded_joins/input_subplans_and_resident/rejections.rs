@@ -40,7 +40,8 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
             left,
             right,
             JoinSpec::new(
-                JoinType::LeftSemi,
+                // Null-aware anti semantics have no executor that builds the left side.
+                JoinType::LeftAnti { null_aware: true },
                 vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
             )
             .with_output_projection(vec![
