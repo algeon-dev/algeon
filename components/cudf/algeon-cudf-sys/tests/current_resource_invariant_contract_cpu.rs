@@ -148,10 +148,13 @@ fn rmm_device_stream_allocations_use_explicit_memory_resource() {
                 continue;
             }
             let statement = statement_from(&lines, index);
+            // `observed_mr_ref` is a state's statistics adaptor over the caller's explicit resource,
+            // used where the state reports the bytes it retains.
             if statement.contains("stream")
                 && !statement.contains("*exec->mr")
                 && !statement.contains("*exec.mr")
                 && !statement.contains("*mr_")
+                && !statement.contains("*owner->observed_mr_ref")
             {
                 let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("<unknown>");
                 violations.push(format!(
