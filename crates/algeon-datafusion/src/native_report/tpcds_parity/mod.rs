@@ -42,10 +42,10 @@ mod report;
 // Private `use` items are visible to this module and its descendants. The
 // submodules import these names with `use super::*;`.
 use canonical::{CanonicalField, collect_canonical_rows, compare_canonical_rows};
-use compare::{ParityCompareOptions, ParityRowOrdering, compare_record_batches_with_options, sql_row_ordering};
+use compare::{ParityCompareOptions, compare_record_batches_with_options, sql_row_ordering};
 pub use compare::{
-    ParityComparisonResult, compare_record_batches, sql_has_top_level_order_by,
-    sql_top_level_order_by_covers_output_columns,
+    ParityComparisonResult, ParityRowOrdering, ParitySortKey, compare_record_batches,
+    compare_record_batches_with_ordering, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
 };
 use fingerprint::{fingerprint_batches, fingerprint_rows, fingerprint_schema_only};
 pub use report::{

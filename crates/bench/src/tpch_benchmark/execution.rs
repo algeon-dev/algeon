@@ -5,7 +5,8 @@ use std::{
 };
 
 use algeon_datafusion::{
-    attempt::AttemptOptions, native_exec::below_native_admission, session::RECOMMENDED_METADATA_CACHE_LIMIT_BYTES,
+    attempt::AttemptOptions, native_exec::below_native_admission, native_report::bench_support::ParityRowOrdering,
+    session::RECOMMENDED_METADATA_CACHE_LIMIT_BYTES,
 };
 use arrow::datatypes::SchemaRef;
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
@@ -31,6 +32,16 @@ pub(super) struct QueryMeasurement {
     pub(super) output_rows: usize,
     pub(super) output_bytes: usize,
     pub(super) output_fingerprint: String,
+    pub(super) output: QueryOutput,
+}
+
+/// Output of one measured iteration, kept until the report row compares the
+/// CPU and native values. Each run keeps only its last iteration's output.
+#[derive(Debug, Clone)]
+pub(super) struct QueryOutput {
+    pub(super) schema: SchemaRef,
+    pub(super) row_ordering: ParityRowOrdering,
+    pub(super) batches: Vec<RecordBatch>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +54,7 @@ pub(super) struct TimedQueryRun {
 pub(super) struct PlannedCpuQuery {
     _ctx: SessionContext,
     plan: Arc<dyn ExecutionPlan>,
-    order_key_columns: Vec<usize>,
+    row_ordering: ParityRowOrdering,
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +111,7 @@ pub(super) struct NativeRunFailure {
 pub(super) struct PlannedNativeQuery {
     pub(super) plan: Arc<dyn ExecutionPlan>,
     pub(super) planning_row: NativeDataFusionPlanningRow,
-    pub(super) order_key_columns: Vec<usize>,
+    pub(super) row_ordering: ParityRowOrdering,
 }
 
 pub(super) async fn plan_native_query(
@@ -119,7 +130,7 @@ pub(super) async fn plan_native_query(
     let scale = dataset::register_tpch_tables(&ctx, metadata).await?;
     let df = ctx.sql(&query.sql(scale)).await?;
     let (state, logical) = df.into_parts();
-    let order_key_columns = validation::order_key_columns(&logical);
+    let row_ordering = validation::row_ordering(&logical);
     let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await?;
     let planning_report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
         query.id,
@@ -127,7 +138,7 @@ pub(super) async fn plan_native_query(
         diagnostics,
     )]);
     let planning_row = select_benchmark_planning_row(query.id, planning_report.rows)?;
-    Ok(PlannedNativeQuery { plan, planning_row, order_key_columns })
+    Ok(PlannedNativeQuery { plan, planning_row, row_ordering })
 }
 
 pub(super) fn native_optimizer_config(
@@ -303,11 +314,11 @@ pub(super) async fn run_cpu_query_iterations(
     for _ in 0..config.iterations {
         let planned = plan_cpu_query(metadata, query, config).await?;
         let schema = planned.plan.schema();
-        let order_key_columns = planned.order_key_columns.clone();
+        let row_ordering = planned.row_ordering.clone();
         let started = Instant::now();
         let batches = collect_cpu_plan_once(planned).await?;
         samples.push(started.elapsed());
-        final_measurement = Some(measure_output(&schema, &order_key_columns, &batches).map_err(cpu_started)?);
+        final_measurement = Some(measure_output(schema, row_ordering, batches).map_err(cpu_started)?);
     }
     Ok(TimedQueryRun {
         samples,
@@ -368,7 +379,7 @@ pub(super) async fn run_native_query_iterations(
         samples.push(started.elapsed());
         plan_plus_execution_samples.push(iteration_started.elapsed());
         final_measurement =
-            Some(measure_output(&schema, &planned.order_key_columns, &batches).map_err(native_started)?);
+            Some(measure_output(schema, planned.row_ordering.clone(), batches).map_err(native_started)?);
         iteration_wall_samples.push(iteration_started.elapsed());
         measured_metrics.push(metrics);
         if let (Some(dir), Some(capture)) = (artifact_dir, observation_capture) {
@@ -420,9 +431,9 @@ async fn plan_cpu_query(
     let ctx = SessionContext::new_with_config_rt(cpu_session_config(config), runtime_env);
     let scale = dataset::register_tpch_tables(&ctx, metadata).await.map_err(cpu_not_started)?;
     let df = ctx.sql(&query.sql(scale)).await.map_err(cpu_not_started)?;
-    let order_key_columns = validation::order_key_columns(df.logical_plan());
+    let row_ordering = validation::row_ordering(df.logical_plan());
     let plan = df.create_physical_plan().await.map_err(cpu_not_started)?;
-    Ok(PlannedCpuQuery { _ctx: ctx, plan, order_key_columns })
+    Ok(PlannedCpuQuery { _ctx: ctx, plan, row_ordering })
 }
 
 async fn collect_cpu_plan_once(planned: PlannedCpuQuery) -> Result<Vec<RecordBatch>, CpuRunFailure> {
@@ -468,15 +479,16 @@ pub(super) fn cpu_session_config(config: &NativeTpchBenchmarkConfig) -> SessionC
 }
 
 fn measure_output(
-    schema: &SchemaRef,
-    order_key_columns: &[usize],
-    batches: &[RecordBatch],
+    schema: SchemaRef,
+    row_ordering: ParityRowOrdering,
+    batches: Vec<RecordBatch>,
 ) -> DataFusionResult<QueryMeasurement> {
     Ok(QueryMeasurement {
         output_batches: batches.len(),
         output_rows: batches.iter().map(RecordBatch::num_rows).sum(),
         output_bytes: batches.iter().map(get_record_batch_memory_size).sum(),
-        output_fingerprint: validation::fingerprint_batches(schema, order_key_columns, batches)?,
+        output_fingerprint: validation::fingerprint_batches(&schema, &row_ordering, &batches)?,
+        output: QueryOutput { schema, row_ordering, batches },
     })
 }
 

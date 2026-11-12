@@ -1,11 +1,17 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics;
+use algeon_datafusion::{
+    native_report::bench_support::ParityRowOrdering, planner::NativeCapabilityCompiledGraphDiagnostics,
+};
+use arrow::{
+    array::StringArray,
+    datatypes::{DataType, Field, Schema},
+};
 use workloads::tpch::TpchTableMetadata;
 
 use super::*;
 use crate::tpch_benchmark::{
-    config::{NativeTpchProfileSettings, native_tpch_profile_settings_with_env},
+    config::{DEFAULT_PARITY_FLOAT_TOLERANCE, NativeTpchProfileSettings, native_tpch_profile_settings_with_env},
     reports::{NATIVE_TPCH_BENCHMARK_TSV_COLUMNS, NATIVE_TPCH_BENCHMARK_TSV_HEADER},
 };
 
@@ -116,6 +122,7 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
                 accepted_planning_row("q01"),
                 Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
                 Ok(timed_native_run("output-fnv1a64:0000000000000001")),
+                DEFAULT_PARITY_FLOAT_TOLERANCE,
             ),
             NativeTpchBenchmarkRow::not_selected("q02", not_supported_planning_row("q02")),
             NativeTpchBenchmarkRow::planning_failure(
@@ -422,12 +429,18 @@ fn benchmark_sidecar_keeps_each_planning_and_execution_sample() {
     std::fs::remove_dir_all(dir).expect("remove samples directory");
 }
 
+/// A measurement whose output is one row holding `fingerprint`, so equal
+/// fingerprints compare as matching outputs and different ones do not.
 fn query_measurement(fingerprint: &str) -> execution::QueryMeasurement {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec![fingerprint]))])
+        .expect("single-column test batch");
     execution::QueryMeasurement {
         output_batches: 1,
         output_rows: 4,
         output_bytes: 128,
         output_fingerprint: fingerprint.to_string(),
+        output: execution::QueryOutput { schema, row_ordering: ParityRowOrdering::Unordered, batches: vec![batch] },
     }
 }
 

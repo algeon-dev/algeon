@@ -53,7 +53,6 @@ pub(super) enum CanonicalField {
     Timestamp { unit: TimeUnitTag, tz: Option<String>, value: i64 },
     Utf8(String),
     Binary(Vec<u8>),
-    Unsupported(String),
 }
 
 /// Comparable timestamp unit tag, kept independent of Arrow's enum ordering.
@@ -189,7 +188,8 @@ pub(super) fn canonicalize_value(
             let array = downcast::<BinaryViewArray>(array, "BinaryViewArray")?;
             Ok(CanonicalField::Binary(array.value(row).to_vec()))
         },
-        other => Ok(CanonicalField::Unsupported(format!("{other:?}"))),
+        // Comparing an unrecognized type by its name alone would let any two values of it match.
+        other => Err(format!("no canonical value for {other:?}")),
     }
 }
 
@@ -318,7 +318,6 @@ pub(super) fn format_field_debug(field: &CanonicalField) -> String {
         CanonicalField::Timestamp { unit, tz, value } => format!("timestamp({unit:?},{tz:?}):{value}"),
         CanonicalField::Utf8(value) => format!("\"{}\"", escape_string(value)),
         CanonicalField::Binary(bytes) => format!("bytes(len={})", bytes.len()),
-        CanonicalField::Unsupported(text) => format!("unsupported({text})"),
     }
 }
 

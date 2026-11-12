@@ -1,5 +1,8 @@
 use super::*;
-use crate::{report_workload::RelationalExecutionSelection, tpch_benchmark::reports::NATIVE_TPCH_BENCHMARK_TSV_HEADER};
+use crate::{
+    report_workload::RelationalExecutionSelection,
+    tpch_benchmark::{config::DEFAULT_PARITY_FLOAT_TOLERANCE, reports::NATIVE_TPCH_BENCHMARK_TSV_HEADER},
+};
 
 #[test]
 fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resource_metrics() {
@@ -361,7 +364,13 @@ fn benchmark_report_lists_measured_wall_samples_in_run_order() {
         config,
         devices: Vec::new(),
         rows: vec![
-            NativeTpchBenchmarkRow::accepted("q03", accepted_planning_row("q03"), Ok(cpu), Ok(native)),
+            NativeTpchBenchmarkRow::accepted(
+                "q03",
+                accepted_planning_row("q03"),
+                Ok(cpu),
+                Ok(native),
+                DEFAULT_PARITY_FLOAT_TOLERANCE,
+            ),
             NativeTpchBenchmarkRow::accepted(
                 "q04",
                 accepted_planning_row("q04"),
@@ -371,6 +380,7 @@ fn benchmark_report_lists_measured_wall_samples_in_run_order() {
                     details: Box::default(),
                     runtime_started: true,
                 }),
+                DEFAULT_PARITY_FLOAT_TOLERANCE,
             ),
         ],
     };
@@ -416,6 +426,7 @@ fn benchmark_report_partitioned_join_count_sums_runtime_executions_but_status_co
             accepted_planning_row("q07"),
             Ok(timed_cpu_run("output-fnv1a64:0000000000000007")),
             Ok(native),
+            DEFAULT_PARITY_FLOAT_TOLERANCE,
         )],
     };
 
@@ -446,6 +457,7 @@ fn benchmark_report_accepted_join_rows_emit_compiled_graphs_without_decision_row
             planning,
             Ok(timed_cpu_run("output-fnv1a64:0000000000000015")),
             Ok(timed_native_run("output-fnv1a64:0000000000000015")),
+            DEFAULT_PARITY_FLOAT_TOLERANCE,
         )],
     };
 
