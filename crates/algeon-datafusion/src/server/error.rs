@@ -1399,6 +1399,33 @@ mod tests {
     }
 
     #[test]
+    fn join_concat_overflow_names_the_plan_node_build_side_and_chunk_count() {
+        let native = QueryError::new(
+            QueryErrorCode::SizeOverflow,
+            "query_engine.bounded.join.build_input_concat",
+            "secret native text naming s3://bucket/private/lineitem.parquet",
+        )
+        .with_fact("column", "l_orderkey")
+        .with_fact("element_count", 3_789_000_000_u64)
+        .with_fact("element_limit", 2_147_483_647_u64)
+        .with_fact("row_cap", 2_147_483_647_u64)
+        .with_fact("node_id", "n12")
+        .with_fact("build_side", "right")
+        .with_fact("chunk_count", 41_u64);
+        let error =
+            Error::from_native("algeon_datafusion.native_exec.execute", "Algeon native query execution failed", native);
+
+        let status = adapter_error_to_status(&error);
+
+        assert_eq!(
+            status.message(),
+            "column `l_orderkey` would hold 3789000000 elements in one relation or intermediate result (plan node n12, build side right, 41 chunks concatenated), above the limit of 2147483647 elements per column; at its width at most 2147483647 rows fit. Filter the input, or split the relation (for example a UNION ALL of calls over row ranges) so each part holds at most 2147483647 rows; retrying the same request unchanged cannot succeed"
+        );
+        assert!(client_message(&error).logged.contains("(plan node n12, build side right, 41 chunks concatenated)"));
+        assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
     fn oversized_row_group_overflow_names_the_row_group_size_that_fits() {
         let status = adapter_error_to_status(&native_element_limit_failure(&[
             ("row_group_rows", 2_897_819),
