@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -38,80 +39,12 @@ TPCH_TABLES = (
 )
 
 
-TPCH_EXPECTED_ROWS = {
-    "sf1": {
-        "customer": 150_000,
-        "lineitem": 6_001_215,
-        "nation": 25,
-        "orders": 1_500_000,
-        "part": 200_000,
-        "partsupp": 800_000,
-        "region": 5,
-        "supplier": 10_000,
-    },
-    "sf10": {
-        "customer": 1_500_000,
-        "lineitem": 59_986_052,
-        "nation": 25,
-        "orders": 15_000_000,
-        "part": 2_000_000,
-        "partsupp": 8_000_000,
-        "region": 5,
-        "supplier": 100_000,
-    },
-    "sf100": {
-        "customer": 15_000_000,
-        "lineitem": 600_037_902,
-        "nation": 25,
-        "orders": 150_000_000,
-        "part": 20_000_000,
-        "partsupp": 80_000_000,
-        "region": 5,
-        "supplier": 1_000_000,
-    },
-    "sf200": {
-        "customer": 30_000_000,
-        "lineitem": 1_200_018_434,
-        "nation": 25,
-        "orders": 300_000_000,
-        "part": 40_000_000,
-        "partsupp": 160_000_000,
-        "region": 5,
-        "supplier": 2_000_000,
-    },
-    "sf300": {
-        "customer": 45_000_000,
-        "lineitem": 1_799_989_091,
-        "nation": 25,
-        "orders": 450_000_000,
-        "part": 60_000_000,
-        "partsupp": 240_000_000,
-        "region": 5,
-        "supplier": 3_000_000,
-    },
-    # Lineitem rows are the sum of tpchgen's 1-to-7 lines-per-order draws over the
-    # 1,500,000 * SF orders, so they are not a multiple of the scale factor.
-    "sf500": {
-        "customer": 75_000_000,
-        "lineitem": 3_000_028_242,
-        "nation": 25,
-        "orders": 750_000_000,
-        "part": 100_000_000,
-        "partsupp": 400_000_000,
-        "region": 5,
-        "supplier": 5_000_000,
-    },
-    "sf1000": {
-        "customer": 150_000_000,
-        "lineitem": 5_999_989_709,
-        "nation": 25,
-        "orders": 1_500_000_000,
-        "part": 200_000_000,
-        "partsupp": 800_000_000,
-        "region": 5,
-        "supplier": 10_000_000,
-    },
-}
+# Per-scale table row counts, shared with the Rust TPC-H benchmark's dataset
+# validation. Lineitem rows are the sum of tpchgen's 1-to-7 lines-per-order draws
+# over the 1,500,000 * SF orders, so they are not a multiple of the scale factor.
+TPCH_EXPECTED_ROWS: dict[str, dict[str, int]] = json.loads(
+    Path(__file__).resolve().with_name("expected_rows.json").read_text()
+)
 
 
 def main() -> None:

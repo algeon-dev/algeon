@@ -7,7 +7,10 @@ use std::{
 
 use query_runtime::runtime::KvikioProcessConfig;
 
-use super::{NativeTpchBenchmarkConfig, NativeTpchDeviceBudget, NativeTpchRuntimeResources};
+use super::{
+    NativeTpchBenchmarkConfig, NativeTpchDeviceBudget, NativeTpchRuntimeResources, config::NATIVE_MAX_ACTIVE_ATTEMPTS,
+    execution,
+};
 
 /// Facts recorded once per benchmark run to attribute an artifact to the
 /// source revision, native build, GPU, driver, and process limits that
@@ -80,7 +83,7 @@ impl RunProvenance {
 pub(super) fn run_start_line(config: &NativeTpchBenchmarkConfig, provenance: &RunProvenance) -> String {
     let policy = config.native_memory_policy;
     let mut line = format!(
-        "[native_tpch_benchmark] stage=run_start revision={} worktree_dirty={} cudf_source_revision={} cudf_source_dirty={} cudf_install_lib_mtime_unix={} rust_profile={} driver_version={} cpu_model={} cpu_logical={} cpu_profile={} fd_soft_limit={} kvikio_compat_mode={} kvikio_threads={} kvikio_task_size_bytes={} dataset_mode={} query_count={} warmups={} iterations={} native_profile={} profile_source={} device_budget={} query_cap_bytes={} max_source_chunk_bytes={} max_row_groups_per_chunk={} source_chunk_planning_mode={} max_source_reads_in_flight={}",
+        "[native_tpch_benchmark] stage=run_start revision={} worktree_dirty={} cudf_source_revision={} cudf_source_dirty={} cudf_install_lib_mtime_unix={} rust_profile={} driver_version={} cpu_model={} cpu_logical={} cpu_profile={} cpu_target_partitions={} native_target_partitions={} fd_soft_limit={} kvikio_compat_mode={} kvikio_threads={} kvikio_task_size_bytes={} dataset_mode={} query_count={} warmups={} iterations={} native_profile={} profile_source={} device_budget={} query_cap_bytes={} max_source_chunk_bytes={} max_row_groups_per_chunk={} source_chunk_planning_mode={} max_source_reads_in_flight={} max_active_attempts={}",
         unknown_or(provenance.revision.as_deref()),
         unknown_or(provenance.worktree_dirty.map(|dirty| dirty.to_string()).as_deref()),
         unknown_or(provenance.cudf_source_revision.as_deref()),
@@ -91,6 +94,8 @@ pub(super) fn run_start_line(config: &NativeTpchBenchmarkConfig, provenance: &Ru
         unknown_or(provenance.cpu_model.as_deref().map(stable_token).as_deref()),
         unknown_or(provenance.cpu_logical.map(|count| count.to_string()).as_deref()),
         cpu_profile_label(),
+        execution::cpu_session_config(config).options().execution.target_partitions,
+        execution::native_session_config(config).options().execution.target_partitions,
         unknown_or(provenance.fd_soft_limit.map(|limit| limit.to_string()).as_deref()),
         unknown_or(provenance.kvikio.map(|kvikio| kvikio.compat_mode.as_str())),
         unknown_or(provenance.kvikio.map(|kvikio| kvikio.thread_count.to_string()).as_deref()),
@@ -107,6 +112,7 @@ pub(super) fn run_start_line(config: &NativeTpchBenchmarkConfig, provenance: &Ru
         policy.max_row_groups_per_chunk,
         policy.source_chunk_planning_mode.as_str(),
         config.max_source_reads_in_flight,
+        NATIVE_MAX_ACTIVE_ATTEMPTS,
     );
     if provenance.devices.is_empty() {
         line.push_str(" gpu_count=unknown");

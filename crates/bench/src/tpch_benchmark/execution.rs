@@ -141,7 +141,7 @@ pub(super) fn native_optimizer_config(
     config.native_execution.configure_native_optimizer(base).expect("native TPC-H benchmark installs the native rule")
 }
 
-fn native_session_config(config: &NativeTpchBenchmarkConfig) -> SessionConfig {
+pub(super) fn native_session_config(config: &NativeTpchBenchmarkConfig) -> SessionConfig {
     let mut session_config = tpch_report_session_config();
     if let Some(pushdown_filters) = config.parquet_pushdown_filters {
         session_config.options_mut().execution.parquet.pushdown_filters = pushdown_filters;
@@ -287,14 +287,14 @@ pub(super) async fn run_cpu_query_iterations(
     config: &NativeTpchBenchmarkConfig,
 ) -> Result<TimedQueryRun, CpuRunFailure> {
     for _ in 0..config.warmup_iterations {
-        let planned = plan_cpu_query(metadata, query).await?;
+        let planned = plan_cpu_query(metadata, query, config).await?;
         let _ = collect_cpu_plan_once(planned).await?;
     }
 
     let mut samples = Vec::with_capacity(config.iterations);
     let mut final_measurement = None;
     for _ in 0..config.iterations {
-        let planned = plan_cpu_query(metadata, query).await?;
+        let planned = plan_cpu_query(metadata, query, config).await?;
         let schema = planned.plan.schema();
         let started = Instant::now();
         let batches = collect_cpu_plan_once(planned).await?;
@@ -404,8 +404,12 @@ fn native_not_started(error: DataFusionError) -> NativeRunFailure {
     NativeRunFailure { runtime_started: false, message: error.to_string(), details }
 }
 
-async fn plan_cpu_query(metadata: &TpchDatasetMetadata, query: &TpchQuery) -> Result<PlannedCpuQuery, CpuRunFailure> {
-    let ctx = SessionContext::new_with_config(cpu_session_config());
+async fn plan_cpu_query(
+    metadata: &TpchDatasetMetadata,
+    query: &TpchQuery,
+    config: &NativeTpchBenchmarkConfig,
+) -> Result<PlannedCpuQuery, CpuRunFailure> {
+    let ctx = SessionContext::new_with_config(cpu_session_config(config));
     let scale = dataset::register_tpch_tables(&ctx, metadata).await.map_err(cpu_not_started)?;
     let df = ctx.sql(&query.sql(scale)).await.map_err(cpu_not_started)?;
     let plan = df.create_physical_plan().await.map_err(cpu_not_started)?;
@@ -442,10 +446,15 @@ async fn collect_native_plan_once(
     Ok((batches, metrics))
 }
 
-fn cpu_session_config() -> SessionConfig {
-    match std::env::var("ALGEON_TPCH_CPU_PROFILE").as_deref().map(str::to_ascii_lowercase).as_deref() {
-        Ok("untuned") | Ok("report") => tpch_report_session_config(),
-        _ => tpch_tuned_cpu_session_config(),
+pub(super) fn cpu_session_config(config: &NativeTpchBenchmarkConfig) -> SessionConfig {
+    let session_config =
+        match std::env::var("ALGEON_TPCH_CPU_PROFILE").as_deref().map(str::to_ascii_lowercase).as_deref() {
+            Ok("untuned") | Ok("report") => tpch_report_session_config(),
+            _ => tpch_tuned_cpu_session_config(),
+        };
+    match config.cpu_target_partitions {
+        Some(target_partitions) => session_config.with_target_partitions(target_partitions),
+        None => session_config,
     }
 }
 

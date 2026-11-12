@@ -102,6 +102,16 @@ fn run_start_line_reports_unknown_cap_for_unresolved_automatic_budget() {
 }
 
 #[test]
+fn run_start_line_records_session_partitions_and_active_attempts() {
+    let config = NativeTpchBenchmarkConfig { cpu_target_partitions: Some(7), ..NativeTpchBenchmarkConfig::default() };
+
+    let line = run_start_line(&config, &RunProvenance::default());
+
+    assert!(line.contains(" cpu_target_partitions=7 native_target_partitions=1 "), "{line}");
+    assert!(line.ends_with(" max_active_attempts=1 gpu_count=unknown"), "{line}");
+}
+
+#[test]
 fn proc_parsers_extract_driver_cpu_and_fd_limit() {
     let version = "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  580.178.04  Release Build  (dvs-builder@U22)  Tue Jul  7 12:18:12 UTC 2026\nGCC version:  gcc version 13.3.0\n";
     assert_eq!(parse_driver_version(version.to_string()).as_deref(), Some("580.178.04"));

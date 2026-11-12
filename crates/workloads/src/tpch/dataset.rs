@@ -18,8 +18,9 @@ pub const TPCH_TABLES: &[&str] =
 pub const ALGEON_TPCH_SCALE_FACTOR_ENV: &str = "ALGEON_TPCH_SCALE_FACTOR";
 /// Free-form provenance command recorded in dataset metadata.
 pub const ALGEON_TPCH_GENERATION_COMMAND_ENV: &str = "ALGEON_TPCH_GENERATION_COMMAND";
-/// Truthy flag requesting a content-fingerprint pass. Without it, only the cheaper
-/// metadata fingerprint is recorded.
+/// Truthy flag requesting a content fingerprint, which reads every Parquet
+/// footer and the `_generation.json` manifest. Without it, only the metadata
+/// fingerprint is recorded.
 pub const ALGEON_TPCH_CONTENT_FINGERPRINT_ENV: &str = "ALGEON_TPCH_CONTENT_FINGERPRINT";
 
 /// In-repo default Parquet root for the TPC-H SF1 fixture.
@@ -60,8 +61,9 @@ impl TpchDefaultScale {
 /// TPC-H fixture metadata recorded in report headers.
 ///
 /// `metadata_fingerprint` is derived from paths, schema, row counts, row-group
-/// metadata, and byte sizes. `content_fingerprint`, when present, requires
-/// reading Parquet contents and is intentionally opt-in for large fixtures.
+/// metadata, and byte sizes. `content_fingerprint`, when present, hashes the
+/// serialized Parquet footers, file sizes and the root `_generation.json`
+/// manifest; see [`describe_tpch_dataset_with_content_fingerprint`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpchDatasetMetadata {
     /// Fixture root used for table discovery.
@@ -83,7 +85,7 @@ pub struct TpchDatasetMetadata {
     pub total_bytes: u64,
     /// Stable metadata hash; changes with paths, schema, row counts, row groups, or sizes.
     pub metadata_fingerprint: String,
-    /// Optional content hash; computing it reads Parquet contents.
+    /// Optional hash of the Parquet footers and the generation manifest.
     pub content_fingerprint: Option<String>,
     /// Per-table metadata in canonical TPC-H table order.
     pub tables: Vec<TpchTableMetadata>,
@@ -193,7 +195,7 @@ pub fn external_tpch_dataset_metadata(
 /// `ALGEON_PARQUET_DIR` is strict: if set, that fixture must be complete.
 /// When unset, the helper tries the implicit SF1 default and falls back to
 /// generating tiny data under `tiny_root`. A truthy
-/// `ALGEON_TPCH_CONTENT_FINGERPRINT` requests the expensive content hash.
+/// `ALGEON_TPCH_CONTENT_FINGERPRINT` requests the content fingerprint.
 pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> WorkloadResult<(PathBuf, TpchDatasetMetadata)> {
     if let Ok(root) = std::env::var(ALGEON_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
@@ -279,10 +281,12 @@ pub fn describe_tpch_dataset(
     describe_tpch_dataset_with_content_fingerprint(root, scale_factor, provenance, generation_command, false)
 }
 
-/// Describes a complete TPC-H fixture and optionally hashes file contents.
+/// Describes a complete TPC-H fixture and optionally fingerprints its content.
 ///
-/// Metadata fingerprints are cheap and derived from Parquet metadata. Content
-/// fingerprints scan table bytes and emit `content-fnv1a64:*` values. Returns
+/// Metadata fingerprints are derived from decoded Parquet metadata. Content
+/// fingerprints, `content-fnv1a64:*`, hash each file's path, size and
+/// serialized footer and the `_generation.json` manifest at `root` when it
+/// exists, without reading data pages. Returns
 /// an error when `scale_factor` declares a scale other than the data's; see
 /// [`TpchDatasetMetadata::scale`].
 pub fn describe_tpch_dataset_with_content_fingerprint(
@@ -308,8 +312,9 @@ pub fn describe_tpch_dataset_with_content_fingerprint(
         tpch_dataset_metadata_fingerprint(root, &scale_factor, &provenance, &generation_command, &tables);
     let content_fingerprint = include_content_fingerprint
         .then(|| {
-            parquet_metadata::dataset_content_fingerprint(
-                "algeon-datafusion-tpch-dataset-content-v1",
+            parquet_metadata::dataset_footer_fingerprint(
+                "algeon-datafusion-tpch-dataset-footer-v1",
+                root,
                 tables.iter().map(|table| {
                     (
                         table.table.as_str(),

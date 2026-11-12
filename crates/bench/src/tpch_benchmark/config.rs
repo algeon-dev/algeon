@@ -26,12 +26,17 @@ pub(super) const ALGEON_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
     "ALGEON_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
 pub(super) const ALGEON_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str =
     "ALGEON_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
+/// Target partitions of the CPU DataFusion session; unset keeps the profile's value.
+pub(super) const ALGEON_TPCH_CPU_TARGET_PARTITIONS_ENV: &str = "ALGEON_TPCH_CPU_TARGET_PARTITIONS";
 
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
 pub(super) const DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT: usize = 2;
+/// Queries run one after another, so the backend admits one active attempt and
+/// each query may use the whole per-query device cap.
+pub(super) const NATIVE_MAX_ACTIVE_ATTEMPTS: usize = 1;
 const REMOVED_NATIVE_SOURCE_CACHE_POLICY_ENV: &str = "ALGEON_TPCH_BENCH_NATIVE_SOURCE_CACHE_POLICY";
 const REMOVED_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str =
     "ALGEON_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES";
@@ -53,6 +58,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) native_execution: RelationalExecutionSelection,
     pub(super) native_memory_policy: NativeTpchMemoryPolicy,
     pub(super) max_source_reads_in_flight: usize,
+    pub(super) cpu_target_partitions: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -129,6 +135,7 @@ impl NativeTpchBenchmarkConfig {
                 "ALGEON_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT",
                 DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
             )?,
+            cpu_target_partitions: optional_env_usize(ALGEON_TPCH_CPU_TARGET_PARTITIONS_ENV)?,
         };
         config.validate()?;
         Ok(config)
@@ -138,6 +145,9 @@ impl NativeTpchBenchmarkConfig {
         validate_nonzero("ALGEON_TPCH_BENCH_ITERATIONS", self.iterations)?;
         validate_query_ids(&self.query_ids)?;
         validate_nonzero("ALGEON_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT", self.max_source_reads_in_flight)?;
+        if let Some(target_partitions) = self.cpu_target_partitions {
+            validate_nonzero(ALGEON_TPCH_CPU_TARGET_PARTITIONS_ENV, target_partitions)?;
+        }
         self.native_memory_policy.validate()
     }
 
@@ -178,7 +188,7 @@ impl NativeTpchBenchmarkConfig {
             optimizer_config,
             self.native_memory_policy.device_budget.memory_limit(),
             self.max_source_reads_in_flight,
-            1,
+            NATIVE_MAX_ACTIVE_ATTEMPTS,
             AlgeonGpuExecutionMode::NativeRequired,
         )
         .map_err(|error| DataFusionError::External(Box::new(error)))?;
@@ -197,6 +207,7 @@ impl Default for NativeTpchBenchmarkConfig {
             native_execution: RelationalExecutionSelection::strict_native(),
             native_memory_policy: NativeTpchMemoryPolicy::default(),
             max_source_reads_in_flight: DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
+            cpu_target_partitions: None,
         }
     }
 }
@@ -209,18 +220,22 @@ pub(super) enum NativeTpchDatasetMode {
 
 impl NativeTpchDatasetMode {
     fn from_env(name: &'static str) -> DataFusionResult<Self> {
-        let mode = match std::env::var_os(name) {
-            None => "sf1_external".to_string(),
-            Some(value) => value.to_string_lossy().to_ascii_lowercase(),
-        };
+        Self::parse(name, std::env::var_os(name).map(|value| value.to_string_lossy().into_owned()).as_deref())
+    }
+
+    pub(super) fn parse(name: &'static str, value: Option<&str>) -> DataFusionResult<Self> {
+        let mode = value.unwrap_or("sf1_external").to_ascii_lowercase();
         match mode.as_str() {
-            "sf1_external" | "external" | "sf1" => Ok(Self::External(NativeTpchScaleFactor::Sf1)),
-            "sf10_external" | "sf10" => Ok(Self::External(NativeTpchScaleFactor::Sf10)),
-            "sf100_external" | "sf100" => Ok(Self::External(NativeTpchScaleFactor::Sf100)),
+            "external" => Ok(Self::External(NativeTpchScaleFactor::Sf1)),
             "allow_tiny" | "dev_tiny" | "tiny" => Ok(Self::AllowTiny),
-            other => Err(plan_error(format!(
-                "invalid {name}: {other}; expected sf1_external, sf10_external, sf100_external, or allow_tiny"
-            ))),
+            other => NativeTpchScaleFactor::ALL
+                .into_iter()
+                .find(|scale_factor| other == scale_factor.dataset_mode_str() || other == scale_factor.as_str())
+                .map(Self::External)
+                .ok_or_else(|| {
+                    let modes = NativeTpchScaleFactor::ALL.map(NativeTpchScaleFactor::dataset_mode_str).join(", ");
+                    plan_error(format!("invalid {name}: {other}; expected {modes}, or allow_tiny"))
+                }),
         }
     }
 
@@ -237,14 +252,22 @@ pub(super) enum NativeTpchScaleFactor {
     Sf1,
     Sf10,
     Sf100,
+    Sf300,
+    Sf500,
+    Sf1000,
 }
 
 impl NativeTpchScaleFactor {
+    pub(super) const ALL: [Self; 6] = [Self::Sf1, Self::Sf10, Self::Sf100, Self::Sf300, Self::Sf500, Self::Sf1000];
+
     pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Sf1 => "sf1",
             Self::Sf10 => "sf10",
             Self::Sf100 => "sf100",
+            Self::Sf300 => "sf300",
+            Self::Sf500 => "sf500",
+            Self::Sf1000 => "sf1000",
         }
     }
 
@@ -253,6 +276,9 @@ impl NativeTpchScaleFactor {
             Self::Sf1 => "SF1",
             Self::Sf10 => "SF10",
             Self::Sf100 => "SF100",
+            Self::Sf300 => "SF300",
+            Self::Sf500 => "SF500",
+            Self::Sf1000 => "SF1000",
         }
     }
 
@@ -261,6 +287,9 @@ impl NativeTpchScaleFactor {
             Self::Sf1 => "sf1_external",
             Self::Sf10 => "sf10_external",
             Self::Sf100 => "sf100_external",
+            Self::Sf300 => "sf300_external",
+            Self::Sf500 => "sf500_external",
+            Self::Sf1000 => "sf1000_external",
         }
     }
 }
@@ -602,6 +631,10 @@ fn env_usize(name: &'static str, default: usize) -> DataFusionResult<usize> {
         return Ok(default);
     };
     value.to_string_lossy().parse::<usize>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
+}
+
+fn optional_env_usize(name: &'static str) -> DataFusionResult<Option<usize>> {
+    std::env::var_os(name).map(|value| parse_env_usize_value(name, value.to_string_lossy().into_owned())).transpose()
 }
 
 fn parse_env_usize_value(name: &'static str, value: String) -> DataFusionResult<usize> {
