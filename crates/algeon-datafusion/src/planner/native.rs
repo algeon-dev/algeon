@@ -432,7 +432,18 @@ impl AlgeonNativePhysicalOptimizerRule {
                 .map(|query_id| QueryId::new(query_id.as_str()))
                 .unwrap_or_else(QueryId::mint),
         );
-        let effective_config = self.config.clone().with_native_execution_config(native_execution_config);
+        let mut native_optimizer_options = self.config.native_optimizer_options().clone();
+        let stream_fanout_replay = &mut native_optimizer_options.stream_fanout_replay;
+        stream_fanout_replay.device_budget_bytes = stream_fanout_replay.device_budget_bytes.or_else(|| {
+            native_execution_config
+                .query_admission_source()
+                .map(|source| source.planned_query_grant_bytes(attempt.and_then(InvocationAttempt::query_cap_bytes)))
+        });
+        let effective_config = self
+            .config
+            .clone()
+            .with_native_execution_config(native_execution_config)
+            .with_native_optimizer_options(native_optimizer_options);
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();
         let datafusion_cpu_allowed = !self.config.execution_mode().rejects_datafusion_cpu();

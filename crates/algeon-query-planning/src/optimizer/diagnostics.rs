@@ -306,15 +306,15 @@ fn format_stream_fanout_replay_candidate(candidate: &StreamFanoutReplayCandidate
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
     format!(
-        "rule={},fanout_node_id={},consumer_count={},join_probe_consumer_node_ids={},estimated_rows={},estimated_bytes={},large_build_rows={},large_build_bytes={},selection_basis={},applied={},rejected_reason={}",
+        "rule={},fanout_node_id={},consumer_count={},join_probe_consumer_node_ids={},estimated_rows={},estimated_bytes={},budget_share_bytes={},column_row_limit={},selection_basis={},applied={},rejected_reason={}",
         candidate.rule_name,
         candidate.fanout_node_id,
         candidate.consumer_count,
         join_probe_consumer_node_ids,
         option_u64_text(candidate.estimated_rows),
         option_u64_text(candidate.estimated_bytes),
-        candidate.large_build_rows,
-        candidate.large_build_bytes,
+        option_u64_text(candidate.budget_share_bytes),
+        candidate.column_row_limit,
         selection_basis,
         candidate.applied,
         rejected_reason,
