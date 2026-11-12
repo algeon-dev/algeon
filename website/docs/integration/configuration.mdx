@@ -56,6 +56,7 @@ statement_ticket_ttl_secs = 300                 # ALGEON_SERVER_STATEMENT_TICKET
 http2_keepalive_interval_secs = 30              # ALGEON_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS
 http2_keepalive_timeout_secs = 10               # ALGEON_SERVER_HTTP2_KEEPALIVE_TIMEOUT_SECS
 # init_sql = "/etc/algeon/init.sql"             # ALGEON_SERVER_INIT_SQL
+metadata_cache_limit_bytes = 1073741824         # ALGEON_SERVER_METADATA_CACHE_LIMIT_BYTES
 
 [admission]
 max_queued_attempts = 64                        # ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS
@@ -143,12 +144,22 @@ The commented byte values in `[[admission.device_profiles]]` and
 | `http2_keepalive_interval_secs` | `30` | Seconds without inbound HTTP/2 traffic before a keepalive ping |
 | `http2_keepalive_timeout_secs` | `10` | Seconds to acknowledge a ping before the connection closes |
 | `init_sql` | unset | SQL file of DDL statements run at startup ([Startup SQL](#startup-sql)) |
+| `metadata_cache_limit_bytes` | `1073741824` (1 GiB) | Host-memory limit of the session's DataFusion file metadata cache for Parquet footers |
 
 `bind` takes an IP socket address such as `127.0.0.1:50051` or
 `0.0.0.0:50051`. Host names are not resolved. The durations must be positive.
 A client that acknowledges keepalive pings can retain an unread result. These
 durations do not impose a query idle deadline. Embedders set
 `ServerConfig::http2_keepalive` through `Http2Keepalive`.
+
+`metadata_cache_limit_bytes` must be positive. DataFusion charges the cache
+for decoded footers, about 430 bytes per column chunk, and a footer larger than
+the limit is decoded again on every planning pass. DataFusion's own limit is
+50 MB, reached at about 120,000 column chunks (7,500 row groups of 16 columns).
+The setting uses host memory only. It applies to the server's session; an embedded session
+keeps the `RuntimeEnv` its application built, so the application sets
+`RuntimeEnvBuilder::with_metadata_cache_limit` itself
+([Caches along the path](../design/data-path.mdx#caches)).
 
 The server binds its port after the GPU backend and the session are ready, so
 an open port means the server accepts queries. The

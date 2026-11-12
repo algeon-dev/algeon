@@ -175,8 +175,12 @@ different part of the next read.
   ([Object storage](#object-storage-and-libcurl)). DataFusion fills it while
   it infers a table's schema and statistics. A local footer missing there is
   parsed once per planning pass and put back for the session's next query; a
-  remote one is unavailable. The cache holds
-  `datafusion.runtime.metadata_cache_limit` bytes, 50 MB by default.
+  remote one is unavailable. The cache is charged for decoded footers, so a
+  footer larger than the limit is parsed again on every planning pass. The
+  Flight SQL server limits it to 1 GiB by default
+  ([`metadata_cache_limit_bytes`](../integration/configuration.mdx#server)).
+  DataFusion's own default, 50 MB, applies to an embedded session until its
+  `RuntimeEnvBuilder` sets `with_metadata_cache_limit`.
 - Decoded local-Parquet sources and constructed graphs can stay on the device
   under `cache_cap_bytes` ([Admission settings](../integration/configuration.mdx#admission)).
   The default is `0`, so queries share nothing on the GPU unless a server sets

@@ -30,6 +30,48 @@ fn derived_environment_overrides_reach_leaves_in_every_section() {
 }
 
 #[test]
+fn metadata_cache_limit_defaults_to_one_gib_and_takes_file_and_environment_values() {
+    let loaded = LoadedServerConfig::from_vars(BTreeMap::<&str, String>::new()).unwrap();
+    assert_eq!(loaded.config.metadata_cache_limit_bytes, 1024 * 1024 * 1024);
+    assert_eq!(loaded.source("metadata_cache_limit_bytes"), ConfigValueSource::Default);
+    assert!(
+        loaded.effective_toml().contains("metadata_cache_limit_bytes = 1073741824  # source: default"),
+        "{}",
+        loaded.effective_toml()
+    );
+
+    let (_dir, mut env) = env_with_server_toml("metadata_cache_limit_bytes = 2147483648\n");
+    let loaded = LoadedServerConfig::from_vars(env.clone()).unwrap();
+    assert_eq!(loaded.config.metadata_cache_limit_bytes, 2 * 1024 * 1024 * 1024);
+    assert_eq!(loaded.source("metadata_cache_limit_bytes"), ConfigValueSource::File);
+
+    env.insert("ALGEON_SERVER_METADATA_CACHE_LIMIT_BYTES", "536870912".to_string());
+    let loaded = LoadedServerConfig::from_vars(env).unwrap();
+    assert_eq!(loaded.config.metadata_cache_limit_bytes, 512 * 1024 * 1024);
+    assert_eq!(
+        loaded.source("metadata_cache_limit_bytes"),
+        ConfigValueSource::Env("ALGEON_SERVER_METADATA_CACHE_LIMIT_BYTES".to_string())
+    );
+}
+
+#[test]
+fn metadata_cache_limit_rejects_zero_and_malformed_values() {
+    let error = load_toml("metadata_cache_limit_bytes = 0\n").unwrap_err();
+    assert_eq!(error.fact_value("config_field"), Some("metadata_cache_limit_bytes"), "{error}");
+    assert!(error.message().contains("must be greater than zero"), "{error}");
+
+    let error = load(BTreeMap::from([("ALGEON_SERVER_METADATA_CACHE_LIMIT_BYTES", "0".to_string())])).unwrap_err();
+    assert_eq!(error.fact_value("config_field"), Some("metadata_cache_limit_bytes"), "{error}");
+    assert_eq!(error.fact_value("config_env"), Some("ALGEON_SERVER_METADATA_CACHE_LIMIT_BYTES"), "{error}");
+
+    let error = load(BTreeMap::from([("ALGEON_SERVER_METADATA_CACHE_LIMIT_BYTES", "1G".to_string())])).unwrap_err();
+    assert_eq!(error.fact_value("config_field"), Some("metadata_cache_limit_bytes"), "{error}");
+    assert!(error.message().contains("`1G`"), "{error}");
+
+    assert!(load_toml("metadata_cache_limit_bytes = -1\n").is_err());
+}
+
+#[test]
 fn an_unknown_server_variable_fails_and_names_the_closest_known_name() {
     for (name, suggestion) in [
         ("ALGEON_SERVER_NATIVE_EXECUTON_MODE", "ALGEON_SERVER_NATIVE_EXECUTION_MODE"),

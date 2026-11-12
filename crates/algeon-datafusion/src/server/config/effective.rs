@@ -34,6 +34,7 @@ fn project(config: &ServerConfig, tls: Option<&ServerTlsFileConfig>) -> ServerFi
         http2_keepalive_interval_secs: Some(config.http2_keepalive.interval.as_secs()),
         http2_keepalive_timeout_secs: Some(config.http2_keepalive.timeout.as_secs()),
         init_sql: config.init_sql.clone(),
+        metadata_cache_limit_bytes: Some(config.metadata_cache_limit_bytes),
         admission: ServerAdmissionFileConfig {
             max_queued_attempts: Some(config.queue_policy.max_queued_attempts()),
             max_queue_wait_ms: Some(saturating_millis(config.queue_policy.max_queue_wait())),
