@@ -62,6 +62,11 @@ Bug fixes:
 - `read_parquet_footers` moves the footers it parsed out of its temporary
   reader metadata. Upstream copies them, which for a file with thousands of
   row groups takes about as long as the parse.
+- The chunked Parquet reader sizes decompression scratch space by deciding
+  each codec's decompressor once per read. Upstream decides it again for
+  every page, reading about seven environment variables and formatting a
+  discarded log line each time; with a pass read limit set, a file with
+  20,000-row pages spent about 1.6 us per page on that with the GPU idle.
 - cuco exception safety, applied as a build-time patch: temporary storage is
   neither leaked nor double-freed when an allocation throws.
 - A GCC 14.2 internal compiler error in `make_datasources` is avoided by
