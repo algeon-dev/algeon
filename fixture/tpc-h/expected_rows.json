@@ -1,0 +1,72 @@
+{
+  "sf1": {
+    "customer": 150000,
+    "lineitem": 6001215,
+    "nation": 25,
+    "orders": 1500000,
+    "part": 200000,
+    "partsupp": 800000,
+    "region": 5,
+    "supplier": 10000
+  },
+  "sf10": {
+    "customer": 1500000,
+    "lineitem": 59986052,
+    "nation": 25,
+    "orders": 15000000,
+    "part": 2000000,
+    "partsupp": 8000000,
+    "region": 5,
+    "supplier": 100000
+  },
+  "sf100": {
+    "customer": 15000000,
+    "lineitem": 600037902,
+    "nation": 25,
+    "orders": 150000000,
+    "part": 20000000,
+    "partsupp": 80000000,
+    "region": 5,
+    "supplier": 1000000
+  },
+  "sf200": {
+    "customer": 30000000,
+    "lineitem": 1200018434,
+    "nation": 25,
+    "orders": 300000000,
+    "part": 40000000,
+    "partsupp": 160000000,
+    "region": 5,
+    "supplier": 2000000
+  },
+  "sf300": {
+    "customer": 45000000,
+    "lineitem": 1799989091,
+    "nation": 25,
+    "orders": 450000000,
+    "part": 60000000,
+    "partsupp": 240000000,
+    "region": 5,
+    "supplier": 3000000
+  },
+  "sf500": {
+    "customer": 75000000,
+    "lineitem": 3000028242,
+    "nation": 25,
+    "orders": 750000000,
+    "part": 100000000,
+    "partsupp": 400000000,
+    "region": 5,
+    "supplier": 5000000
+  },
+  "sf1000": {
+    "customer": 150000000,
+    "lineitem": 5999989709,
+    "nation": 25,
+    "orders": 1500000000,
+    "part": 200000000,
+    "partsupp": 800000000,
+    "region": 5,
+    "supplier": 10000000
+  }
+}
