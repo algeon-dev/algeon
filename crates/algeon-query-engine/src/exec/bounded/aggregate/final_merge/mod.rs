@@ -25,8 +25,8 @@ use query_runtime::observability::{
 };
 
 use super::{
-    AggregateNode, Arc, BoundedExecutionAttempt, BoundedPlan, BoundedUnaryStage, CommittedPartial,
-    ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame, Instant, LimitNode,
+    AggregateFunction, AggregateNode, Arc, BoundedExecutionAttempt, BoundedPlan, BoundedUnaryStage, CommittedPartial,
+    DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame, Instant, LimitNode,
     MemoryControlPolicy, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result, SortNode,
     aggregate_spec_has_avg, aggregate_spec_has_global_final_state, attach_budget_token_failure_facts,
     bounded_invariant_violation, cast_count_output_columns_with_budget, cudf_query_error,
@@ -41,6 +41,8 @@ use super::{
 };
 
 mod compiled;
+#[cfg(test)]
+mod execution_tests;
 mod incremental;
 mod partitioned;
 #[cfg(test)]

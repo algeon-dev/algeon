@@ -16,6 +16,11 @@
 //!
 //! Because raw slices and merged states differ in column shape for COUNT and AVG, a merge input set
 //! never mixes them. The consumed inputs are released only after the merged output exists.
+//!
+//! A slice cut from a single partial has unique group keys. When such a slice is folded alone and
+//! `key_distinct_partial_skips_final_groupby` holds, it becomes merged state without a groupby.
+//! A batch of several partials can repeat a key across them, so its slices always merge. Merged
+//! states are finalized without another groupby.
 
 use std::{
     collections::VecDeque,
@@ -30,7 +35,9 @@ use super::{
     BoundedFinalMergePolicy, CommittedPartial, ExecutionContext, MemoryControlPolicy, NodeId, QueryError,
     QueryErrorCode, Result, aggregate_strategy_capability_decision,
     compiled::{
-        execute_compiled_final_aggregate_projection, merge_compiled_partitioned_final_aggregate_partial_refs,
+        convert_key_distinct_partial_to_merged_state, execute_compiled_final_aggregate_projection,
+        execute_compiled_key_distinct_partial_projection, execute_compiled_merged_state_projection,
+        key_distinct_partial_skips_final_groupby, merge_compiled_partitioned_final_aggregate_partial_refs,
         record_compiled_partitioned_final_merge_strategy,
     },
     concatenate_partitioned_final_merge_outputs, execute_compiled_bounded_aggregate_from_empty_input,
@@ -94,7 +101,7 @@ pub(in crate::exec::bounded::aggregate) struct CompiledIncrementalPartitionedMer
     /// all-empty stream projects a device frame instead of building one.
     empty_partial: Option<CommittedPartial>,
     pending_raw_bytes: u64,
-    pending: Vec<Vec<CommittedPartial>>,
+    pending: Vec<Vec<PendingSlice>>,
     pending_bytes: Vec<u64>,
     /// Merged partial states per partition. Merged states carry the final
     /// merge's column shape, which differs from raw partial state for COUNT
@@ -228,7 +235,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         self.input_rows = self.input_rows.saturating_add(partial.frame.num_rows() as u64);
         self.partial_count += 1;
         self.pending_bytes[partition_index] = self.pending_bytes[partition_index].saturating_add(bytes);
-        self.pending[partition_index].push(partial);
+        // An aligned partial is one partial aggregate output, so its group keys are unique.
+        self.pending[partition_index].push(PendingSlice { partial, key_distinct: true });
         self.max_pending_partials = self.max_pending_partials.max(self.pending[partition_index].len());
         self.flush_ready_partitions(execution)
     }
@@ -355,7 +363,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         // directly without recording a merge attempt.
         if self.partial_count == 1 && self.partition_count.is_none() {
             let partial = self.pending_raw.pop().expect("single partial is pending");
-            return execute_compiled_final_aggregate_projection(
+            return execute_compiled_key_distinct_partial_projection(
                 execution,
                 self.node_id,
                 self.aggregate,
@@ -426,7 +434,6 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             Box::new(PartitionedFinalAggregateStream {
                 node_id: self.node_id,
                 aggregate: self.aggregate.clone(),
-                input_schema: Arc::clone(self.input_schema),
                 output_schema: Arc::clone(self.output_schema),
                 partitions,
             }),
@@ -460,7 +467,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
 
     /// Concatenates the pending raw partials and hash-partitions them once, so
     /// each partition receives one aligned slice per batch, regardless of the chunk count.
-    /// `complete` says no further partial will arrive.
+    /// `complete` says no further partial will arrive. The slices of a one-partial batch are
+    /// key-distinct.
     fn partition_pending_raw(&mut self, execution: &mut BoundedExecutionAttempt<'_>, complete: bool) -> Result<()> {
         let partition_count = match self.partition_count {
             Some(count) => count,
@@ -474,6 +482,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             },
         };
         let batch = std::mem::take(&mut self.pending_raw);
+        let key_distinct = batch.len() == 1;
         let batch_index = self.flush_count;
         // The concatenation is rebuilt from the retained partials on failure,
         // so a rejected batch leaves the pending set intact for the retry.
@@ -511,7 +520,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             }
             self.pending_bytes[partition_index] =
                 self.pending_bytes[partition_index].saturating_add(partition.device_bytes());
-            self.pending[partition_index].push(partition);
+            self.pending[partition_index].push(PendingSlice { partial: partition, key_distinct });
             self.max_pending_partials = self.max_pending_partials.max(self.pending[partition_index].len());
         }
         Ok(())
@@ -585,7 +594,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
     }
 
     /// Merges the first `take` inputs of one kind into a new merged state; the
-    /// inputs are only released after the merged output exists.
+    /// inputs are only released after the merged output exists. A lone key-distinct pending slice
+    /// is converted without a groupby when `key_distinct_partial_skips_final_groupby` allows it.
     fn merge_prefix(
         &mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -600,30 +610,47 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             "query_engine.final_merge.compiled_incremental_merge.budget_token",
             "failed to create compiled incremental partitioned final aggregate merge budget token",
         )?;
-        let source = match inputs {
-            MergeInputs::PendingSlices => &self.pending[partition_index],
-            MergeInputs::MergedStates => &self.merged[partition_index],
+        let input_refs = match inputs {
+            MergeInputs::PendingSlices => {
+                self.pending[partition_index].iter().take(take).map(|slice| &slice.partial).collect::<Vec<_>>()
+            },
+            MergeInputs::MergedStates => self.merged[partition_index].iter().take(take).collect::<Vec<_>>(),
         };
-        let input_refs = source.iter().take(take).collect::<Vec<_>>();
         let fan_in = input_refs.len();
+        let lone_key_distinct_slice = match inputs {
+            MergeInputs::PendingSlices => fan_in == 1 && self.pending[partition_index][0].key_distinct,
+            MergeInputs::MergedStates => false,
+        };
         let timer = Instant::now();
-        let result = merge_compiled_partitioned_final_aggregate_partial_refs(
-            execution,
-            self.node_id,
-            self.aggregate,
-            self.input_schema,
-            self.output_schema,
-            partition_index,
-            &input_refs,
-            &token,
-        );
+        let result = if lone_key_distinct_slice
+            && key_distinct_partial_skips_final_groupby(self.aggregate, &input_refs[0].frame)?
+        {
+            convert_key_distinct_partial_to_merged_state(
+                self.aggregate,
+                self.output_schema,
+                input_refs[0].frame.clone(),
+                &token,
+                execution.metrics(),
+            )
+        } else {
+            merge_compiled_partitioned_final_aggregate_partial_refs(
+                execution,
+                self.node_id,
+                self.aggregate,
+                self.input_schema,
+                self.output_schema,
+                partition_index,
+                &input_refs,
+                &token,
+            )
+        };
         self.merge_time = self.merge_time.saturating_add(timer.elapsed());
         let frame = result?;
         let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
         match inputs {
             MergeInputs::PendingSlices => {
                 let released_bytes =
-                    self.pending[partition_index].drain(..take).map(|partial| partial.device_bytes()).sum::<u64>();
+                    self.pending[partition_index].drain(..take).map(|slice| slice.partial.device_bytes()).sum::<u64>();
                 self.pending_bytes[partition_index] =
                     self.pending_bytes[partition_index].saturating_sub(released_bytes);
             },
@@ -642,7 +669,6 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
 struct PartitionedFinalAggregateStream {
     node_id: NodeId,
     aggregate: AggregateNode,
-    input_schema: ArrowSchemaRef,
     output_schema: ArrowSchemaRef,
     partitions: VecDeque<CommittedPartial>,
 }
@@ -652,7 +678,6 @@ impl ResidentFrameStreamSource for PartitionedFinalAggregateStream {
         Some(Box::new(Self {
             node_id: self.node_id,
             aggregate: self.aggregate.clone(),
-            input_schema: Arc::clone(&self.input_schema),
             output_schema: Arc::clone(&self.output_schema),
             partitions: self
                 .partitions
@@ -669,14 +694,7 @@ impl ResidentFrameStreamSource for PartitionedFinalAggregateStream {
                 .context()
                 .check_cancellation("query_engine.aggregate.final_partition")
                 .and_then(|()| {
-                    execute_compiled_final_aggregate_projection(
-                        execution,
-                        self.node_id,
-                        &self.aggregate,
-                        &self.input_schema,
-                        &self.output_schema,
-                        partial,
-                    )
+                    execute_compiled_merged_state_projection(execution, &self.aggregate, &self.output_schema, partial)
                 })
                 .map_err(|error| error.with_fact("node_id", self.node_id)),
         )
@@ -689,6 +707,13 @@ impl ResidentFrameStreamSource for PartitionedFinalAggregateStream {
     fn complete_group_key_state(&self) -> Option<Vec<GpuDataFrame>> {
         Some(self.partitions.iter().map(|partial| partial.frame.clone()).collect())
     }
+}
+
+/// A hash-partition slice waiting to fold into its partition's merged state. `key_distinct` holds
+/// when the slice came from one partial aggregate output, whose group keys are unique.
+struct PendingSlice {
+    partial: CommittedPartial,
+    key_distinct: bool,
 }
 
 /// Which homogeneous input set one incremental merge step consumes.

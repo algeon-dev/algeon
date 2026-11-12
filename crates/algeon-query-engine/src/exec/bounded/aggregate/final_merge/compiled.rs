@@ -11,22 +11,28 @@
 //! of consecutive partials are merged into one partial each, and levels repeat until one partial
 //! remains. A level borrows its inputs, which lets a retryable resource error restart the level
 //! with a smaller fan-in. The partitioned merge consumes each partial as it partitions it.
+//!
+//! A merged state is already the final aggregate's output, so its projection only finalizes it
+//! (`execute_compiled_merged_state_projection`). A partial whose group keys are unique skips the
+//! final groupby when that groupby would return its rows unchanged
+//! (`key_distinct_partial_skips_final_groupby`).
 
 use std::{collections::VecDeque, time::Duration};
 
+use cudf::TypeId;
 use query_planning::chunk::SourceChunkPlanningPolicy;
 
 use super::{
-    AggregateExecutionStage, AggregateExecutionStrategy, AggregateNode, Arc, ArrowSchemaRef, BoundedExecutionAttempt,
-    BoundedFinalMergePolicy, CommittedPartial, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, GpuDataFrame,
-    Instant, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result, aggregate_spec_has_avg,
-    aggregate_spec_has_global_final_state, aggregate_strategy_capability_decision, attach_budget_token_failure_facts,
-    cast_count_output_columns_with_budget, concatenate_partitioned_final_merge_outputs, cudf_query_error,
-    execute_aggregate_with_budget, execute_compiled_bounded_aggregate_from_empty_input,
-    execute_global_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
-    execution_budget_token_for_boundary, final_global_aggregate_spec, final_global_aggregate_state_output_schema,
-    finalize_avg_output_columns_with_budget, lower_final_aggregate_spec, observe_device_memory_bytes,
-    partition_final_merge_partial, partitioned_final_merge_partition_count,
+    AggregateExecutionStage, AggregateExecutionStrategy, AggregateFunction, AggregateNode, Arc, ArrowSchemaRef,
+    BoundedExecutionAttempt, BoundedFinalMergePolicy, CommittedPartial, DataFrame, ExecutionBudgetToken,
+    ExecutionContext, ExecutionMetrics, GpuDataFrame, Instant, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame,
+    Result, aggregate_spec_has_avg, aggregate_spec_has_global_final_state, aggregate_strategy_capability_decision,
+    attach_budget_token_failure_facts, cast_count_output_columns_with_budget,
+    concatenate_partitioned_final_merge_outputs, cudf_query_error, execute_aggregate_with_budget,
+    execute_compiled_bounded_aggregate_from_empty_input, execute_global_aggregate_with_budget,
+    execute_groupby_aggregate_with_budget_observed, execution_budget_token_for_boundary, final_global_aggregate_spec,
+    final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget, lower_final_aggregate_spec,
+    observe_device_memory_bytes, partition_final_merge_partial, partitioned_final_merge_partition_count,
     record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
     reduce_merge_fan_in, validate_aggregate_output_names,
 };
@@ -40,7 +46,7 @@ use crate::exec::retry::{
 /// single partial is only projected; a partitioned merge is used when the capability decision
 /// and the partial sizes call for it; otherwise consecutive partials are merged in groups of
 /// `merge_fan_in`, level by level, and a level's merged partials replace it only after the whole
-/// level succeeds.
+/// level succeeds. The merged result is finalized without another final aggregate.
 ///
 /// A level that fails with a retryable resource error restarts from the level's original partials
 /// with a smaller fan-in, until the attempt limit or the minimum fan-in. The partials of a level
@@ -99,7 +105,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
         input_schema,
         &partials,
     ) {
-        let partial = execute_compiled_partitioned_final_aggregate_merge(
+        let merged = execute_compiled_partitioned_final_aggregate_merge(
             execution,
             node_id,
             aggregate,
@@ -107,14 +113,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
             output_schema,
             partials,
         )?;
-        return execute_compiled_final_aggregate_projection(
-            execution,
-            node_id,
-            aggregate,
-            input_schema,
-            output_schema,
-            partial,
-        );
+        return execute_compiled_merged_state_projection(execution, aggregate, output_schema, merged);
     }
 
     while partials.len() > 1 {
@@ -159,8 +158,9 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
         }
     }
 
-    let partial = partials.pop().expect("compiled final merge leaves exactly one partial");
-    execute_compiled_final_aggregate_projection(execution, node_id, aggregate, input_schema, output_schema, partial)
+    // The last level had at least two inputs, so its single output is a merged state.
+    let merged = partials.pop().expect("compiled final merge leaves exactly one partial");
+    execute_compiled_merged_state_projection(execution, aggregate, output_schema, merged)
 }
 
 fn should_execute_compiled_partitioned_final_aggregate_merge(
@@ -736,7 +736,7 @@ pub(in crate::exec::bounded::aggregate) fn normalize_compiled_aggregate_partial(
     Ok(ResidentGpuFrame::with_device_bytes(frame, bytes))
 }
 
-/// Produces the final output from one partial or one merged state.
+/// Produces the final output from one partial.
 ///
 /// A lone partial still goes through the final aggregate, which turns raw partial state into the
 /// shape the projection expects, and then through `finalize_compiled_final_aggregate_output`. Empty
@@ -810,6 +810,149 @@ pub(super) fn execute_compiled_final_aggregate_projection(
     };
     let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
+}
+
+/// Produces the final output from a merged state under a `final_aggregate_projection` token.
+///
+/// The final aggregate produced `merged`, so it holds one row per group in merge-state shape, and
+/// running that aggregate again would return the same rows. Only
+/// `finalize_compiled_final_aggregate_output` remains.
+pub(super) fn execute_compiled_merged_state_projection(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    aggregate: &AggregateNode,
+    output_schema: &ArrowSchemaRef,
+    merged: CommittedPartial,
+) -> Result<ResidentGpuFrame> {
+    let token = execution_budget_token_for_boundary(
+        execution.context(),
+        execution.device_budget_bytes(),
+        "final_aggregate_projection",
+        "query_engine.bounded.aggregate.compiled_stream_final_projection.budget_token",
+        "failed to create bounded native compiled stream final-projection budget token",
+    )?;
+    let frame = finalize_compiled_final_aggregate_output(
+        execution.context(),
+        aggregate,
+        output_schema,
+        merged.frame,
+        &token,
+        execution.metrics(),
+    )?;
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
+    Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
+}
+
+/// Produces the final output from a lone partial whose group keys are unique.
+///
+/// When `key_distinct_partial_skips_final_groupby` holds, the partial becomes output by
+/// `convert_key_distinct_partial_to_merged_state` under a `final_aggregate_projection` token; that
+/// state already has the output columns because the spec has no AVG. Otherwise the partial takes
+/// `execute_compiled_final_aggregate_projection`.
+pub(super) fn execute_compiled_key_distinct_partial_projection(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    partial: CommittedPartial,
+) -> Result<ResidentGpuFrame> {
+    if !key_distinct_partial_skips_final_groupby(aggregate, &partial.frame)? {
+        return execute_compiled_final_aggregate_projection(
+            execution,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            partial,
+        );
+    }
+    let token = execution_budget_token_for_boundary(
+        execution.context(),
+        execution.device_budget_bytes(),
+        "final_aggregate_projection",
+        "query_engine.bounded.aggregate.compiled_stream_final_projection.budget_token",
+        "failed to create bounded native compiled stream final-projection budget token",
+    )?;
+    let frame = convert_key_distinct_partial_to_merged_state(
+        aggregate,
+        output_schema,
+        partial.frame,
+        &token,
+        execution.metrics(),
+    )?;
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
+    Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
+}
+
+/// Whether the final groupby would return `partial`'s rows unchanged, given that its group keys are
+/// unique, so that `convert_key_distinct_partial_to_merged_state` yields the same frame.
+///
+/// Unique keys make every group one row, and each aggregate then reduces one value. libcudf keeps
+/// that value and its type for MIN and MAX of any type. COUNT merges by SUM and is cast to its
+/// output type either way, so any integer state gives the same column. SUM keeps the type where
+/// libcudf's SUM target type is the input type: int64, decimal and duration. Other integers widen
+/// to int64. A floating-point SUM keeps the groupby too, because the groupby adds the value to a
+/// zero accumulator and turns -0.0 into 0.0. AVG, DISTINCT, the other functions, grouping sets and
+/// global aggregates keep the groupby.
+pub(super) fn key_distinct_partial_skips_final_groupby(
+    aggregate: &AggregateNode,
+    partial: &GpuDataFrame,
+) -> Result<bool> {
+    let spec = &aggregate.spec;
+    if spec.group_exprs.is_empty() || spec.grouping_sets.is_some() {
+        return Ok(false);
+    }
+    for expr in &spec.aggr_exprs {
+        if expr.distinct {
+            return Ok(false);
+        }
+        let state_type = || {
+            partial
+                .frame()
+                .series(expr.alias.as_str())
+                .and_then(|series| series.dtype())
+                .map(|dtype| dtype.id())
+                .map_err(|error| {
+                    cudf_query_error(
+                        "query_engine.final_merge.key_distinct_state_type",
+                        "failed to inspect a key-distinct aggregate partial state column type",
+                        error,
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                })
+        };
+        let unchanged = match expr.function {
+            AggregateFunction::Min | AggregateFunction::Max => true,
+            AggregateFunction::Count => {
+                let id = state_type()?;
+                id.is_signed_int() || id.is_unsigned_int()
+            },
+            AggregateFunction::Sum => {
+                let id = state_type()?;
+                id == TypeId::Int64 || id.is_decimal() || id.is_duration()
+            },
+            _ => false,
+        };
+        if !unchanged {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Turns a key-distinct partial into merged state without the final groupby: COUNT columns are cast
+/// to their output types and the output columns are selected, the same tail the final aggregate
+/// applies after its groupby. Valid only where `key_distinct_partial_skips_final_groupby` holds.
+pub(super) fn convert_key_distinct_partial_to_merged_state(
+    aggregate: &AggregateNode,
+    output_schema: &ArrowSchemaRef,
+    partial: GpuDataFrame,
+    token: &ExecutionBudgetToken,
+    metrics: &ExecutionMetrics,
+) -> Result<GpuDataFrame> {
+    let output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+    select_final_aggregate_output_columns(partial.into_frame(), aggregate, output_schema, &output_names, token, metrics)
+        .map(GpuDataFrame::new)
 }
 
 /// Divides AVG state into the output column when the spec has an AVG, then selects the output
@@ -960,7 +1103,7 @@ fn execute_final_aggregate_for_plan(
     let exec_runtime = context.runtime()?;
     let overrides = exec_runtime.exec();
     let timer = Instant::now();
-    let mut output = execute_groupby_aggregate_with_budget_observed(
+    let grouped = execute_groupby_aggregate_with_budget_observed(
         Some(context),
         overrides,
         frame,
@@ -970,15 +1113,14 @@ fn execute_final_aggregate_for_plan(
         "query_engine.final_merge.aggregate",
         "failed to execute bounded native final aggregate merge",
     )?;
-    output =
-        cast_count_output_columns_with_budget(output, &bounded.aggregate.spec, bounded.output_schema, token, metrics)?;
-    output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        cudf_query_error(
-            "query_engine.final_merge.select",
-            "failed to select bounded native final aggregate output columns",
-            error,
-        )
-    })?;
+    let output = select_final_aggregate_output_columns(
+        grouped,
+        bounded.aggregate,
+        bounded.output_schema,
+        &expected_output_names,
+        token,
+        metrics,
+    )?;
     let elapsed = timer.elapsed();
     let output_rows = output.num_rows() as u64;
     if record_strategy {
@@ -995,4 +1137,23 @@ fn execute_final_aggregate_for_plan(
         );
     }
     Ok(GpuDataFrame::new(output))
+}
+
+/// Casts COUNT columns to their output types and selects `output_names`, in that order.
+fn select_final_aggregate_output_columns(
+    frame: DataFrame,
+    aggregate: &AggregateNode,
+    output_schema: &ArrowSchemaRef,
+    output_names: &[String],
+    token: &ExecutionBudgetToken,
+    metrics: &ExecutionMetrics,
+) -> Result<DataFrame> {
+    let frame = cast_count_output_columns_with_budget(frame, &aggregate.spec, output_schema, token, metrics)?;
+    frame.select(output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+        cudf_query_error(
+            "query_engine.final_merge.select",
+            "failed to select bounded native final aggregate output columns",
+            error,
+        )
+    })
 }
