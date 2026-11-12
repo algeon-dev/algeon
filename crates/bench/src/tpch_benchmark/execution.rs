@@ -4,8 +4,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use algeon_datafusion::{attempt::AttemptOptions, native_exec::below_native_admission};
+use algeon_datafusion::{
+    attempt::AttemptOptions, native_exec::below_native_admission, session::RECOMMENDED_METADATA_CACHE_LIMIT_BYTES,
+};
 use arrow::datatypes::SchemaRef;
+use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use futures::TryStreamExt;
 use query_runtime::observability::SealedRuntimeObservationSnapshot;
 
@@ -113,7 +116,9 @@ async fn plan_native_query_with_resources(
     resources: &NativeTpchRuntimeResources,
 ) -> DataFusionResult<PlannedNativeQuery> {
     let optimizer_config = native_optimizer_config(config, resources);
-    let builder = SessionStateBuilder::new_with_default_features().with_config(native_session_config(config));
+    let builder = SessionStateBuilder::new_with_default_features()
+        .with_config(native_session_config(config))
+        .with_runtime_env(benchmark_runtime_env()?);
     let builder = resources.install_on(builder)?;
     let state = builder.with_algeon_native(optimizer_config).build();
     let ctx = SessionContext::new_with_state(state);
@@ -139,6 +144,13 @@ pub(super) fn native_optimizer_config(
             .with_native_execution_config(config.native_execution_config_with_resources(resources))
     });
     config.native_execution.configure_native_optimizer(base).expect("native TPC-H benchmark installs the native rule")
+}
+
+/// The Flight SQL server's metadata cache limit, on both the native and the CPU
+/// session, so planning time and footer re-reads do not depend on which engine
+/// ran the query.
+fn benchmark_runtime_env() -> DataFusionResult<Arc<RuntimeEnv>> {
+    RuntimeEnvBuilder::new().with_metadata_cache_limit(RECOMMENDED_METADATA_CACHE_LIMIT_BYTES).build_arc()
 }
 
 pub(super) fn native_session_config(config: &NativeTpchBenchmarkConfig) -> SessionConfig {
@@ -409,7 +421,8 @@ async fn plan_cpu_query(
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
 ) -> Result<PlannedCpuQuery, CpuRunFailure> {
-    let ctx = SessionContext::new_with_config(cpu_session_config(config));
+    let runtime_env = benchmark_runtime_env().map_err(cpu_not_started)?;
+    let ctx = SessionContext::new_with_config_rt(cpu_session_config(config), runtime_env);
     let scale = dataset::register_tpch_tables(&ctx, metadata).await.map_err(cpu_not_started)?;
     let df = ctx.sql(&query.sql(scale)).await.map_err(cpu_not_started)?;
     let plan = df.create_physical_plan().await.map_err(cpu_not_started)?;

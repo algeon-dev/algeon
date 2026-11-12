@@ -217,8 +217,10 @@ inside an executable plan, and the statement is not rejected.
   planning, the Flight SQL server, `plan_with_native_diagnostics` or
   `validate_query`.
 - A table whose footers exceed `datafusion.runtime.metadata_cache_limit`
-  (50 MB by default) evicts its own entries during the scan. An embedded
-  session can raise the limit; the Flight SQL server runs with the default.
+  (50 MB in DataFusion's default environment) evicts its own entries during
+  the scan. An embedded session raises the limit through
+  `RuntimeEnvBuilder::with_metadata_cache_limit`. The Flight SQL server sets 1 GiB
+  by default (`metadata_cache_limit_bytes`).
 - The cache key is the object path without the bucket. An entry is refused when
   its size, last-modified time, or e_tag or version (when both sides have one)
   differs from the scanned object.

@@ -9,7 +9,7 @@ use datafusion::{
     common::{DFSchema, TableReference},
     datasource::listing::ListingTableUrl,
     error::{DataFusionError, Result as DataFusionResult},
-    execution::{SessionState, SessionStateBuilder},
+    execution::{SessionState, SessionStateBuilder, runtime_env::RuntimeEnvBuilder},
     logical_expr::{CreateExternalTable, DdlStatement, LogicalPlan},
     prelude::{SessionConfig, SessionContext},
     sql::{parser::DFParserBuilder, sqlparser::dialect::dialect_from_str},
@@ -33,10 +33,11 @@ use crate::server::{
 ///
 /// The backend's optimizer template overrides the config template. The function
 /// installs cuVS and cuML SQL and optional cuGraph SQL. Session installation
-/// failures retain a typed server error. [`ServerConfig::data_root`] and
-/// [`ServerConfig::init_sql`] are not applied here;
-/// [`crate::server::FlightSqlServerBuilder::build`] applies them to the shared
-/// session afterwards, data root tables first.
+/// failures retain a typed server error. The session's file metadata cache
+/// is limited to [`ServerConfig::metadata_cache_limit_bytes`].
+/// [`ServerConfig::data_root`] and [`ServerConfig::init_sql`] are not applied
+/// here; [`crate::server::FlightSqlServerBuilder::build`] applies them to the
+/// shared session afterwards, data root tables first.
 pub async fn build_session_context_with_backend(
     config: &ServerConfig,
     backend: &AlgeonGpuBackend,
@@ -44,7 +45,12 @@ pub async fn build_session_context_with_backend(
     let mut effective_config = config.clone();
     effective_config.native_optimizer_config = backend.optimizer_config().clone();
     let session_config = build_session_config(&effective_config)?;
-    let builder = SessionStateBuilder::new_with_default_features().with_config(session_config);
+    let runtime_env = RuntimeEnvBuilder::new()
+        .with_metadata_cache_limit(effective_config.metadata_cache_limit_bytes)
+        .build_arc()
+        .map_err(|error| ServerError::session("failed to build the DataFusion runtime environment", error))?;
+    let builder =
+        SessionStateBuilder::new_with_default_features().with_config(session_config).with_runtime_env(runtime_env);
     let builder = backend
         .install_on(builder)
         .map_err(|error| ServerError::session("failed to install backend native session", error))?;
