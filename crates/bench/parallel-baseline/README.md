@@ -78,7 +78,9 @@ materialization count/bytes, and output fingerprints. Its
 `allocator_high_water_bytes` may be absent; `max_task_observed_peak_bytes` is
 a per-task observation and cannot substitute for the attempt domain peak.
 The benchmark replans before each measured execution, so its stable
-`native_wall_ms` excludes physical planning. Set
+`native_wall_ms` excludes physical planning. The TSV also carries
+`cpu_wall_ms_samples` and `native_wall_ms_samples`, the measured iterations in run
+order, comma-separated. Set
 `ALGEON_TPCH_BENCH_ARTIFACT_DIR` to retain the first measured execution's
 physical plan and sealed runtime observation, plus ten per-iteration planning, execution,
 planning-plus-execution, and full benchmark-iteration wall samples. The
