@@ -1842,6 +1842,7 @@ pub fn cudf::frame::dataframe::PreparedHostBatch::estimated_materialization_byte
 pub fn cudf::frame::dataframe::PreparedHostBatch::num_rows(&self) -> usize
 pub struct cudf::frame::dataframe::SourceRead<'a>
 pub cudf::frame::dataframe::SourceRead::chunks: &'a [cudf::io::source::SourceChunk]
+pub cudf::frame::dataframe::SourceRead::footer_cache: core::option::Option<&'a cudf::io::parquet::ParquetFooterCache>
 pub cudf::frame::dataframe::SourceRead::input: cudf::SourceReadInput<'a>
 pub cudf::frame::dataframe::SourceRead::mode: cudf::io::source::SourceReadMode
 pub cudf::frame::dataframe::SourceRead::pass_read_limit: core::option::Option<u64>
@@ -1849,6 +1850,7 @@ pub cudf::frame::dataframe::SourceRead::source: &'a cudf::io::source::LocalParqu
 impl<'a> cudf::SourceRead<'a>
 pub fn cudf::SourceRead<'a>::from_host_buffer(self, &'a [u8]) -> Self
 pub fn cudf::SourceRead<'a>::new(&'a cudf::io::source::LocalParquetSource, &'a [cudf::io::source::SourceChunk], cudf::io::source::SourceReadMode) -> Self
+pub fn cudf::SourceRead<'a>::with_footer_cache(self, &'a cudf::io::parquet::ParquetFooterCache) -> Self
 pub fn cudf::SourceRead<'a>::with_pass_read_limit_for_budget(self, usize) -> Self
 pub struct cudf::frame::dataframe::ValidatedFixedSizeListExport<'a>
 impl cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>
@@ -2318,6 +2320,9 @@ pub cudf::io::parquet::RemoteReadMode::RequireDirect
 pub cudf::io::parquet::RemoteReadMode::RequireKvikio
 impl cudf::io::parquet::RemoteReadMode
 pub const fn cudf::io::parquet::RemoteReadMode::as_str(self) -> &'static str
+pub struct cudf::io::parquet::ParquetFooterCache
+impl cudf::io::parquet::ParquetFooterCache
+pub fn cudf::io::parquet::ParquetFooterCache::new() -> Self
 pub struct cudf::io::parquet::ParquetPruningEvidence
 pub cudf::io::parquet::ParquetPruningEvidence::input_row_groups: u64
 pub cudf::io::parquet::ParquetPruningEvidence::row_groups_after_bloom_filter: core::option::Option<u64>
@@ -5968,6 +5973,7 @@ impl core::default::Default for cudf::ops::sorting::SortOptions
 pub fn cudf::ops::sorting::SortOptions::default() -> Self
 pub struct cudf::SourceRead<'a>
 pub cudf::SourceRead::chunks: &'a [cudf::io::source::SourceChunk]
+pub cudf::SourceRead::footer_cache: core::option::Option<&'a cudf::io::parquet::ParquetFooterCache>
 pub cudf::SourceRead::input: cudf::SourceReadInput<'a>
 pub cudf::SourceRead::mode: cudf::io::source::SourceReadMode
 pub cudf::SourceRead::pass_read_limit: core::option::Option<u64>
@@ -5975,6 +5981,7 @@ pub cudf::SourceRead::source: &'a cudf::io::source::LocalParquetSource
 impl<'a> cudf::SourceRead<'a>
 pub fn cudf::SourceRead<'a>::from_host_buffer(self, &'a [u8]) -> Self
 pub fn cudf::SourceRead<'a>::new(&'a cudf::io::source::LocalParquetSource, &'a [cudf::io::source::SourceChunk], cudf::io::source::SourceReadMode) -> Self
+pub fn cudf::SourceRead<'a>::with_footer_cache(self, &'a cudf::io::parquet::ParquetFooterCache) -> Self
 pub fn cudf::SourceRead<'a>::with_pass_read_limit_for_budget(self, usize) -> Self
 pub struct cudf::StreamReservationLease
 impl cudf::StreamReservationLease

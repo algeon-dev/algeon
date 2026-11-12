@@ -14,6 +14,6 @@
 # or struct-update construction.
 symbol	feature	owner	consumer	removal_condition
 cudf::interop::arrow_host::estimate_record_batches_import_required_budget_bytes	cross-crate	cudf interop::arrow_host::estimate	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-cudf::io::parquet::ParquetFooterCache::parsed_footer_count	test-hooks	cudf io::parquet::footer	tests: algeon-cudf, algeon-query-engine	delete once no test names it
+cudf::io::parquet::footer::ParquetFooterCache::parsed_footer_count	test-hooks	cudf io::parquet::footer	tests: algeon-cudf, algeon-query-engine	delete once no test names it
 cudf::runtime::event::CudaEvent::synchronize_for_teardown	cross-crate	cudf runtime::event	prod: algeon-query-runtime	narrow to pub(crate) once no other workspace crate names it
 cudf::testing	test-hooks	cudf crate root	tools: tools; tests: algeon-cudf, algeon-cugraph, algeon-cuml, algeon-cuvs, algeon-datafusion, algeon-query-engine, algeon-query-runtime	delete once no test or tool names it
