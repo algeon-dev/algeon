@@ -40,6 +40,13 @@ def load_tsv(path: Path) -> tuple[dict[str, str], list[dict[str, str]]]:
     return meta, rows
 
 
+def required_meta(meta: dict[str, str], key: str, path: Path) -> str:
+    value = meta.get(key)
+    if not value:
+        raise SystemExit(f"{key} missing from {path}")
+    return value
+
+
 def fnum(value: str | None) -> float | None:
     if value is None or value == "" or value.lower() == "null":
         return None
@@ -193,6 +200,14 @@ def main() -> None:
             "tpch_benchmark_native_runtime_policy", "shared_per_benchmark_run"
         ),
         "kvikioCompatMode": args.kvikio_compat_mode,
+        "parity": {
+            "floatToleranceAbsolute": float(
+                required_meta(meta, "tpch_benchmark_parity_float_tolerance_absolute", args.tsv)
+            ),
+            "floatToleranceRelative": float(
+                required_meta(meta, "tpch_benchmark_parity_float_tolerance_relative", args.tsv)
+            ),
+        },
     }
 
     payload = {

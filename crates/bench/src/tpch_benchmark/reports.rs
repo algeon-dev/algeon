@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics;
+use algeon_datafusion::{
+    native_report::bench_support::ParityFloatTolerance, planner::NativeCapabilityCompiledGraphDiagnostics,
+};
 use query_planning::contract_report::CapabilityDecisionRow;
 
 use super::{
@@ -190,6 +192,30 @@ impl NativeTpchBenchmarkReport {
             format_args!("# tpch_benchmark_native_peak_memory_fields=max_across_measured_iterations"),
         );
         push_line(&mut output, format_args!("# tpch_benchmark_native_timing_fields=per_measured_iteration_mean"));
+        // parity_status compares values within the float tolerance; the
+        // fingerprint columns hash rendered values exactly and only identify outputs.
+        push_line(
+            &mut output,
+            format_args!("# tpch_benchmark_parity_fields=last_measured_iteration_values_float_tolerant"),
+        );
+        push_line(
+            &mut output,
+            format_args!(
+                "# tpch_benchmark_parity_float_tolerance_absolute={}",
+                self.config.parity_float_tolerance.absolute
+            ),
+        );
+        push_line(
+            &mut output,
+            format_args!(
+                "# tpch_benchmark_parity_float_tolerance_relative={}",
+                self.config.parity_float_tolerance.relative
+            ),
+        );
+        push_line(
+            &mut output,
+            format_args!("# tpch_benchmark_output_fingerprint_fields=last_measured_iteration_exact_diagnostic"),
+        );
         push_line(&mut output, format_args!("# tpch_benchmark_dataset_mode={}", self.config.dataset_mode.as_str()));
         push_line(
             &mut output,
@@ -356,6 +382,7 @@ impl NativeTpchBenchmarkRow {
         planning_row: NativeDataFusionPlanningRow,
         cpu: Result<execution::TimedQueryRun, execution::CpuRunFailure>,
         native: Result<execution::TimedNativeQueryRun, execution::NativeRunFailure>,
+        parity_float_tolerance: ParityFloatTolerance,
     ) -> Self {
         let (cpu, cpu_failure, cpu_failure_details, cpu_runtime_started) = match cpu {
             Ok(run) => (Some(run), None, execution::FailureDetails::default(), true),
@@ -368,7 +395,10 @@ impl NativeTpchBenchmarkRow {
         let parity_status = validation::parity_status(
             cpu.as_ref().map(|run| &run.final_measurement),
             native.as_ref().map(|run| &run.final_measurement),
+            parity_float_tolerance,
         );
+        // A native output matched within the float tolerance can hash differently, so the CPU output names
+        // the matched result.
         let output_fingerprint = if parity_status == validation::ParityStatus::Matched {
             cpu.as_ref().map(|run| run.final_measurement.output_fingerprint.clone())
         } else {

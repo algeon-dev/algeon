@@ -129,5 +129,5 @@ async fn run_query(
     if let Some(dir) = artifact_dir {
         artifacts::write_samples(dir, query.id, cpu.as_ref().ok(), native.as_ref().ok())?;
     }
-    Ok(NativeTpchBenchmarkRow::accepted(query.id, planned.planning_row, cpu, native))
+    Ok(NativeTpchBenchmarkRow::accepted(query.id, planned.planning_row, cpu, native, config.parity_float_tolerance))
 }

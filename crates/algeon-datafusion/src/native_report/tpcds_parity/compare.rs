@@ -51,6 +51,31 @@ pub fn compare_record_batches(
     )
 }
 
+/// Compares CPU and native Arrow output under an explicit row-ordering rule.
+///
+/// This is [`compare_record_batches`] for callers that resolve the top-level
+/// `ORDER BY` themselves, for example from a logical plan. Keys index output
+/// columns of `cpu_schema`; a key outside it makes the result
+/// [`ParityStatus::NotCompared`].
+pub fn compare_record_batches_with_ordering(
+    cpu_schema: &Schema,
+    cpu_batches: &[RecordBatch],
+    native_schema: &Schema,
+    native_batches: &[RecordBatch],
+    ordering: &ParityRowOrdering,
+    tolerance: ParityFloatTolerance,
+) -> ParityComparisonResult {
+    compare_record_batches_with_options(
+        cpu_schema,
+        cpu_batches,
+        native_schema,
+        native_batches,
+        ordering,
+        tolerance,
+        ParityCompareOptions::strict_native(),
+    )
+}
+
 /// Schema comparison switches for native-vs-native and cross-engine oracles.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ParityCompareOptions {
@@ -67,15 +92,25 @@ impl ParityCompareOptions {
     }
 }
 
-pub(super) enum ParityRowOrdering {
+/// Row order a parity comparison requires of both outputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParityRowOrdering {
+    /// No top-level `ORDER BY`: rows compare as a multiset.
     Unordered,
+    /// Rows compare in emitted order, used when the ordering keys are unknown.
     Ordered,
+    /// The key sequence compares in order; rows may move only within
+    /// contiguous runs of exactly equal keys.
     OrderBy(Vec<ParitySortKey>),
 }
 
-pub(super) struct ParitySortKey {
-    column: usize,
-    descending: bool,
+/// One top-level `ORDER BY` key resolved to an output column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParitySortKey {
+    /// Output column index.
+    pub column: usize,
+    /// Whether the key sorts in descending order.
+    pub descending: bool,
 }
 
 pub(super) fn sql_row_ordering(sql: &str, schema: Option<&Schema>) -> ParityRowOrdering {
@@ -111,6 +146,21 @@ pub(super) fn compare_record_batches_with_options(
             status: ParityStatus::Mismatched,
             mode,
             detail: Some(detail),
+            cpu_fingerprint: fingerprint_schema_only(cpu_schema),
+            native_fingerprint: fingerprint_schema_only(native_schema),
+        };
+    }
+    if let ParityRowOrdering::OrderBy(keys) = ordering
+        && let Some(key) = keys.iter().find(|key| key.column >= cpu_schema.fields().len())
+    {
+        return ParityComparisonResult {
+            status: ParityStatus::NotCompared,
+            mode,
+            detail: Some(format!(
+                "ORDER BY key column {} is outside the {}-column output schema",
+                key.column,
+                cpu_schema.fields().len()
+            )),
             cpu_fingerprint: fingerprint_schema_only(cpu_schema),
             native_fingerprint: fingerprint_schema_only(native_schema),
         };
