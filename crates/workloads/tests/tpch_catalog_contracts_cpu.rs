@@ -1,12 +1,13 @@
 //! The TPC-H catalog is the SQL files under `src/tpch/queries`, with qgen's
 //! substitution values for the dataset's scale factor, which comes from the
-//! data and must agree with any declared scale label.
+//! data and must agree with any declared scale label. A dataset's content
+//! fingerprint covers its Parquet footers and generation manifest.
 
 use std::{fs, path::Path};
 
 use workloads::tpch::{
-    TPCH_QUERIES, TPCH_QUERY_COUNT, TpchScaleFactor, describe_tpch_dataset, read_tpch_scale_factor,
-    write_tiny_tpch_parquet_dataset,
+    TPCH_QUERIES, TPCH_QUERY_COUNT, TpchScaleFactor, describe_tpch_dataset,
+    describe_tpch_dataset_with_content_fingerprint, read_tpch_scale_factor, write_tiny_tpch_parquet_dataset,
 };
 
 fn scale(label: &str) -> TpchScaleFactor {
@@ -57,4 +58,46 @@ fn declared_scale_that_disagrees_with_the_data_is_rejected() {
     assert!(error.to_string().contains("declared TPC-H scale factor sf1 disagrees with the data"), "{error}");
     assert!(TpchScaleFactor::from_label("sf1x").is_err());
     assert!(TpchScaleFactor::from_label("sf0.00001").is_err());
+}
+
+fn content_fingerprint(root: &Path) -> String {
+    describe_tpch_dataset_with_content_fingerprint(root, "tiny", "test", "test", true)
+        .unwrap()
+        .content_fingerprint
+        .expect("content fingerprint was requested")
+}
+
+/// Byte range of the serialized footer, from the length in the file's trailer.
+fn footer_range(bytes: &[u8]) -> std::ops::Range<usize> {
+    let trailer = bytes.len() - 8;
+    let footer_len = u32::from_le_bytes(bytes[trailer..trailer + 4].try_into().unwrap()) as usize;
+    trailer - footer_len..trailer
+}
+
+#[test]
+fn content_fingerprint_hashes_footers_and_manifest_but_not_data_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    write_tiny_tpch_parquet_dataset(dir.path()).unwrap();
+    let lineitem = dir.path().join("lineitem.parquet");
+    let original = content_fingerprint(dir.path());
+
+    let mut bytes = fs::read(&lineitem).unwrap();
+    let footer = footer_range(&bytes);
+    let data_byte = 4 + (footer.start - 4) / 2;
+    bytes[data_byte] ^= 0xff;
+    fs::write(&lineitem, &bytes).unwrap();
+    assert_eq!(content_fingerprint(dir.path()), original, "a byte outside the footer must not change the value");
+
+    let created_by = bytes[footer.clone()].windows(10).position(|window| window == b"parquet-rs").unwrap();
+    bytes[footer.start + created_by] = b'q';
+    fs::write(&lineitem, &bytes).unwrap();
+    let footer_changed = content_fingerprint(dir.path());
+    assert_ne!(footer_changed, original, "a footer byte must change the value");
+
+    let manifest = dir.path().join("_generation.json");
+    fs::write(&manifest, r#"{"writer": "spark"}"#).unwrap();
+    let with_manifest = content_fingerprint(dir.path());
+    assert_ne!(with_manifest, footer_changed, "adding the manifest must change the value");
+    fs::write(&manifest, r#"{"writer": "duckdb"}"#).unwrap();
+    assert_ne!(content_fingerprint(dir.path()), with_manifest, "editing the manifest must change the value");
 }

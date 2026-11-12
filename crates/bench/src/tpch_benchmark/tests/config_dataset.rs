@@ -1,8 +1,9 @@
-use std::fs;
+use std::{fs, path::PathBuf};
 
 use algeon_datafusion::planner::AlgeonGpuExecutionMode;
 use query_planning::execution_contracts::SourceChunkPlanningMode;
 use query_runtime::runtime::GpuDeviceMemoryLimit;
+use workloads::tpch::TpchScaleFactor;
 
 use super::*;
 use crate::tpch_benchmark::config::{
@@ -163,6 +164,56 @@ fn sf1_external_dataset_mode_rejects_tiny_or_unknown_metadata() {
     let error = dataset::validate_sf10_external_metadata(&benchmark_metadata())
         .expect_err("SF10 benchmark mode must reject SF1 metadata");
     assert!(error.to_string().contains("requires ALGEON_TPCH_SCALE_FACTOR=sf10"));
+}
+
+#[test]
+fn scales_without_a_default_root_require_an_explicit_parquet_dir() {
+    for scale_factor in [NativeTpchScaleFactor::Sf300, NativeTpchScaleFactor::Sf500, NativeTpchScaleFactor::Sf1000] {
+        let mode =
+            NativeTpchDatasetMode::parse("ALGEON_TPCH_BENCH_DATASET_MODE", Some(scale_factor.dataset_mode_str()))
+                .unwrap();
+        assert_eq!(mode, NativeTpchDatasetMode::External(scale_factor));
+
+        let root = PathBuf::from("/data/tpch/parquet");
+        assert_eq!(
+            dataset::resolve_external_dataset_root(scale_factor, Some(root.clone())).unwrap(),
+            dataset::ExternalDatasetRoot::Explicit(root)
+        );
+        let error = dataset::resolve_external_dataset_root(scale_factor, None)
+            .expect_err("a scale without a default fixture root must not fall back to another scale's root");
+        assert!(error.to_string().contains("has no default fixture root; set ALGEON_PARQUET_DIR"), "{error}");
+    }
+    assert!(matches!(
+        dataset::resolve_external_dataset_root(NativeTpchScaleFactor::Sf100, None).unwrap(),
+        dataset::ExternalDatasetRoot::Default(_)
+    ));
+}
+
+#[test]
+fn expected_row_counts_cover_every_scale_and_agree_with_its_supplier_rows() {
+    for scale_factor in NativeTpchScaleFactor::ALL {
+        let counts = dataset::expected_table_row_counts(scale_factor).unwrap();
+        assert_eq!(counts.keys().map(String::as_str).collect::<Vec<_>>(), TPCH_TABLES, "{}", scale_factor.as_str());
+        assert_eq!(
+            Some(TpchScaleFactor::from_supplier_rows(counts["supplier"]).unwrap()),
+            TpchScaleFactor::from_label(scale_factor.as_str()).unwrap(),
+            "{}",
+            scale_factor.as_str()
+        );
+    }
+}
+
+#[test]
+fn sf500_external_dataset_mode_accepts_sf500_metadata_only() {
+    let counts = dataset::expected_table_row_counts(NativeTpchScaleFactor::Sf500).unwrap();
+    let tables = benchmark_tables(&counts.iter().map(|(table, rows)| (table.as_str(), *rows)).collect::<Vec<_>>());
+    let sf500 = benchmark_metadata_for_scale("sf500", counts.values().sum(), tables);
+    dataset::validate_external_metadata(&sf500, NativeTpchScaleFactor::Sf500).unwrap();
+
+    let sf100_as_sf500 = TpchDatasetMetadata { scale_factor: "sf500".to_string(), ..benchmark_sf100_metadata() };
+    let error = dataset::validate_external_metadata(&sf100_as_sf500, NativeTpchScaleFactor::Sf500)
+        .expect_err("SF500 benchmark mode must reject SF100 row counts");
+    assert!(error.to_string().contains("requires SF500 row count customer=75000000"), "{error}");
 }
 
 #[test]

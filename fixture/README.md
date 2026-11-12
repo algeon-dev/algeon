@@ -15,6 +15,7 @@ fixture/
   fixture.sh                         # public fixture command
   tpc-h/
     generate.py                      # TPC-H generator
+    expected_rows.json               # per-scale table row counts
     data/sf<N>/parquet/              # local, gitignored benchmark data
     models/                          # local, gitignored forest models
   tpc-ds/
@@ -68,8 +69,9 @@ needed more than 388 GiB). The DuckDB writer concatenates the sorted ranges
 into the same file as one global sort, except that each range boundary can
 leave one short row group.
 Verification checks the expected tables, row counts for the scales in each
-generator's expected-row table, row groups, compression, and monotonic
-row-group statistics, and rejects a file with more than 32,767 row groups
+generator's expected-row table (for TPC-H, `tpc-h/expected_rows.json`, which
+the TPC-H benchmark's dataset validation also reads), row groups, compression,
+and monotonic row-group statistics, and rejects a file with more than 32,767 row groups
 (the most the parquet 59 footer decoder in DataFusion 55 reads). Use DuckDB
 1.5.x: 1.2.0 writes string statistics that pyarrow
 cannot read, and 2.0.0 writes every column as NOT NULL where the other scales
