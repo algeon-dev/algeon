@@ -1,7 +1,7 @@
 use algeon_datafusion::error::ErrorCode;
 
 use super::*;
-use crate::tpch_benchmark::reports::bounded_status;
+use crate::tpch_benchmark::{config::DEFAULT_PARITY_FLOAT_TOLERANCE, reports::bounded_status};
 
 #[test]
 fn accepted_row_preserves_native_not_started_failure_status() {
@@ -14,6 +14,7 @@ fn accepted_row_preserves_native_not_started_failure_status() {
             message: "native planning failed\nwith details".to_string(),
             details: Box::default(),
         }),
+        DEFAULT_PARITY_FLOAT_TOLERANCE,
     );
 
     assert!(row.cpu_runtime_started);
@@ -38,6 +39,7 @@ fn accepted_row_distinguishes_cpu_planning_failure_from_started_runtime() {
             details: Box::default(),
         }),
         Ok(timed_native_run("output-fnv1a64:0000000000000001")),
+        DEFAULT_PARITY_FLOAT_TOLERANCE,
     );
 
     assert!(!row.cpu_runtime_started);
@@ -59,6 +61,7 @@ fn accepted_row_reports_fingerprint_mismatch_without_canonical_output_fingerprin
         accepted_planning_row("q01"),
         Ok(timed_cpu_run("output-fnv1a64:0000000000000001")),
         Ok(timed_native_run("output-fnv1a64:0000000000000002")),
+        DEFAULT_PARITY_FLOAT_TOLERANCE,
     );
 
     assert!(row.cpu_runtime_started);
@@ -104,6 +107,7 @@ fn native_runtime_failure_preserves_adapter_error_facts() {
             message: datafusion_error.to_string(),
             details: Box::new(details),
         }),
+        DEFAULT_PARITY_FLOAT_TOLERANCE,
     );
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),
@@ -176,6 +180,7 @@ fn cpu_runtime_failure_preserves_adapter_error_facts() {
             details: Box::new(details),
         }),
         Ok(timed_native_run("output-fnv1a64:0000000000000001")),
+        DEFAULT_PARITY_FLOAT_TOLERANCE,
     );
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),

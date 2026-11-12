@@ -1,7 +1,9 @@
 use query_planning::execution_contracts::SourceChunkPlanningMode;
 
 use super::*;
-use crate::tpch_benchmark::config::{DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS};
+use crate::tpch_benchmark::config::{
+    DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS, DEFAULT_PARITY_FLOAT_TOLERANCE,
+};
 
 #[test]
 fn large_keyed_join_strategy_gate_accepts_skip_cpu_sf100_matrix_report() {
@@ -156,6 +158,7 @@ fn skip_cpu_accepted_row(query_id: &str, metrics: NativeDataFusionExecutionMetri
             details: Box::default(),
         }),
         Ok(native),
+        DEFAULT_PARITY_FLOAT_TOLERANCE,
     )
 }
 

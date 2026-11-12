@@ -254,7 +254,9 @@ def header_lines(meta):
     line1 = (f"dataset: scale={scale} "
              f"fingerprint={meta.get('tpch_dataset_metadata_fingerprint', '?')} "
              f"warmups={meta.get('tpch_benchmark_warmups', '?')} "
-             f"iterations={meta.get('tpch_benchmark_iterations', '?')}")
+             f"iterations={meta.get('tpch_benchmark_iterations', '?')} "
+             f"parity_float_tolerance=abs:{meta.get('tpch_benchmark_parity_float_tolerance_absolute', '?')}"
+             f",rel:{meta.get('tpch_benchmark_parity_float_tolerance_relative', '?')}")
 
     cap_bytes = f(meta.get("tpch_benchmark_native_device_budget_bytes"))
     cap = f"{cap_bytes / (1024 ** 3):.2f}GiB" if cap_bytes is not None else "?"
