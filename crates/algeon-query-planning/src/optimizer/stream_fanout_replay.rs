@@ -11,18 +11,21 @@
 //! several consumers is collected into one frame (`ResourceSharing`), which would
 //! hold the whole probe side in device memory and serialize the joins behind it.
 //! When any consuming join has a residual, the node is replayed only when its
-//! conservative row or byte estimate reaches the large-build threshold of
-//! [`KeyedHashJoinStrategyOptions`]; below it, or without an estimate, it stays
-//! shared. Every clone keeps the facts of the node it copies. The clones have
-//! no image in the rewrite origin, so routes into the replayed subtree are
-//! dropped and rediscovered by the late route discovery pass.
+//! conservative row estimate reaches the backend's column row limit or its
+//! conservative byte estimate reaches the retained-state share of the device
+//! budget ([`MemoryControlPolicy::retained_state_share_bytes`]). Below both,
+//! without an estimate, or without a known budget and below the row limit, it
+//! stays shared. Every clone keeps the facts of the node it copies. The clones
+//! have no image in the rewrite origin, so routes into the replayed subtree
+//! are dropped and rediscovered by the late route discovery pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{consumers_by_node, rewrite};
 use crate::{
-    capability::{KeyedHashJoinStrategyOptions, classify_join, join_probe_streams_chunks},
+    capability::{classify_join, join_probe_streams_chunks},
     error::Result,
+    execution_contracts::MemoryControlPolicy,
     plan::{
         JoinNode, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan, RewrittenNodes,
         estimated_output_bytes, estimated_output_rows,
@@ -37,18 +40,23 @@ pub const STREAM_FANOUT_REPLAY_RULE_NAME: &str = "stream_fanout_replay";
 pub struct StreamFanoutReplayOptions {
     /// Whether the pass may duplicate replayable probe-input subtrees.
     pub enabled: bool,
+    /// Device budget the plan is expected to execute under. A shared node
+    /// with a residual consumer is replayed once its byte estimate reaches
+    /// the retained-state share of this budget. `None` means the budget is
+    /// unknown, and only the column row limit replays such a node.
+    pub device_budget_bytes: Option<u64>,
 }
 
 impl StreamFanoutReplayOptions {
     /// Returns options with stream-fanout replay disabled.
     pub fn disabled() -> Self {
-        Self { enabled: false }
+        Self { enabled: false, device_budget_bytes: None }
     }
 }
 
 impl Default for StreamFanoutReplayOptions {
     fn default() -> Self {
-        Self { enabled: true }
+        Self { enabled: true, device_budget_bytes: None }
     }
 }
 
@@ -90,12 +98,13 @@ pub struct StreamFanoutReplayCandidateDiagnostics {
     pub(crate) estimated_rows: Option<u64>,
     /// Conservative byte estimate of the shared producer node, if known.
     pub(crate) estimated_bytes: Option<u64>,
-    /// Large-build row threshold the estimate is compared with when a
+    /// Retained-state share of the device budget the byte estimate is
+    /// compared with when a consuming join has a residual; `None` when the
+    /// budget is unknown.
+    pub(crate) budget_share_bytes: Option<u64>,
+    /// Backend column row limit the row estimate is compared with when a
     /// consuming join has a residual.
-    pub(crate) large_build_rows: u64,
-    /// Large-build byte threshold the estimate is compared with when a
-    /// consuming join has a residual.
-    pub(crate) large_build_bytes: u64,
+    pub(crate) column_row_limit: u64,
     /// Evidence that selected the producer for replay, when it was selected.
     pub(crate) selection_basis: Option<StreamFanoutReplaySelectionBasis>,
     /// True when the returned plan duplicates the producer subtree.
@@ -109,10 +118,11 @@ pub struct StreamFanoutReplayCandidateDiagnostics {
 pub(crate) enum StreamFanoutReplaySelectionBasis {
     /// No consuming join has a residual, so the producer is replayed at any size.
     ResidualFreeConsumers,
-    /// The conservative row estimate reaches the large-build row threshold.
-    ConservativeRows,
-    /// The conservative byte estimate reaches the large-build byte threshold.
-    ConservativeBytes,
+    /// The conservative row estimate reaches the backend column row limit.
+    ColumnRowLimit,
+    /// The conservative byte estimate reaches the retained-state share of the
+    /// device budget.
+    BudgetShareBytes,
 }
 
 impl StreamFanoutReplaySelectionBasis {
@@ -120,8 +130,8 @@ impl StreamFanoutReplaySelectionBasis {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::ResidualFreeConsumers => "residual_free_consumers",
-            Self::ConservativeRows => "conservative_rows",
-            Self::ConservativeBytes => "conservative_bytes",
+            Self::ColumnRowLimit => "column_row_limit",
+            Self::BudgetShareBytes => "budget_share_bytes",
         }
     }
 }
@@ -132,9 +142,14 @@ pub enum StreamFanoutReplayRejectedReason {
     /// The producer was selected but lies outside the subtree the sink reaches,
     /// so no reader copied it.
     NotReachableFromSink,
-    /// A consuming join has a residual, and the producer's conservative row and
-    /// byte estimates stay below the large-build thresholds.
-    ResidualConsumerBelowLargeBuild,
+    /// A consuming join has a residual, the producer's conservative row
+    /// estimate, if any, stays below the column row limit, and its byte
+    /// estimate, if any, stays below the budget share.
+    ResidualConsumerBelowLimits,
+    /// A consuming join has a residual, the device budget is unknown, and the
+    /// producer's conservative row estimate, if any, stays below the column
+    /// row limit.
+    ResidualConsumerBudgetUnknown,
     /// A consuming join has a residual, and the producer has neither a
     /// conservative row nor a conservative byte estimate.
     ResidualConsumerUnestimated,
@@ -149,7 +164,7 @@ pub(crate) struct StreamFanoutReplayResult {
 pub(crate) fn optimize_stream_fanout_replay(
     plan: QueryPlan,
     options: &StreamFanoutReplayOptions,
-    join_options: &KeyedHashJoinStrategyOptions,
+    column_row_limit: u64,
 ) -> Result<StreamFanoutReplayResult> {
     if !options.enabled {
         return Ok(StreamFanoutReplayResult {
@@ -168,13 +183,16 @@ pub(crate) fn optimize_stream_fanout_replay(
         });
     }
 
+    let limits = ReplayLimits {
+        budget_share_bytes: options.device_budget_bytes.map(MemoryControlPolicy::retained_state_share_bytes),
+        column_row_limit,
+    };
     let selections = candidates
         .iter()
         .map(|(fanout_node_id, candidate)| {
             let estimated_rows = estimated_output_rows(&plan, *fanout_node_id);
             let estimated_bytes = estimated_output_bytes(&plan, *fanout_node_id);
-            let selection =
-                replay_selection(estimated_rows, estimated_bytes, candidate.residual_consumer, join_options);
+            let selection = replay_selection(estimated_rows, estimated_bytes, candidate.residual_consumer, limits);
             (*fanout_node_id, (estimated_rows, estimated_bytes, selection))
         })
         .collect::<BTreeMap<_, _>>();
@@ -209,8 +227,8 @@ pub(crate) fn optimize_stream_fanout_replay(
             join_probe_consumer_node_ids: candidate.join_probe_consumer_node_ids,
             estimated_rows,
             estimated_bytes,
-            large_build_rows: join_options.large_keyed_hash_build_row_threshold(),
-            large_build_bytes: join_options.large_keyed_hash_build_bytes_threshold(),
+            budget_share_bytes: limits.budget_share_bytes,
+            column_row_limit: limits.column_row_limit,
             selection_basis: selection.ok(),
             applied,
             rejected_reason,
@@ -350,37 +368,53 @@ fn join_probe_stream_capable(node_id: NodeId, join: &JoinNode) -> bool {
         .is_ok_and(|form| form.strategies().iter().all(|strategy| join_probe_streams_chunks(join, form, *strategy)))
 }
 
+/// Bounds a shared producer with a residual consumer is compared with.
+#[derive(Clone, Copy)]
+struct ReplayLimits {
+    /// Retained-state share of the device budget, when the budget is known.
+    budget_share_bytes: Option<u64>,
+    /// Most rows one backend column holds.
+    column_row_limit: u64,
+}
+
 /// Decides whether a candidate is replayed.
 ///
-/// A residual consumer keeps a small producer shared: replaying the shared
-/// lineitem probe of TPC-H SF10 Q21's residual semi and anti joins read 4656
-/// row groups and took about 450 ms, compared with 3189 row groups and 314 ms
-/// without replay. A shared producer is collected into one device frame that
-/// stays resident until its last consumer finishes, and the concatenation
-/// that builds it holds the chunks and the frame at once. The large-build
-/// threshold bounds the same single-frame residency for a hash build, so above
-/// it the rule trades rescans for that memory. Q21's filtered lineitem at
-/// SF1000 is about 3.8 billion rows, beyond cuDF's 2^31 - 1 row limit for one
-/// frame.
+/// A residual consumer keeps a producer shared while it fits: replaying the
+/// shared lineitem probe of TPC-H SF10 Q21's residual semi and anti joins read
+/// 4656 row groups and took about 450 ms, compared with 3189 row groups and
+/// 314 ms without replay. At SF100, with partitioned hash tables kept across
+/// probe pieces, the query took about 965 ms shared and 1,360 ms replayed. A
+/// shared producer is collected into one device frame that stays resident
+/// until its last consumer finishes, and the concatenation that builds it
+/// holds the chunks and the frame at once, so the frame is bounded like other
+/// state retained across chunks. One frame also cannot hold more rows than a
+/// backend column: Q21's filtered lineitem at SF1000 is about 3.8 billion
+/// rows, beyond cuDF's 2^31 - 1. Without a known budget only the row limit
+/// replays, because a replayed small producer costs time on every run.
 fn replay_selection(
     estimated_rows: Option<u64>,
     estimated_bytes: Option<u64>,
     residual_consumer: bool,
-    join_options: &KeyedHashJoinStrategyOptions,
+    limits: ReplayLimits,
 ) -> std::result::Result<StreamFanoutReplaySelectionBasis, StreamFanoutReplayRejectedReason> {
     if !residual_consumer {
         return Ok(StreamFanoutReplaySelectionBasis::ResidualFreeConsumers);
     }
-    if estimated_rows.is_some_and(|rows| join_options.rows_reach_large_build(rows)) {
-        return Ok(StreamFanoutReplaySelectionBasis::ConservativeRows);
+    if estimated_rows.is_some_and(|rows| rows >= limits.column_row_limit) {
+        return Ok(StreamFanoutReplaySelectionBasis::ColumnRowLimit);
     }
-    if estimated_bytes.is_some_and(|bytes| join_options.bytes_reach_large_build(bytes)) {
-        return Ok(StreamFanoutReplaySelectionBasis::ConservativeBytes);
+    if let (Some(bytes), Some(share)) = (estimated_bytes, limits.budget_share_bytes)
+        && bytes >= share
+    {
+        return Ok(StreamFanoutReplaySelectionBasis::BudgetShareBytes);
     }
     if estimated_rows.is_none() && estimated_bytes.is_none() {
         return Err(StreamFanoutReplayRejectedReason::ResidualConsumerUnestimated);
     }
-    Err(StreamFanoutReplayRejectedReason::ResidualConsumerBelowLargeBuild)
+    if limits.budget_share_bytes.is_none() {
+        return Err(StreamFanoutReplayRejectedReason::ResidualConsumerBudgetUnknown);
+    }
+    Err(StreamFanoutReplayRejectedReason::ResidualConsumerBelowLimits)
 }
 
 fn probe_input_index(join: &JoinNode) -> usize {

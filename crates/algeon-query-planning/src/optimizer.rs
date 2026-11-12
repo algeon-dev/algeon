@@ -483,7 +483,7 @@ fn run_pass(
             let result = stream_fanout_replay::optimize_stream_fanout_replay(
                 plan,
                 &options.stream_fanout_replay,
-                &ctx.policy().keyed_hash_join,
+                ctx.backend().max_column_elements(),
             )?;
             diagnostics.stream_fanout_replay.merge(result.diagnostics);
             (result.plan, result.change)

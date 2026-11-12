@@ -39,60 +39,88 @@ fn disabled_native_optimizer_keeps_stream_fanout_replay_off() {
 }
 
 #[test]
-fn native_optimizer_replays_shared_probe_with_residual_consumer_only_from_large_build_estimate() {
-    let join_options = PlanningPolicy::default().keyed_hash_join;
-    let large_build_rows = join_options.large_keyed_hash_build_row_threshold();
-    let thresholds = format!(
-        "large_build_rows={large_build_rows},large_build_bytes={}",
-        join_options.large_keyed_hash_build_bytes_threshold()
-    );
-    // Above the small-build byte bound, so build-side selection keeps the anti
-    // join building its left side, and below the large-build byte bound, so
-    // only the row estimate decides.
-    let lineitem_bytes = 1 << 30;
-    for (lineitem, expected_reason, expected_row_evidence) in [
+fn native_optimizer_replays_shared_probe_with_residual_consumer_from_budget_share_or_row_limit() {
+    let device_budget_bytes = 64 << 30;
+    let share = MemoryControlPolicy::retained_state_share_bytes(device_budget_bytes);
+    let row_limit = rapids_backend().max_column_elements();
+    let rows = 100_000_000;
+    // Every byte estimate stays above the small-build byte bound, so
+    // build-side selection keeps the anti join building its left side.
+    let small_bytes = 1 << 30;
+    let lineitem = |bytes, rows| estimated_local_source_with_fields("lineitem", &["key", "supp"], bytes, rows);
+    for (case, lineitem, budget, expected_reason, expected_row_evidence) in [
         (
-            estimated_local_source_with_fields("lineitem", &["key", "supp"], lineitem_bytes, large_build_rows - 1),
-            Some(StreamFanoutReplayRejectedReason::ResidualConsumerBelowLargeBuild),
+            "below the budget share",
+            lineitem(share - 1, rows),
+            Some(device_budget_bytes),
+            Some(StreamFanoutReplayRejectedReason::ResidualConsumerBelowLimits),
             format!(
-                "estimated_rows={},estimated_bytes={lineitem_bytes},{thresholds},selection_basis=none,applied=false",
-                large_build_rows - 1
+                "estimated_rows={rows},estimated_bytes={},budget_share_bytes={share},column_row_limit={row_limit},selection_basis=none,applied=false",
+                share - 1
             ),
         ),
         (
-            estimated_local_source_with_fields("lineitem", &["key", "supp"], lineitem_bytes, large_build_rows),
+            "at the budget share",
+            lineitem(share, rows),
+            Some(device_budget_bytes),
             None,
             format!(
-                "estimated_rows={large_build_rows},estimated_bytes={lineitem_bytes},{thresholds},selection_basis=conservative_rows,applied=true"
+                "estimated_rows={rows},estimated_bytes={share},budget_share_bytes={share},column_row_limit={row_limit},selection_basis=budget_share_bytes,applied=true"
             ),
         ),
         (
+            "at the column row limit",
+            lineitem(small_bytes, row_limit),
+            Some(device_budget_bytes),
+            None,
+            format!(
+                "estimated_rows={row_limit},estimated_bytes={small_bytes},budget_share_bytes={share},column_row_limit={row_limit},selection_basis=column_row_limit,applied=true"
+            ),
+        ),
+        (
+            "unestimated",
             gpu_source("lineitem", &["key", "supp"]),
+            Some(device_budget_bytes),
             Some(StreamFanoutReplayRejectedReason::ResidualConsumerUnestimated),
-            format!("estimated_rows=none,estimated_bytes=none,{thresholds},selection_basis=none,applied=false"),
+            format!(
+                "estimated_rows=none,estimated_bytes=none,budget_share_bytes={share},column_row_limit={row_limit},selection_basis=none,applied=false"
+            ),
+        ),
+        (
+            "budget unknown",
+            lineitem(share, rows),
+            None,
+            Some(StreamFanoutReplayRejectedReason::ResidualConsumerBudgetUnknown),
+            format!(
+                "estimated_rows={rows},estimated_bytes={share},budget_share_bytes=none,column_row_limit={row_limit},selection_basis=none,applied=false"
+            ),
         ),
     ] {
+        let options = NativeOptimizerOptions {
+            stream_fanout_replay: StreamFanoutReplayOptions { device_budget_bytes: budget, ..Default::default() },
+            ..Default::default()
+        };
         let result = optimize_query_plan(
             shared_probe_with_residual_consumer_plan(lineitem),
-            &NativeOptimizerOptions::default(),
+            &options,
             rapids_analysis_context(PlanningPolicy::default()),
             local_dimension_pruning_resolver(),
         )
         .unwrap();
 
         let replay = &result.diagnostics.stream_fanout_replay;
-        assert_eq!(replay.considered_count, 1);
+        assert_eq!(replay.considered_count, 1, "{case}");
         let candidate = &replay.candidates[0];
-        assert_eq!(candidate.rejected_reason, expected_reason);
-        assert_eq!(candidate.applied, expected_reason.is_none());
+        assert_eq!(candidate.rejected_reason, expected_reason, "{case}");
+        assert_eq!(candidate.applied, expected_reason.is_none(), "{case}");
         let expected_probe_consumers = if candidate.applied { 1 } else { 2 };
-        assert_eq!(max_direct_join_probe_consumer_count(&result.plan), expected_probe_consumers);
+        assert_eq!(max_direct_join_probe_consumer_count(&result.plan), expected_probe_consumers, "{case}");
         let rows = result.diagnostics.stable_rule_rows();
         let replay_row = rows
             .iter()
             .find(|row| row.starts_with(&format!("rule={STREAM_FANOUT_REPLAY_RULE_NAME},")))
             .expect("stream fanout replay should report its candidate");
-        assert!(replay_row.contains(&expected_row_evidence), "{replay_row}");
+        assert!(replay_row.contains(&expected_row_evidence), "{case}: {replay_row}");
     }
 }
 
