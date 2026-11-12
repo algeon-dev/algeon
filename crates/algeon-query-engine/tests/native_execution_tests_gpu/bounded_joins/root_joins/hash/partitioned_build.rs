@@ -174,7 +174,7 @@ fn bounded_native_query_partitions_streamed_leaf_build_without_whole_leaf_concat
         "query domain peak {peak_bytes} must stay below a second whole build copy of {} bytes",
         join_metrics.build_bytes
     );
-    assert_eq!(metrics.hash_join_build_count, 0);
+    assert_eq!(metrics.hash_join_build_count, partition_count as u64);
     assert!(metrics.source_chunks_committed >= row_groups as u64, "{metrics:#?}");
     assert!(metrics.join_strategy_decisions.iter().any(|decision| {
         decision.node_id == "n2"
@@ -368,8 +368,10 @@ fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build()
     assert_eq!(outer_metrics.build_rows, (row_groups * rows_per_row_group) as u64);
     // Collecting the inner output eagerly and concatenating it for the outer
     // build holds that output twice; streaming it into partitions does not.
+    // The outer probe's single piece concatenates its partition outputs while
+    // the build partitions are resident, which adds one copy of the output.
     assert!(
-        peak_bytes < outer_metrics.build_bytes * 7 / 4,
+        peak_bytes < outer_metrics.build_bytes * 7 / 4 + outer_metrics.output_bytes,
         "query domain peak {peak_bytes} must stay below a second whole copy of the {} byte inner output",
         outer_metrics.build_bytes
     );

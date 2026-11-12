@@ -39,7 +39,8 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.hash_join_build_count, 0);
+    // One hash table per build partition; the probe side arrives as one piece.
+    assert_eq!(metrics.hash_join_build_count, 2);
     assert_eq!(metrics.one_shot_join_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -111,10 +112,6 @@ fn partitioned_cases() {
         (
             "bounded_joins::root_joins::hash::partitioned::bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_null_padding",
             bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_null_padding,
-        ),
-        (
-            "bounded_joins::root_joins::hash::partitioned::bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate",
-            bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate,
         ),
     ]);
 }
@@ -714,7 +711,9 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.hash_join_build_count, 1);
+    // The reusable dimension join builds one table and the partitioned left
+    // join one per build partition.
+    assert_eq!(metrics.hash_join_build_count, 3);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -846,7 +845,8 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.hash_join_build_count, 0);
+    // One hash table per build partition; the probe side arrives as one piece.
+    assert_eq!(metrics.hash_join_build_count, 2);
     assert_eq!(metrics.one_shot_join_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -923,7 +923,8 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.hash_join_build_count, 0);
+    // One hash table per build partition; the probe side arrives as one piece.
+    assert_eq!(metrics.hash_join_build_count, 2);
     assert_eq!(metrics.one_shot_join_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -1085,8 +1086,18 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
 fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate() {
-    let runtime = backend_runtime();
+    // One row group per read gives the partitioned join several probe pieces,
+    // and each piece reaches the aggregate as one frame.
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-one-shot-filtered-aggregate-stream");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -1160,7 +1171,6 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(aggregate).unwrap();
-    let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -1177,10 +1187,10 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         metrics.partial_aggregate_count > 1,
         "filtered direct join-output aggregate should produce multiple streamed partials"
     );
-    // Every joined row reaches one streamed partial. The other partials are
-    // empty and are not merged, so that partial is projected directly.
-    assert_eq!(metrics.final_merge_attempts, 0);
-    assert_eq!(metrics.final_merge_levels, 0);
+    // Each probe row group is one probe piece and one join output frame, so the
+    // joined rows reach several partials, which one merge level combines.
+    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(metrics.final_merge_levels, 1);
     assert!(
         metrics.partial_aggregate_count <= metrics.source_chunks_committed.saturating_mul(2),
         "filtered direct join-output aggregate should keep stream partial count proportional to source chunks, partials={}, source_chunks={}",

@@ -117,7 +117,15 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
     let dir = unique_temp_dir("query-engine-bounded-compiled-rollup-avg-typed-null-partials");
     let inventory_path = dir.join("inventory.parquet");
     let item_path = dir.join("item.parquet");
-    let context = backend_context();
+    // One row group per read gives the partitioned join several probe pieces,
+    // and each piece reaches the aggregate as one frame.
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let inventory_schema = write_inventory_rollup_parquet(&inventory_path);
     let item_schema = write_item_rollup_parquet(&item_path);
     let join_schema = Arc::new(Schema::new(vec![
@@ -371,7 +379,7 @@ fn write_inventory_rollup_parquet(path: &Path) -> Arc<Schema> {
         ],
     )
     .unwrap();
-    write_single_batch_parquet(path, Arc::clone(&schema), batch);
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 4);
     schema
 }
 

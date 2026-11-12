@@ -46,6 +46,25 @@ ownership lasts through final consumption, and all lanes allocate within
 shared execution scopes coordinate multi-reader lifecycles, retaining resident
 handles until the final reader completes.
 
+## Partitioned joins {/* #partitioned-joins */}
+
+A partitioned hash join splits its build side by key hash into one frame per
+partition and splits each probe piece the same way, so each pair holds only
+matching keys. When the probe side streams in, the join builds the hash table
+of each build partition at the first probe piece and probes it with every later
+piece. A probe of a single piece keeps no table. The attempt's kept tables stay
+within the share of its grant described in
+[kept join tables](./admission.mdx#kept-join-tables); a partition outside that
+share gets a table built for each pair and dropped after it. A retry that
+repartitions a pair builds its own tables for the smaller pairs.
+
+The coordinator builds the kept tables on the root stream before probe chunks
+reach execution lanes. Lanes probe them concurrently on their own streams,
+which only read the table, and build a table themselves only for a partition
+that has none. The outputs of one probe piece's partitions are concatenated
+into one frame, so the next operator receives one frame per probe piece. That
+concatenation holds the piece's output twice at its peak.
+
 ## Runtime dynamic filters
 
 The compiled executor derives dynamic filters from the producer's complete
