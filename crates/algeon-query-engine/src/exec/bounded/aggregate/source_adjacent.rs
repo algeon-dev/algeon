@@ -14,8 +14,14 @@
 //!
 //! The partitioned path sizes its next raw batch from what the previous
 //! batches decoded and staged (`SourceAdjacentRawBatchFeedback`), and from the
-//! attempt's current allocation. The partition count is fixed by the first
-//! batch and never changes within a run. With an `AggregateLaneDispatch`,
+//! attempt's current allocation. The same feedback decides whether a batch is
+//! reduced whole before partitioning. The first batch has no feedback, so each
+//! of its raw inputs gathers a group-key sample of at most
+//! `source_adjacent_local_reduction_key_sample_rows` rows and counts its
+//! distinct keys. That probe runs once per first-batch raw input (again for
+//! each piece of a retry split), and its cost is fixed by the sample bound,
+//! not by the batch size. The partition count is fixed by the first batch and
+//! never changes within a run. With an `AggregateLaneDispatch`,
 //! raw batches and ready partitions run as lane work and their results are
 //! folded on the coordinator; without one everything runs inline. Retry is
 //! local: a raw batch whose read, stages or partitioning fails on a resource
@@ -24,6 +30,7 @@
 
 use std::time::Instant;
 
+use cudf::{DuplicateKeepOption, frame::dataframe::DropDuplicatesOptions};
 use query_planning::{naming::unique_alias_with_suffix, util::sum_optional_u64};
 use query_runtime::observability::{
     RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
@@ -189,12 +196,13 @@ struct SourceAdjacentPartitionInput {
 /// `pending` carries the retained partition inputs only on the inline path;
 /// lane workers receive `None` because the coordinator keeps the retained
 /// inputs and folds each worker's new slices in afterwards. `partition_count`
-/// is `None` only before the first batch has fixed it.
+/// is `None` only before the first batch has fixed it, and `local_reduction`
+/// only before any batch has been observed.
 struct PartitionedSourceBatchWork {
     batch: SourceChunkBatch,
     pending: Option<Vec<Vec<SourceAdjacentPartitionInput>>>,
     partition_count: Option<usize>,
-    local_reduction: bool,
+    local_reduction: Option<bool>,
     estimated_input_bytes: u64,
     min_partition_count: usize,
 }
@@ -451,31 +459,30 @@ impl SourceAdjacentRawBatchFeedback {
         Some((target_bytes / bytes_per_row).max(1))
     }
 
-    /// Whether the next batch should be reduced whole before partitioning.
+    /// Whether the next batch should be reduced whole before partitioning, or
+    /// `None` before any batch has been observed.
     ///
     /// A locally reduced batch proves its own reduction through its partial
     /// output. A hash-partitioned batch that did not flush proves low key
     /// cardinality through partition occupancy instead: keys hash uniformly,
     /// so a batch that touched only a small fraction of the partitions held
     /// few distinct keys.
-    fn local_reduction_effective(&self, policy: BoundedSourceBatchingPolicy, device_budget_bytes: u64) -> bool {
-        let Some(sample) = self.last else {
-            return false;
-        };
+    fn local_reduction_effective(&self, policy: BoundedSourceBatchingPolicy, device_budget_bytes: u64) -> Option<bool> {
+        let sample = self.last?;
         if let Some(partial_rows) = sample.partial_rows {
-            return policy.source_adjacent_local_reduction_effective(
+            return Some(policy.source_adjacent_local_reduction_effective(
                 sample.rows,
                 partial_rows,
                 sample.partial_bytes,
                 device_budget_bytes,
-            );
+            ));
         }
-        match (sample.non_empty_partitions, sample.partition_count) {
+        Some(match (sample.non_empty_partitions, sample.partition_count) {
             (Some(non_empty), Some(partition_count)) => {
                 policy.source_adjacent_local_reduction_from_partition_occupancy(non_empty, partition_count)
             },
             _ => false,
-        }
+        })
     }
 }
 
@@ -732,9 +739,9 @@ fn execute_partitioned_source_adjacent_batch_work(
 /// Reads one raw batch and turns each of its raw inputs into partition work.
 ///
 /// A raw input is either reduced whole first (`local_reduction`, when the
-/// previous batch proved few distinct keys) or hash-partitioned into pending
-/// slices; pending partitions that the batching policy marks ready are
-/// aggregated here. The raw input's staged frame is consumed by whichever
+/// previous batch or, for the first batch, the input's own key sample showed
+/// few distinct keys) or hash-partitioned into pending slices; pending
+/// partitions that the batching policy marks ready are aggregated here. The raw input's staged frame is consumed by whichever
 /// step takes it, so at most one partitioned copy of a raw input is live.
 /// Flushing ready partitions acts on slices retained across batches, so it
 /// stays outside the raw batch's retry scope.
@@ -974,8 +981,10 @@ fn execute_source_adjacent_batch_local_reduction(
 }
 
 /// How a raw input is turned into partition work inside its retry scope.
+/// `local_reduction` is `None` when no batch has been observed yet; the input's
+/// key sample then decides.
 struct SourceAdjacentRawStaging<'a> {
-    local_reduction: bool,
+    local_reduction: Option<bool>,
     partition_count: usize,
     partitioner: &'a SourceAdjacentAggregatePartitioner,
 }
@@ -1079,6 +1088,10 @@ fn stage_source_adjacent_raw_input(
         partition_count: None,
     };
     let source_row_group_count = raw.source_row_group_count;
+    let local_reduction = match local_reduction {
+        Some(local_reduction) => local_reduction,
+        None => source_adjacent_key_sample_local_reduction(execution, bounded, chunks, &raw.partial)?,
+    };
     let staged = if local_reduction {
         SourceAdjacentRawStaged::Reduced(execute_source_adjacent_batch_local_reduction(
             execution,
@@ -1108,6 +1121,163 @@ fn stage_source_adjacent_raw_input(
         SourceAdjacentRawStaged::Partitioned(partitions)
     };
     Ok(SourceAdjacentRawPiece { chunks: chunks.to_vec(), sample, source_row_group_count, staged })
+}
+
+const SOURCE_ADJACENT_KEY_SAMPLE_STRATEGY: &str = "source_adjacent_local_reduction_key_sample";
+
+/// Decides local reduction for a raw input that no earlier batch has judged,
+/// from the distinct group keys of a bounded row sample.
+///
+/// The sample gathers the group-key columns of every `stride`-th row, with the
+/// stride chosen so at most `source_adjacent_local_reduction_key_sample_rows`
+/// rows are taken, from an offset below the stride seeded by the chunk
+/// fingerprint. Over the offset every row is sampled with probability
+/// `1 / stride`, so every group appears with at least that probability and the
+/// expected sampled group count is at least `groups / stride`. The sample's
+/// ratio of groups to rows is therefore, in expectation, at least the input's
+/// (up to the one row by which `sample_rows` can exceed `rows / stride`), and
+/// the ppm threshold applied to an observed partial errs toward partitioning
+/// when applied to the sample. A stride rather than a contiguous slice crosses
+/// every key run of an input clustered by key, such as a file sorted on a group
+/// column. The partial byte bound is checked against the staged bytes scaled by
+/// the sampled ratio.
+///
+/// Group keys that do not lower to input columns leave the input partitioned.
+fn source_adjacent_key_sample_local_reduction(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+    staged: &CommittedPartial,
+) -> Result<bool> {
+    let policy = BoundedSourceBatchingPolicy::default();
+    let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
+        return Ok(false);
+    };
+    let rows = staged.frame.num_rows() as u64;
+    if rows == 0 {
+        return Ok(false);
+    }
+    let stride = rows.div_ceil(policy.source_adjacent_local_reduction_key_sample_rows());
+    let offset = partial_aggregate_source_chunk_fingerprint(chunks).unwrap_or(0) % stride;
+    let sample_rows = (rows - offset).div_ceil(stride);
+    let key_refs = lowered_keys.key_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let token = execution_budget_token_for_boundary(
+        execution.context(),
+        execution.device_budget_bytes(),
+        "source_adjacent_local_reduction_key_sample",
+        "query_engine.bounded.aggregate.source_adjacent_key_sample.budget_token",
+        "failed to create source-adjacent key sample budget token",
+    )?;
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(execution.context());
+    let stage_guard = RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        RuntimeOperatorStageKind::ExactCardinalityProbe,
+        RuntimeOperatorStageIdentity::new()
+            .with_node_id(bounded.aggregate_id.to_string())
+            .with_chunk_index(chunks.first().expect("raw source batch has at least one chunk").chunk_index)
+            .with_strategy_label(SOURCE_ADJACENT_KEY_SAMPLE_STRATEGY)
+            .with_input_rows(sample_rows),
+    );
+    let sample_groups = count_source_adjacent_key_sample_groups(
+        execution.context(),
+        &token,
+        staged.frame.frame(),
+        &key_refs,
+        offset,
+        stride,
+        sample_rows,
+    );
+    let sample_groups = match sample_groups {
+        Ok(groups) => {
+            stage_guard.finish(Some(groups), None);
+            groups
+        },
+        Err(error) => {
+            let error = error
+                .with_fact_if_absent("node_id", bounded.aggregate_id)
+                .with_fact_if_absent("sample_rows", sample_rows);
+            stage_guard.fail(&error);
+            return Err(error);
+        },
+    };
+    let estimated_partial_bytes =
+        u64::try_from(u128::from(staged.device_bytes()) * u128::from(sample_groups) / u128::from(sample_rows))
+            .unwrap_or(u64::MAX);
+    Ok(policy.source_adjacent_local_reduction_effective(
+        sample_rows,
+        sample_groups,
+        estimated_partial_bytes,
+        execution.device_budget_bytes(),
+    ))
+}
+
+/// Distinct key rows among `sample_rows` rows of `frame`'s `key_columns`,
+/// taken every `stride` rows from `offset`. A stride of 1 counts the whole
+/// frame without a gather.
+fn count_source_adjacent_key_sample_groups(
+    context: &ExecutionContext,
+    token: &ExecutionBudgetToken,
+    frame: &cudf::DataFrame,
+    key_columns: &[&str],
+    offset: u64,
+    stride: u64,
+    sample_rows: u64,
+) -> Result<u64> {
+    let keys = frame.select(key_columns).map_err(|error| {
+        cudf_query_error(
+            "query_engine.bounded.aggregate.source_adjacent_key_sample.select",
+            "failed to project source-adjacent key sample columns",
+            error,
+        )
+    })?;
+    let sample = if stride == 1 {
+        keys
+    } else {
+        let (Ok(offset), Ok(stride), Ok(sample_rows)) =
+            (i32::try_from(offset), i32::try_from(stride), usize::try_from(sample_rows))
+        else {
+            return Err(bounded_invariant_violation(
+                "source-adjacent key sample positions exceed the cuDF row index range",
+                "source_adjacent_key_sample_row_index_overflow",
+            )
+            .with_fact("input_rows", frame.num_rows()));
+        };
+        let positions = context.runtime()?.sequence(offset, stride, sample_rows).map_err(|error| {
+            cudf_query_error(
+                "query_engine.bounded.aggregate.source_adjacent_key_sample.positions",
+                "failed to create source-adjacent key sample positions",
+                error,
+            )
+        })?;
+        keys.on(token.exec()).gather(&positions).map_err(|error| {
+            attach_budget_token_failure_facts(
+                cudf_query_error(
+                    "query_engine.bounded.aggregate.source_adjacent_key_sample.gather",
+                    "failed to gather source-adjacent key sample rows",
+                    error,
+                ),
+                token,
+            )
+        })?
+    };
+    let distinct = sample
+        .on(token.exec())
+        .drop_duplicates(
+            DropDuplicatesOptions::builder().subset(key_columns).keep(DuplicateKeepOption::KeepAny).build(),
+        )
+        .map_err(|error| {
+            attach_budget_token_failure_facts(
+                cudf_query_error(
+                    "query_engine.bounded.aggregate.source_adjacent_key_sample.distinct",
+                    "failed to count distinct source-adjacent key sample rows",
+                    error,
+                ),
+                token,
+            )
+        })?;
+    Ok(distinct.num_rows() as u64)
 }
 
 /// Plans the next raw source batch from the remaining chunks.

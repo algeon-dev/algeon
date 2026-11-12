@@ -657,22 +657,29 @@ pub(crate) fn skewed_string_key_expected_sums(rows: usize) -> (i64, i64) {
     (0..rows).fold((0i64, 0i64), |(f, o), row| if row % 97 == 0 { (f + row as i64, o) } else { (f, o + row as i64) })
 }
 
-/// Uncompressed row groups whose string key has two values in the first half
-/// of the file and a distinct value per row in the second half, so an early
-/// low-cardinality observation stops being representative later.
+/// Uncompressed row groups whose string key has two values in the first
+/// `low_cardinality_rows` rows and a distinct value per row after them, so an
+/// early low-cardinality observation stops being representative later. Zero
+/// `low_cardinality_rows` gives a distinct key on every row.
 pub(crate) fn write_cardinality_shift_string_key_parquet(
     path: &Path,
     row_groups: usize,
     rows_per_row_group: usize,
+    low_cardinality_rows: usize,
 ) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("flag", DataType::Utf8, false),
         Field::new("value", DataType::Int64, false),
     ]));
     let rows = row_groups * rows_per_row_group;
-    let shift = rows / 2;
     let flags = (0..rows)
-        .map(|row| if row < shift { (if row % 2 == 0 { "A" } else { "B" }).to_string() } else { row.to_string() })
+        .map(|row| {
+            if row < low_cardinality_rows {
+                (if row % 2 == 0 { "A" } else { "B" }).to_string()
+            } else {
+                row.to_string()
+            }
+        })
         .collect::<Vec<_>>();
     let values = vec![1i64; rows];
     let batch = RecordBatch::try_new(
