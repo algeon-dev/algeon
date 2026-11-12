@@ -67,6 +67,10 @@ Bug fixes:
   every page, reading about seven environment variables and formatting a
   discarded log line each time; with a pass read limit set, a file with
   20,000-row pages spent about 1.6 us per page on that with the GPU idle.
+- Backport of upstream NVIDIA/cudf#23675 (v26.10.00): batched device copies
+  use `cudaMemcpyFlagPreferOverlapWithCompute` only when every copy is at most
+  128 KiB. With the flag on large copies, `cudf::concatenate` of multi-GiB
+  frames ran on the copy engine at about 116 GB/s instead of about 730 GB/s.
 - cuco exception safety, applied as a build-time patch: temporary storage is
   neither leaked nor double-freed when an allocation throws.
 - A GCC 14.2 internal compiler error in `make_datasources` is avoided by
