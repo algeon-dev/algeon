@@ -12,6 +12,9 @@ This driver does not take /tmp/cudf-gpu.lock. bench_one.sh, native_tpcds_parity_
 (through flock) and server_load_driver.py take it for each GPU process, so an outer lock
 would deadlock them.
 
+Every subprocess runs without LD_LIBRARY_PATH, so each binary loads the libraries its
+RUNPATH names and the recorded library hashes are the ones the measurements loaded.
+
 Prerequisites
   * A clean worktree: the build stage and every measurement stage stop on `git status
     --porcelain` output, on a HEAD change and on a binary or native library sha256 change.
@@ -35,7 +38,8 @@ Commands (global options first, then the command)
 
   build           clean-worktree check, release build of the three bench binaries,
                   algeon_server and algeon_tools; records HEAD, tree hash, cuDF revision,
-                  binary and native library sha256 and a hardware probe
+                  binary sha256, the sha256 of libcudf.so and libcudf_rust.so as the bench
+                  binary's RUNPATH resolves them, and a hardware probe
   tpch ID         ID is sf100_sorted, sf100_dbgen_order or sf500_sorted; evicts the other
                   datasets from the page cache, runs the 22 queries one process each with
                   1 warm-up and 5 measured iterations, checks every row as it lands, then
@@ -84,7 +88,6 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = ROOT / 'target/relational-benchmarks/run'
 # cargo writes release binaries under CARGO_TARGET_DIR when it is set.
 RELEASE = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target')) / 'release'
-NATIVE_LIB_DIR = ROOT / 'target/native/cudf-install/lib'
 BENCH_BINARIES = ('native_tpch_benchmark', 'tpcds_gpu_cpu_bench', 'native_tpcds_parity_report')
 SERVER_BINARIES = ('algeon_server', 'algeon_tools')
 NATIVE_LIBS = ('libcudf.so', 'libcudf_rust.so')
@@ -194,9 +197,34 @@ def worktree_state():
     }
 
 
+def runpath_env():
+    """os.environ without LD_LIBRARY_PATH, so every binary loads the libraries its RUNPATH names.
+
+    target/native/cudf-install/lib can hold an older libcudf_rust.so than the shim the build
+    writes under the build output; an LD_LIBRARY_PATH that names that directory would put the
+    older shim ahead of the RUNPATH.
+    """
+    return {key: value for key, value in os.environ.items() if key != 'LD_LIBRARY_PATH'}
+
+
+def resolved_native_libs():
+    """Paths of NATIVE_LIBS as the TPC-H bench binary resolves them through its RUNPATH."""
+    text = subprocess.run(['ldd', str(RELEASE / 'native_tpch_benchmark')], env=runpath_env(), capture_output=True,
+                          text=True, check=True).stdout
+    paths = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] in NATIVE_LIBS and parts[1] == '=>':
+            paths[parts[0]] = Path(parts[2])
+    missing = [name for name in NATIVE_LIBS if name not in paths]
+    if missing:
+        raise SystemExit(f'ldd of native_tpch_benchmark does not resolve {missing}')
+    return paths
+
+
 def artifact_hashes():
     binaries = {name: sha256(RELEASE / name) for name in (*BENCH_BINARIES, *SERVER_BINARIES)}
-    libs = {name: sha256(NATIVE_LIB_DIR / name) for name in NATIVE_LIBS}
+    libs = {name: sha256(path) for name, path in resolved_native_libs().items()}
     return binaries, libs
 
 
@@ -283,7 +311,7 @@ def cmd_build():
     if state['dirty']:
         finish(directory, [f'the worktree is not clean: {state["dirty"][:5]}'])
     script = 'set -euo pipefail; [ -f env.sh ] && source env.sh; ' + ' && '.join(BUILD_COMMANDS)
-    rc = run_logged(script, directory / 'build.log', shell=True)
+    rc = run_logged(script, directory / 'build.log', env=runpath_env(), shell=True)
     if rc != 0:
         finish(directory, [f'cargo build failed with {rc}; see {directory / "build.log"}'])
     after = worktree_state()
@@ -492,7 +520,7 @@ def write_layout(directory, data_dir):
 # ---------------------------------------------------------------- measurement stages
 
 def bench_env(extra):
-    env = dict(os.environ)
+    env = runpath_env()
     env.update(extra)
     return env
 
@@ -587,7 +615,7 @@ def cmd_server_load():
     driver = [sys.executable, str(ROOT / 'scripts/dev/server_load_driver.py'), '--out-dir', str(directory), '--data', str(data),
               '--release-dir', str(RELEASE)]
     for step in (['stage'], ['run-all']):
-        rc = subprocess.run([*driver, *step], cwd=ROOT).returncode
+        rc = subprocess.run([*driver, *step], cwd=ROOT, env=runpath_env()).returncode
         if rc != 0:
             finish(directory, [f'server_load_driver.py {step[0]} returned {rc}'] + check_server_load(directory))
     rc = subprocess.run([sys.executable, str(ROOT / 'scripts/dev/server_load_analyze.py'), '--out-dir', str(directory)], cwd=ROOT).returncode
