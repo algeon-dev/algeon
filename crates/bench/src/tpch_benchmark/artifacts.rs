@@ -8,7 +8,7 @@ use super::{
     execution::{PlannedNativeQuery, TimedNativeQueryRun, TimedQueryRun},
 };
 
-const SAMPLES_HEADER: &str = "sample\tcpu_execution_ms\tnative_planning_ms\tnative_execution_ms\tnative_plan_plus_execution_ms\tnative_iteration_wall_ms\n";
+const SAMPLES_HEADER: &str = "sample\tcpu_planning_ms\tcpu_execution_ms\tnative_planning_ms\tnative_execution_ms\tnative_plan_plus_execution_ms\tnative_iteration_wall_ms\n";
 
 pub(super) fn write_measured_plan(
     dir: &Path,
@@ -52,6 +52,9 @@ pub(super) fn write_samples(
     let mut output = String::from(SAMPLES_HEADER);
     let sample_count = cpu.map_or(0, |run| run.samples.len()).max(native.map_or(0, |run| run.samples.len()));
     for index in 0..sample_count {
+        let cpu_planning_ms = cpu
+            .and_then(|run| run.planning_samples.get(index))
+            .map(|duration| format!("{:.3}", milliseconds(*duration)));
         let cpu_ms =
             cpu.and_then(|run| run.samples.get(index)).map(|duration| format!("{:.3}", milliseconds(*duration)));
         let planning_ms = native
@@ -67,8 +70,9 @@ pub(super) fn write_samples(
             .map(|duration| format!("{:.3}", milliseconds(*duration)));
         let _ = writeln!(
             output,
-            "{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             index + 1,
+            cpu_planning_ms.as_deref().unwrap_or(""),
             cpu_ms.as_deref().unwrap_or(""),
             planning_ms.as_deref().unwrap_or(""),
             execution_ms.as_deref().unwrap_or(""),

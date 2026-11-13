@@ -45,6 +45,7 @@ pub(super) struct QueryOutput {
 #[derive(Debug, Clone)]
 pub(super) struct TimedQueryRun {
     pub(super) samples: Vec<Duration>,
+    pub(super) planning_samples: Vec<Duration>,
     pub(super) final_measurement: QueryMeasurement,
 }
 
@@ -299,9 +300,12 @@ pub(super) async fn run_cpu_query_iterations(
     }
 
     let mut samples = Vec::with_capacity(config.iterations);
+    let mut planning_samples = Vec::with_capacity(config.iterations);
     let mut final_measurement = None;
     for _ in 0..config.iterations {
+        let planning_started = Instant::now();
         let planned = plan_cpu_query(metadata, query, config).await?;
+        planning_samples.push(planning_started.elapsed());
         let schema = planned.plan.schema();
         let row_ordering = planned.row_ordering.clone();
         let started = Instant::now();
@@ -311,6 +315,7 @@ pub(super) async fn run_cpu_query_iterations(
     }
     Ok(TimedQueryRun {
         samples,
+        planning_samples,
         final_measurement: final_measurement.expect("validated benchmark config requires iterations"),
     })
 }
