@@ -1498,10 +1498,12 @@ pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::left_
 pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::left_advisory_rows: core::option::Option<u64>
 pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::left_estimated_bytes: core::option::Option<u64>
 pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::left_estimated_rows: core::option::Option<u64>
+pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::left_proved_rows: core::option::Option<u64>
 pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::rejected_reason: core::option::Option<query_planning::optimizer::JoinBuildSideSelectionRejectedReason>
 pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::right_advisory_rows: core::option::Option<u64>
 pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::right_estimated_bytes: core::option::Option<u64>
 pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::right_estimated_rows: core::option::Option<u64>
+pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::right_proved_rows: core::option::Option<u64>
 pub query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::selection_basis: core::option::Option<query_planning::optimizer::JoinBuildSideSelectionBasis>
 pub struct query_planning::optimizer::JoinBuildSideSelectionDiagnostics
 pub query_planning::optimizer::JoinBuildSideSelectionDiagnostics::applied_count: usize

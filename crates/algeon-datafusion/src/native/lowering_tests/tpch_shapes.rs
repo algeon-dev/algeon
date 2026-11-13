@@ -110,6 +110,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     );
     assert_q02_reassociated_supplier_filter_precedes_partsupp_join(&optimized_q2.plan);
     assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(&optimized_q2.plan);
+    assert_q02_nation_region_joins_build_nation_region(&optimized_q2.plan);
     assert!(
         admit(
             &optimized_q2.plan,
@@ -457,6 +458,30 @@ fn assert_q02_reassociated_supplier_filter_precedes_partsupp_join(plan: &QueryPl
         }),
         "q02 should join partsupp only after supplier has been filtered by nation/region:\n{plan}"
     );
+}
+
+/// Supplier joins `nation ⋈ region` in the outer query and in the correlated
+/// subquery. Neither `nation ⋈ region` output has an estimate, but each is
+/// proved to hold at most nation x region rows, so both joins build it. A
+/// supplier build holds 25 distinct nation keys, each on about 40,000 rows at
+/// SF100.
+fn assert_q02_nation_region_joins_build_nation_region(plan: &QueryPlan) {
+    let nation_region = BTreeSet::from(["nation".to_string(), "region".to_string()]);
+    let nation_region_joins = plan
+        .nodes()
+        .iter()
+        .filter_map(|node| {
+            let PlanNode::Join(join) = &node.kind else { return None };
+            [(NativeJoinSide::Left, join.inputs[0]), (NativeJoinSide::Right, join.inputs[1])]
+                .into_iter()
+                .find(|(_, input)| source_tables_below(plan, *input) == nation_region)
+                .map(|(side, _)| (node.id, side, join.spec.build_side))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(nation_region_joins.len(), 2, "q02 should join nation/region outputs twice:\n{plan}");
+    for (node_id, nation_region_side, build_side) in nation_region_joins {
+        assert_eq!(build_side, nation_region_side, "q02 join {node_id} should build its nation/region input:\n{plan}");
+    }
 }
 
 fn assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(plan: &QueryPlan) {
