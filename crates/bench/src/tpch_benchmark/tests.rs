@@ -395,6 +395,7 @@ fn accepted_capability_compiled_graphs() -> Vec<NativeCapabilityCompiledGraphDia
 fn timed_cpu_run(fingerprint: &str) -> execution::TimedQueryRun {
     execution::TimedQueryRun {
         samples: vec![Duration::from_millis(10)],
+        setup_samples: vec![Duration::from_millis(20)],
         planning_samples: vec![Duration::from_millis(1)],
         final_measurement: query_measurement(fingerprint),
     }
@@ -403,6 +404,7 @@ fn timed_cpu_run(fingerprint: &str) -> execution::TimedQueryRun {
 fn timed_native_run(fingerprint: &str) -> execution::TimedNativeQueryRun {
     execution::TimedNativeQueryRun {
         samples: vec![Duration::from_millis(5)],
+        setup_samples: vec![Duration::from_millis(30)],
         planning_samples: vec![Duration::from_millis(2)],
         plan_plus_execution_samples: vec![Duration::from_millis(7)],
         iteration_wall_samples: vec![Duration::from_millis(8)],
@@ -417,30 +419,32 @@ fn benchmark_sidecar_keeps_each_planning_and_execution_sample() {
     let dir = unique_temp_dir("algeon-tpch-samples-test");
     let mut native = timed_native_run("same");
     native.samples.push(Duration::from_millis(11));
+    native.setup_samples.push(Duration::from_millis(31));
     native.planning_samples.push(Duration::from_millis(3));
     native.plan_plus_execution_samples.push(Duration::from_millis(14));
     native.iteration_wall_samples.push(Duration::from_millis(15));
 
     let mut cpu = timed_cpu_run("same");
     cpu.samples.push(Duration::from_millis(12));
+    cpu.setup_samples.push(Duration::from_millis(21));
     cpu.planning_samples.push(Duration::from_micros(1500));
 
     artifacts::write_samples(&dir, "q01", None, Some(&native)).expect("write samples");
     let text = std::fs::read_to_string(dir.join("q01.samples.tsv")).expect("read samples");
     let lines = text.lines().collect::<Vec<_>>();
     assert_eq!(lines.len(), 3);
-    assert_eq!(lines[1], "1\t\t\t2.000\t5.000\t7.000\t8.000");
-    assert_eq!(lines[2], "2\t\t\t3.000\t11.000\t14.000\t15.000");
+    assert_eq!(lines[1], "1\t\t\t\t30.000\t2.000\t5.000\t7.000\t8.000");
+    assert_eq!(lines[2], "2\t\t\t\t31.000\t3.000\t11.000\t14.000\t15.000");
 
     artifacts::write_samples(&dir, "q01", Some(&cpu), Some(&native)).expect("write samples");
     let text = std::fs::read_to_string(dir.join("q01.samples.tsv")).expect("read samples");
     let lines = text.lines().collect::<Vec<_>>();
     assert_eq!(
         lines[0],
-        "sample\tcpu_planning_ms\tcpu_execution_ms\tnative_planning_ms\tnative_execution_ms\tnative_plan_plus_execution_ms\tnative_iteration_wall_ms"
+        "sample\tcpu_setup_ms\tcpu_planning_ms\tcpu_execution_ms\tnative_setup_ms\tnative_planning_ms\tnative_execution_ms\tnative_plan_plus_execution_ms\tnative_iteration_wall_ms"
     );
-    assert_eq!(lines[1], "1\t1.000\t10.000\t2.000\t5.000\t7.000\t8.000");
-    assert_eq!(lines[2], "2\t1.500\t12.000\t3.000\t11.000\t14.000\t15.000");
+    assert_eq!(lines[1], "1\t20.000\t1.000\t10.000\t30.000\t2.000\t5.000\t7.000\t8.000");
+    assert_eq!(lines[2], "2\t21.000\t1.500\t12.000\t31.000\t3.000\t11.000\t14.000\t15.000");
     std::fs::remove_dir_all(dir).expect("remove samples directory");
 }
 

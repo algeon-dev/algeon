@@ -82,9 +82,10 @@ The benchmark replans before each measured execution, so its stable
 `cpu_wall_ms_samples` and `native_wall_ms_samples`, the measured iterations in run
 order, comma-separated. Set
 `ALGEON_TPCH_BENCH_ARTIFACT_DIR` to retain the first measured execution's
-physical plan and sealed runtime observation, plus ten per-iteration planning, execution,
+physical plan and sealed runtime observation, plus ten per-iteration setup (session and
+table registration), planning (SQL to physical plan), execution,
 planning-plus-execution, and full benchmark-iteration wall samples. The
-planning-plus-execution field ends before output fingerprint work; the
+planning-plus-execution field excludes setup and ends before output fingerprint work; the
 iteration-wall field ends after fingerprinting. Neither includes an external
 client/network boundary. All six retained planning rows report zero host
 DataFusion boundaries, so host child staging is absent on these native paths.
@@ -95,7 +96,8 @@ sink timer, not a GPU D2H copy interval. The timing boundaries are:
 
 | Boundary | Evidence here | Limit |
 | --- | --- | --- |
-| Physical planning | Per-iteration `native_planning_ms` sidecar | Excluded from `native_wall_ms` |
+| Session setup | Per-iteration `native_setup_ms` sidecar | Session construction and table registration; excluded from `native_wall_ms` |
+| Physical planning | Per-iteration `native_planning_ms` sidecar | SQL to physical plan; excluded from `native_wall_ms` |
 | Native execution wall | TPCH `native_execution_ms` sidecar and stable TSV | Includes host orchestration and output materialization; not GPU busy time |
 | GPU kernel/copy activity | Q01/Q17 Nsight kernel and direction-tagged copy intervals | Profiled runs only; interval unions are not query wall time |
 | Host child staging | Six retained plans have zero host DataFusion boundaries | No nonzero staging sample in this workload |
