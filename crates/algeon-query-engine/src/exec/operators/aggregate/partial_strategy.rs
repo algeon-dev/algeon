@@ -205,6 +205,20 @@ pub(super) fn source_adjacent_prepared_sort_groupby_runtime_candidate(
     let Some(evidence) = input_evidence else {
         return false;
     };
+    // Prior evidence that the preflight predicate already rejects predicts the same rejection
+    // for this partition, so repeating the sort of the group keys only costs time.
+    let prior_fact = |key: &str| decision.facts.get(key).and_then(|value| value.parse::<u64>().ok());
+    if let (Some(prior_groups), Some(prior_ratio_ppm)) = (
+        prior_fact("prepared_sort_groupby_prior_output_group_count"),
+        prior_fact("prepared_sort_groupby_prior_reduction_ratio_ppm"),
+    ) && !exact_cardinality_probe_values_should_select_prepared_sort_groupby(
+        decision,
+        prior_groups,
+        prior_ratio_ppm,
+        options,
+    ) {
+        return false;
+    }
     evidence.source_adjacent_partial
         && evidence.source_adjacent_partition_strategy == "group_key"
         && evidence.source_adjacent_partition_key_count.is_some_and(|key_count| key_count > 0)

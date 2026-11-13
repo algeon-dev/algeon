@@ -358,6 +358,58 @@ fn source_adjacent_runtime_preflight_requires_group_key_partition_and_bounded_fa
 }
 
 #[test]
+fn source_adjacent_runtime_preflight_skips_partitions_whose_prior_evidence_predicts_rejection() {
+    let (schema, spec) = multi_key_sum_spec();
+    let node_id = NodeId::from_index_for_test(11);
+    let evidence = source_adjacent_group_key_evidence(482, 1);
+    let options = AggregateStrategyExecutionOptions::default();
+    let input_rows = 14_804_077;
+    let capability = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let select = |metrics: &ExecutionMetrics| {
+        select_partial_aggregate_strategy_decision(
+            capability.clone(),
+            Some(node_id),
+            &spec,
+            &schema,
+            input_rows,
+            Some(evidence),
+            metrics,
+        )
+    };
+
+    let no_prior = select(&ExecutionMetrics::detached("aggregate-test"));
+    assert!(source_adjacent_prepared_sort_groupby_runtime_candidate(&no_prior, input_rows, Some(evidence), options));
+
+    let rejected_groups = input_rows / 5;
+    let rejected_prior = select(&metrics_with_prior_partial_decision(
+        node_id,
+        &spec,
+        &schema,
+        Some(evidence),
+        input_rows,
+        rejected_groups,
+        "libcudf_groupby",
+    ));
+    assert_eq!(rejected_prior.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        rejected_prior.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),
+        Some("prior_reduction_ratio_above_threshold")
+    );
+    assert!(!prepared_sort_groupby_should_select_for_runtime_facts(
+        &rejected_prior,
+        input_rows,
+        rejected_groups as usize,
+        options
+    ));
+    assert!(!source_adjacent_prepared_sort_groupby_runtime_candidate(
+        &rejected_prior,
+        input_rows,
+        Some(evidence),
+        options
+    ));
+}
+
+#[test]
 fn source_adjacent_runtime_preflight_uses_exact_facts_for_prepared_or_libcudf() {
     let (schema, spec) = multi_key_sum_spec();
     let evidence = source_adjacent_group_key_evidence(482, 1);
