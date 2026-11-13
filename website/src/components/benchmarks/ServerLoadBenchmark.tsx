@@ -20,7 +20,7 @@ import {
   tooltipItemStyle,
   tooltipLabelStyle,
 } from './benchmarkChartUtils';
-import styles from './TpchSf100Benchmark.module.css';
+import styles from './benchmarks.module.css';
 
 type Series = (typeof serverLoadBenchmark.series)[number];
 type Metric = 'completedQps' | 'p95Seconds';

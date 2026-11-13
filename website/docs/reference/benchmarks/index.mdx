@@ -1,17 +1,18 @@
 ---
 sidebar_position: 1
 title: Benchmarks
-description: MerRec queries against CPU pipelines, Algeon's TPC-H and TPC-DS SF100 runs, and concurrent TPC-H streams through Algeon server.
+description: MerRec queries against CPU pipelines, Algeon's TPC-H and TPC-DS runs, and concurrent TPC-H streams through Algeon server.
 ---
 
 import Link from '@docusaurus/Link';
 import CodeBlock from '@theme/CodeBlock';
 import Table from '@theme/MDXComponents/Table';
-import TpchSf100Benchmark from '@site/src/components/benchmarks/TpchSf100Benchmark';
+import TpchBenchmark from '@site/src/components/benchmarks/TpchBenchmark';
 import TpcdsSf100Benchmark from '@site/src/components/benchmarks/TpcdsSf100Benchmark';
+import ParquetLayoutTable from '@site/src/components/benchmarks/ParquetLayoutTable';
 import ServerLoadBenchmark, {ServerLoadOverloadTable} from '@site/src/components/benchmarks/ServerLoadBenchmark';
 import {tpcdsSf100Benchmark} from '@site/src/data/tpcdsSf100Benchmark';
-import {tpchSf100Benchmark} from '@site/src/data/tpchSf100Benchmark';
+import {tpchBenchmark} from '@site/src/data/tpchBenchmark';
 import {serverLoadBenchmark} from '@site/src/data/serverLoadBenchmark';
 import {
   merrecAlgorithmBenchmark,
@@ -23,7 +24,7 @@ import {
 
 export const relationalRevision = (() => {
   const revisions = [...new Set([
-    tpchSf100Benchmark.environment.sourceRevision,
+    tpchBenchmark.environment.sourceRevision,
     tpcdsSf100Benchmark.environment.sourceRevision,
     serverLoadBenchmark.environment.sourceRevision,
   ])];
@@ -33,7 +34,7 @@ export const relationalRevision = (() => {
   return revisions[0].slice(0, 9);
 })();
 export const relationalDates = [...new Set([
-  tpchSf100Benchmark.environment.measuredAtUtcDate,
+  tpchBenchmark.environment.measuredAtUtcDate,
   tpcdsSf100Benchmark.environment.measuredAtUtcDate,
 ])].join(' and ');
 export const gpuSeries = (active) =>
@@ -80,6 +81,30 @@ export const merrecStageSeconds = (name, stageKey) => {
 export const tpcdsWidestCpuLead = tpcdsSf100Benchmark.rows
   .filter((row) => row.gpuMs != null && row.gpuMs > row.cpuMs)
   .sort((a, b) => (b.gpuMs - b.cpuMs) - (a.gpuMs - a.cpuMs))[0];
+export const tpchDatasets = tpchBenchmark.datasets;
+export const tpchDataset = (id) => tpchDatasets.find((dataset) => dataset.id === id);
+export const timing = (() => {
+  const tpch = tpchBenchmark.config;
+  const tpcds = tpcdsSf100Benchmark.config;
+  if (tpch.warmups !== tpcds.warmups || tpch.iterations !== tpcds.iterations || tpch.wallTimeBoundary !== tpcds.wallTimeBoundary) {
+    throw new Error('TPC-H and TPC-DS data record different warm-up, iteration or wall time boundary settings');
+  }
+  return tpch;
+})();
+export const unpartitioned = (() => {
+  const layouts = [...tpchDatasets.map((dataset) => dataset.layout), tpcdsSf100Benchmark.layout];
+  if (!layouts.every((layout) => layout.partitioning.kind === 'single_file_per_table' && layout.partitioning.hiveKeys.length === 0)) {
+    throw new Error('A dataset layout is partitioned; the page text says no dataset is partitioned');
+  }
+  return true;
+})();
+export const layoutColumns = (datasets) => datasets.map((dataset) => ({label: dataset.label, layout: dataset.layout}));
+export const disjointColumns = (dataset) => dataset.layout.tables.lineitem.nonOverlappingColumns.join(', ');
+export const percent = (fraction) => `${(fraction * 100).toFixed(fraction < 0.1 ? 1 : 0)}%`;
+export const residency = (pageCache) =>
+  `${percent(pageCache.residentFractionBefore)} before the first query and ${percent(pageCache.residentFractionAfter)} after the last`;
+export const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
+export const relative = (from, to) => `${Math.round(Math.abs(to / from - 1) * 100)}% ${to >= from ? 'longer' : 'shorter'}`;
 export const formatOperations = (queries, datasetRows) => {
   const ops = queries * datasetRows;
   if (ops >= 1e9) {
@@ -94,9 +119,9 @@ export const formatOperations = (queries, datasetRows) => {
 # Benchmarks
 
 The MerRec queries compare Algeon with CPU pipelines over the
-1.27-billion-event dataset. The TPC-H and TPC-DS suites at scale factor 100
-compare the CPU and GPU paths, and the server load runs drive concurrent
-TPC-H streams through Arrow Flight SQL.
+1.27-billion-event dataset. The TPC-H suite at scale factors 100 and 500 and the
+TPC-DS suite at scale factor 100 compare the CPU and GPU paths, and the server
+load runs drive concurrent TPC-H streams through Arrow Flight SQL.
 
 ## GPU algorithms
 
@@ -282,8 +307,8 @@ PageRank call.
 
 ## Relational path
 
-The TPC-H and TPC-DS suites at scale factor 100, CPU path against GPU path,
-one warm-up and one measured iteration per query, on an AWS EC2 **g7e.8xlarge**.
+The TPC-H suite on three datasets and the TPC-DS suite at scale factor 100,
+CPU path against GPU path, on an AWS EC2 **g7e.8xlarge**.
 Both suites were measured on {relationalDates} at revision
 <code>{relationalRevision}</code>, the build of the server load runs below.
 These runs are derived from the TPC-H and TPC-DS benchmarks. They are not
@@ -291,6 +316,14 @@ audited TPC results and are not comparable to published TPC results. TPC-H
 and TPC-DS are trademarks of the Transaction Processing Performance Council.
 The query text is the DuckDB rendering of the TPC specifications (MIT), with
 Q11's `FRACTION` substituted as the specification defines it, 0.0001 / SF.
+
+Each query ran {timing.warmups} warm-up and {timing.iterations} measured iterations on each
+path, and the tables and charts report the median measured iteration.
+A measured time starts when the query text is passed to `SessionContext::sql`
+and ends when the last result batch has been collected. It covers SQL parsing,
+logical optimization, physical planning and execution; DataFusion's `dfbench`
+times its TPC-H runs over the same span. Session construction and table
+registration run before the timer starts.
 
 - CPU: Intel Xeon Platinum 8559C, 32 vCPU.
 - Memory: 256 GiB.
@@ -300,32 +333,94 @@ Q11's `FRACTION` substituted as the specification defines it, 0.0001 / SF.
   use DataFusion's Arrow Parquet reader.
 - DataFusion version `55.1`.
 
-Both paths read the Parquet files from the OS page cache. Nothing was flushed
-between runs, and no cold-storage run was measured. The GPU keeps no data
-between queries (`cache_cap_bytes = 0`), so each measured iteration reads the
-column pages again, copies them to the device and decodes them. The TPC-DS
-CPU and GPU runs each reuse one DataFusion session for all 99 queries, so
-planning on either path can find a file's footer in the session's metadata
-cache from the warm-up; the GPU path's cuDF reader still parses the footer of
-each file it reads once per query. [Caches along the
+Both paths read the Parquet files through the OS page cache. Before each
+dataset ran, the other datasets' files were evicted from the cache, and the
+resident share of the dataset's own files, by bytes, was recorded:
+{tpchDatasets.map((dataset) => `${dataset.label} ${residency(dataset.pageCache)}`).join('; ')};
+TPC-DS {residency(tpcdsSf100Benchmark.pageCache)}. The SF500 files total
+{gib(tpchDataset('sf500_sorted').pageCache.totalBytes)} GiB on a host with 256 GiB of memory,
+which also holds the CPU path's working set. No cold-storage run was measured.
+The GPU keeps no data between queries (`cache_cap_bytes = 0`), so each measured
+iteration reads the column pages again, copies them to the device and decodes
+them. Each TPC-H query ran in its own process and built a new session for every
+iteration. The TPC-DS CPU and GPU runs each reuse one DataFusion session for all
+99 queries, so planning on either path can find a file's footer in the
+session's metadata cache from the warm-up; the GPU path's cuDF reader still
+parses the footer of each file it reads once per query. [Caches along the
 path](../../design/data-path.mdx#caches) describes what each layer holds.
 
-### TPC-H SF100
+### TPC-H
 
-All 22 queries ran on the GPU path, and every output matched the CPU path.
+TPC-H ran on three datasets. SF100 sorted and SF500 sorted come from
+[`fixture/tpc-h/generate.py`](https://github.com/algeon-dev/algeon/blob/main/fixture/tpc-h/generate.py):
+DuckDB sorts each table by its pruning keys, `l_shipdate` first for
+`lineitem`, and Spark writes one Parquet file per table with parquet-java.
+SF100 dbgen order (unsorted) holds the same SF100 rows through the same
+writer in tpchgen's generation order, which is primary keys ascending and not
+sorted by date. The sections below call it dbgen order. The TPC-DS files are
+written by DuckDB.
+
 The benchmark compares the measured CPU and GPU outputs of each query value
 by value, with the ordering rules of the TPC-DS check below.
 Floating-point columns accept an absolute and relative error of
-<code>{String(tpchSf100Benchmark.config.parity.floatToleranceAbsolute)}</code>;
-every other column must match exactly.
+<code>{String(tpchBenchmark.config.parity.floatToleranceAbsolute)}</code>;
+every other column must match exactly. The table counts the queries that ran
+on the GPU path and the queries whose output matched the CPU path.
 
-The TPC-H files come from
-[`fixture/tpc-h/generate.py`](https://github.com/algeon-dev/algeon/blob/main/fixture/tpc-h/generate.py):
-DuckDB sorts each table by its pruning keys, `l_shipdate` first for
-`lineitem`, and Spark writes one Parquet file per table with parquet-java's
-default row group and page sizes. The TPC-DS files below are written by DuckDB.
+<Table>
+  <thead>
+    <tr>
+      <th>Dataset</th><th>CPU</th><th>GPU</th><th>CPU / GPU</th>
+      <th>Planning share, CPU</th><th>Planning share, GPU</th>
+      <th>Queries on GPU path</th><th>Results matched</th>
+    </tr>
+  </thead>
+  <tbody>
+    {tpchDatasets.map((dataset) => (
+      <tr key={dataset.id}>
+        <td>{dataset.label}</td>
+        <td>{seconds(dataset.summary.cpuTotalMs)}</td>
+        <td>{seconds(dataset.summary.gpuTotalMs)}</td>
+        <td>{dataset.summary.speedup.toFixed(2)}×</td>
+        <td>{percent(dataset.summary.cpuPlanningShare)}</td>
+        <td>{percent(dataset.summary.gpuPlanningShare)}</td>
+        <td>{dataset.summary.nativeQueryCount} of {dataset.summary.queryCount}</td>
+        <td>{dataset.summary.parityMatchedCount} of {dataset.summary.queryCount}</td>
+      </tr>
+    ))}
+  </tbody>
+</Table>
 
-<TpchSf100Benchmark />
+Times sum the median time of each query, planning included. The planning share
+is the summed planning time divided by the summed time.
+
+<TpchBenchmark />
+
+#### TPC-H Parquet layout
+
+The values below were measured from the file footers, offset indexes and page
+headers by `fixture/tpc/describe_layout.py`, which also checks them against
+each directory's `_generation.json`.
+
+<ParquetLayoutTable columns={layoutColumns(tpchDatasets)} />
+
+No dataset is partitioned. Each table is one Parquet file in one directory,
+with no Hive partition keys. The generator sets no dictionary option, so
+parquet-java's default applies, and the table counts the column chunks that
+carry a dictionary page.
+
+Both SF100 datasets returned the same output fingerprint and row count for all
+{tpchBenchmark.dbgenOrderComparison.identicalOutputQueryCount} queries; the data generator refuses to
+publish otherwise. In `lineitem`, the row-group value ranges are disjoint on
+<code>{disjointColumns(tpchDataset('sf100_sorted'))}</code> in the sorted files and on
+<code>{disjointColumns(tpchDataset('sf100_dbgen_order'))}</code> in dbgen order. Against the sorted
+files, the dbgen-order files took
+{relative(tpchDataset('sf100_sorted').summary.cpuTotalMs, tpchDataset('sf100_dbgen_order').summary.cpuTotalMs)}
+in total on the CPU path ({seconds(tpchDataset('sf100_sorted').summary.cpuTotalMs)} and
+{seconds(tpchDataset('sf100_dbgen_order').summary.cpuTotalMs)}) and
+{relative(tpchDataset('sf100_sorted').summary.gpuTotalMs, tpchDataset('sf100_dbgen_order').summary.gpuTotalMs)}
+on the GPU path ({seconds(tpchDataset('sf100_sorted').summary.gpuTotalMs)} and
+{seconds(tpchDataset('sf100_dbgen_order').summary.gpuTotalMs)}).
 
 ### TPC-DS SF100
 
@@ -338,15 +433,26 @@ All 99 queries ran on the GPU path in `NativeRequired` mode, and {tpcdsSf100Benc
 GPU execution was faster for {tpcdsSf100Benchmark.summary.gpuFasterCount} queries
 and CPU for {tpcdsSf100Benchmark.summary.gpuSlowerCount}.{tpcdsWidestCpuLead
   ? ` The largest absolute CPU lead was ${tpcdsWidestCpuLead.queryId} (${(tpcdsWidestCpuLead.cpuMs / 1000).toFixed(2)}s CPU, ${(tpcdsWidestCpuLead.gpuMs / 1000).toFixed(2)}s GPU).`
-  : ''} The CPU / GPU ratio sums the measured query times under the tuned CPU
+  : ''} The CPU / GPU ratio sums the median query times under the CPU
 configuration below.
 
+#### TPC-DS Parquet layout
+
+The files come from
+[`fixture/tpc-ds/generate.py`](https://github.com/algeon-dev/algeon/blob/main/fixture/tpc-ds/generate.py).
+`fixture/tpc/describe_layout.py` measured the values below the same way as for TPC-H.
+
+<ParquetLayoutTable columns={[{label: 'TPC-DS SF100', layout: tpcdsSf100Benchmark.layout}]} />
+
+Each TPC-DS table is one Parquet file in one directory, with no Hive
+partition keys.
+
 <details>
-<summary>DataFusion CPU baseline configuration and tuning</summary>
+<summary>DataFusion CPU baseline configuration</summary>
 
 The TPC-DS CPU baseline ran DataFusion 55.1.0 with these
 [settings](https://datafusion.apache.org/user-guide/configs.html). Settings
-not listed keep their defaults. The TPC-H run above used 8,192-row batches.
+not listed keep their defaults. The TPC-H runs above used 8,192-row batches.
 
 <Table>
   <thead>
@@ -359,37 +465,18 @@ not listed keep their defaults. The TPC-H run above used 8,192-row batches.
   </tbody>
 </Table>
 
-Five CPU profiles were screened on Q03, Q04, Q07, Q23, Q64, Q74, Q75 and Q97,
-one iteration each without warm-up. The fastest became the baseline above.
-Each figure is one iteration on one machine.
-
-<Table>
-  <thead>
-    <tr><th>Target partitions</th><th>Batch rows</th><th>Parquet row filter pushdown</th><th>Eight-query CPU total</th></tr>
-  </thead>
-  <tbody>
-    {tpcdsSf100Benchmark.environment.cpuTuning.profiles.map((profile) => (
-      <tr key={`${profile.targetPartitions}-${profile.batchSize}-${profile.parquetPushdownFilters}`}>
-        <td>{profile.targetPartitions}</td>
-        <td>{profile.batchSize.toLocaleString('en-US')}</td>
-        <td>{profile.parquetPushdownFilters ? 'Enabled' : 'Disabled'}</td>
-        <td>{(profile.totalCpuMs / 1000).toFixed(3)}s</td>
-      </tr>
-    ))}
-  </tbody>
-</Table>
-
 </details>
 
 <details>
-<summary>TPC-DS reproduction and parity verification</summary>
+<summary>Reproduction and TPC-DS parity verification</summary>
 
-Both paths use release builds with `target-cpu=x86-64-v3` and the same
-{tpcdsSf100Benchmark.dataset.fileCount} Parquet files, totalling
-{tpcdsSf100Benchmark.dataset.totalBytes.toLocaleString('en-US')} bytes and 959,037,905 rows. No caches
-were flushed. Each query's warm-up precedes its measured execution. `wall_ms`
-measures execution through result collection, including reads and GPU result
-transfer. Successful-query SQL and physical planning time are excluded.
+Both paths use release builds with `target-cpu=x86-64-v3`. The TPC-DS runs use
+the same {tpcdsSf100Benchmark.dataset.fileCount} Parquet files,
+totalling {tpcdsSf100Benchmark.dataset.totalBytes.toLocaleString('en-US')} bytes and
+{tpcdsSf100Benchmark.dataset.totalRows.toLocaleString('en-US')} rows. Each query's {timing.warmups} warm-up
+precedes its {timing.iterations} measured iterations. `wall_ms` of a measured row covers SQL
+planning and execution through result collection, including reads and GPU
+result transfer; `planning_ms` and `execution_ms` split it.
 
 GPU runs use the `sf100_gpu_throughput` profile with
 `parquet_throughput` source planning, an explicit 32 GiB
@@ -401,24 +488,42 @@ The server's [default chunk policy](../../integration/configuration.mdx#native-s
 derives its byte target from the admitted grant. Statistical aggregates use
 [`gpu_native_tolerant`](../../integration/configuration.mdx#native-settings).
 
-The TPC-DS environment variables select the CPU partition and batch settings:
+The datasets were generated with these recorded commands:
+
+<CodeBlock language="bash">{tpchDatasets.map((dataset) => dataset.generationCommand).join('\n')}</CodeBlock>
+
+[`scripts/dev/relational_benchmarks_driver.py`](https://github.com/algeon-dev/algeon/blob/main/scripts/dev/relational_benchmarks_driver.py)
+measured every number in the TPC-H, TPC-DS and server load sections from one
+build. Its module docstring lists the prerequisites, the host-facts file and
+the stage directories.
 
 ```bash
-source env.sh
+python3 scripts/dev/relational_benchmarks_driver.py \
+  --out-dir target/relational-benchmarks/RUN \
+  --tpch-sf100-sorted "$TPCH_SF100_SORTED" \
+  --tpch-sf100-dbgen-order "$TPCH_SF100_DBGEN_ORDER" \
+  --tpch-sf500-sorted "$TPCH_SF500_SORTED" \
+  --tpcds-sf100 "$TPCDS_SF100" \
+  --host-facts host-facts.json run-all
+```
+
+`run-all` runs the stages `build`, `tpch sf100_sorted`, `tpch sf100_dbgen_order`,
+`tpcds`, `tpch sf500_sorted`, `server-load` and `website` in order. Each stage
+writes `DONE` or `STOP` with its reasons. The `website` stage writes the three
+data files only when the worktree stayed clean and the binaries unchanged, every
+TPC-H row ran on the GPU path with matched results and {timing.iterations} samples, the two SF100
+datasets returned identical outputs, the TPC-DS parity report has no mismatch,
+every measured TPC-DS iteration succeeded, `describe_layout` found no difference
+between a manifest and its footers, and no server-load run stopped.
+
+The `tpcds` stage sets these CPU and GPU settings and runs the parity report
+before the CPU and GPU timing runs:
+
+```bash
 export ALGEON_TPCDS_CPU_TARGET_PARTITIONS=32
 export ALGEON_TPCDS_CPU_BATCH_SIZE=32768
 export ALGEON_TPCDS_NATIVE_PROFILE=sf100_gpu_throughput
 export ALGEON_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE=gpu_native_tolerant
-
-# Point this at the SF100 Parquet directory on local NVMe.
-export ALGEON_PARQUET_DIR=/mnt/algeon-nvme/algeon/fixture/tpcds/sf100/parquet
-
-bash scripts/dev/bench_one.sh tpcds all --engine cpu_datafusion \
-  --scale 100 --warmups 1 --iterations 1 \
-  --parquet-dir "$ALGEON_PARQUET_DIR" --out /tmp/tpcds-cpu.tsv
-bash scripts/dev/bench_one.sh tpcds all --engine native_gpu \
-  --scale 100 --warmups 1 --iterations 1 \
-  --parquet-dir "$ALGEON_PARQUET_DIR" --out /tmp/tpcds-gpu.tsv
 ```
 
 `native_tpcds_parity_report` checks the result values. It runs each query on
@@ -434,21 +539,16 @@ columns, which are the GPU variance and standard deviation outputs under
 every other column must match exactly. The result-values column in the table
 names the mode used for each query.
 
-```bash
-export ALGEON_TPCDS_PARITY_FLOAT_ABS_TOLERANCE=0.00000001
-export ALGEON_TPCDS_PARITY_FLOAT_REL_TOLERANCE=0.00000001
-flock /tmp/cudf-gpu.lock cargo run --release -p bench --all-features \
-  --bin native_tpcds_parity_report > /tmp/tpcds-parity.tsv
-```
-
-The generator refuses a parity TSV whose dataset root, query set or CPU
-settings differ from the timing run:
+The generator refuses a parity TSV whose dataset root, query set, table sizes
+or CPU settings differ from the timing run, a timing TSV from a bench binary
+without the planning boundary, and a measured query without
+{timing.iterations} rows:
 
 ```bash
 python3 website/scripts/generate_tpcds_sf100_benchmark_ts.py \
-  --cpu-tsv /tmp/tpcds-cpu.tsv --gpu-tsv /tmp/tpcds-gpu.tsv \
-  --parity-tsv /tmp/tpcds-parity.tsv \
-  --environment /tmp/tpcds-environment.json \
+  --cpu-tsv RUN/tpcds/cpu.tsv --gpu-tsv RUN/tpcds/gpu.tsv \
+  --parity-tsv RUN/tpcds/parity.tsv --environment RUN/environment.json \
+  --layout RUN/tpcds/layout.json --page-cache RUN/tpcds/page-cache.json \
   --out website/src/data/tpcdsSf100Benchmark.ts
 ```
 

@@ -24,7 +24,7 @@ import {
   tooltipItemStyle,
   tooltipLabelStyle,
 } from './benchmarkChartUtils';
-import styles from './TpchSf100Benchmark.module.css';
+import styles from './benchmarks.module.css';
 
 const colorCpu = '#0071C5';
 const colorGpu = '#76B900';
@@ -104,8 +104,12 @@ function formatSpeedup(value: number | null | undefined, decimals = 1): string {
   return `${value.toFixed(decimals)}x`;
 }
 
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(value < 0.1 ? 1 : 0)}%`;
+}
+
 export default function TpcdsSf100Benchmark(): React.ReactElement {
-  const {dataset, config, rows, summary} = tpcdsSf100Benchmark;
+  const {dataset, config, rows, summary, pageCache} = tpcdsSf100Benchmark;
   const typedRows = rows as readonly TpcdsSf100BenchmarkRow[];
   const typedSummary = summary as {
     queryCount: number;
@@ -123,6 +127,10 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
     nativeProfileName: string;
     kvikioCompatMode: string;
   };
+  const measurement =
+    `Median of ${typedConfig.iterations} measured iterations after ${typedConfig.warmups} warm-up; each time covers SQL planning and execution. ` +
+    `Parquet files ${formatPercent(pageCache.residentFractionBefore)} resident in the OS page cache before the first query ` +
+    `and ${formatPercent(pageCache.residentFractionAfter)} after the last; no GPU resident cache.`;
   const typedDataset = dataset as {scaleFactor: string};
   const runtimeAxis = runtimeAxisBreak(
     typedRows.flatMap((row) => [row.cpuMs, row.gpuMs ?? row.gpuWallMs ?? 0]),
@@ -185,7 +193,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
           <Tabs className={styles.chartTabs} groupId="tpcds-sf100-chart-tabs" queryString={false}>
             <TabItem value="runtime" label="Per-query runtime" default>
               <p className={styles.chartCaption}>
-                Wall time of the single measured iteration after one warm-up. Parquet in the OS page cache; no GPU resident cache.
+                {measurement}
                 {runtimeAxis
                   ? ` The Y-axis skips ${runtimeAxis.startMs / 1000}–${runtimeAxis.endMs / 1000}s.`
                   : ''}
@@ -280,7 +288,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
             </TabItem>
             <TabItem value="speedup" label="Speedup">
               <p className={styles.chartCaption}>
-                CPU wall / successful GPU wall, sorted ascending. Green is GPU
+                CPU time divided by successful GPU time, sorted ascending. Green is GPU
                 faster; red is GPU slower.
               </p>
               <div className={styles.chart} style={{height: 420}}>
