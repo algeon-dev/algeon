@@ -409,8 +409,10 @@ jq -se 'all(.overall.failed == 0 and .overall.cancelled == 0 and .results.checks
 
 The tolerances match the CPU/GPU parity settings on the
 [benchmarks page](../../../../website/docs/reference/benchmarks/index.mdx).
-Inspect `results.empty_references` before citing a match. TPC-H Q11 returns
-zero rows at SF100, so its check compares only the schema.
+Inspect `results.empty_references` before citing a match: a query whose
+reference result is empty is checked on its schema only. With the
+specification's Q11 `FRACTION` of 0.0001 / SF, every TPC-H query returns rows
+at SF100.
 
 For another active-attempt limit, copy `tpch-sf100-server.toml` to
 `target/stress`, add an `[[admission.device_profiles]]` entry with
