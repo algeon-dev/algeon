@@ -735,7 +735,10 @@ pub(super) fn read_local_parquet_chunk_batch(
 /// copy is only a cache. After a successful member read the batch frame is offered back to
 /// the cache as a new optimized file; that publish is best effort and its
 /// error is dropped. Read pins for every member file are held through the
-/// cuDF call only.
+/// cuDF call only. Unlike the single-chunk read, a batch read sets no pass read
+/// limit: the batch byte target, the query domain's allocator and the
+/// chunk-split retry bound it (see `source_batching_policy.rs`), and a pass
+/// limit would make cuDF return several passes that are then concatenated.
 fn read_local_parquet_chunk_batch_uncached(
     context: &ExecutionContext,
     source: &LocalParquetSource,
