@@ -32,7 +32,7 @@ use arrow::{
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Schema, SchemaRef},
-    ipc::convert::try_schema_from_ipc_buffer,
+    ipc::convert,
     record_batch::RecordBatch,
 };
 use arrow_flight::{

@@ -11,11 +11,9 @@
 
 use std::collections::HashSet;
 
-use datafusion::{
-    arrow::datatypes::{DataType, Field, Fields},
-    parquet::arrow::PARQUET_FIELD_ID_META_KEY,
-};
+use arrow::datatypes::{DataType, Field, Fields};
 use iceberg::spec::{MappedField, NestedField, PartitionSpec, Schema as IcebergSchema, Transform, Type};
+use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
 use crate::error::UnsupportedReason;
 

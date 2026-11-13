@@ -6,9 +6,9 @@ use cudf::testing;
 use datafusion::{
     execution::SessionStateBuilder,
     object_store::{ObjectStoreExt, memory::InMemory, path::Path as ObjectStorePath},
-    parquet::arrow::ArrowWriter,
     physical_optimizer::PhysicalOptimizerRule,
 };
+use parquet::arrow::ArrowWriter;
 use query_planning::source::CredentialMode;
 use query_runtime::runtime::{S3SourceStorageProfile, SourceStorageProfile};
 

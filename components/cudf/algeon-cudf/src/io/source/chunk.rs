@@ -555,7 +555,7 @@ pub fn plan_local_parquet_source_chunks(
                 location: file.location.clone(),
                 path: file.path.clone(),
                 stable_id: file.stable_id.clone(),
-                row_group_indexes: if reads_all_row_groups { Vec::new() } else { row_groups.clone() },
+                row_group_indexes: if reads_all_row_groups { Vec::new() } else { row_groups },
                 reads_all_row_groups,
                 known_file_bytes: file.file_size_bytes,
                 known_row_group_bytes,

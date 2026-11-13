@@ -1099,11 +1099,11 @@ fn m1_string_algorithms_share_the_int64_codebook_and_vertex_decode_path() {
 
     for algorithm in algorithms {
         let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
-            spec: logical_string_spec(algorithm).clone(),
+            spec: logical_string_spec(algorithm),
             edge_schema: string_edge_schema(),
             predicate_schemas: Vec::new(),
             predicate_row_upper_bounds: [].to_vec(),
-            result_options: CugraphResultPlanOptions::default().clone(),
+            result_options: CugraphResultPlanOptions::default(),
             edge_normalize_inserted: false,
             edge_row_upper_bound: Some(3),
             edge_vertex_upper_bound: None,
@@ -1229,11 +1229,11 @@ fn m3_string_selectors_lower_to_encoded_native_side_inputs_and_decode_identity_o
     for (spec, decoded_columns) in cases {
         let algorithm = spec.algorithm;
         let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
-            spec: spec.clone(),
+            spec,
             edge_schema: string_edge_schema(),
             predicate_schemas: Vec::new(),
             predicate_row_upper_bounds: [].to_vec(),
-            result_options: CugraphResultPlanOptions::default().clone(),
+            result_options: CugraphResultPlanOptions::default(),
             edge_normalize_inserted: false,
             edge_row_upper_bound: Some(3),
             edge_vertex_upper_bound: None,

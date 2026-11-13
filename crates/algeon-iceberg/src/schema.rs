@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use algeon_datafusion::error::{Error, ErrorCode, Result};
-use datafusion::{arrow::datatypes::SchemaRef, datasource::physical_plan::parquet::transform_schema_to_view};
+use arrow::datatypes::SchemaRef;
+use datafusion::datasource::physical_plan::parquet::transform_schema_to_view;
 use iceberg::{
     Error as IcebergError,
     arrow::{schema_to_arrow_schema, strip_metadata_from_schema},

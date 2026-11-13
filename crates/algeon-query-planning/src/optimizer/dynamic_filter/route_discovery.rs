@@ -157,7 +157,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     vec![DynamicFilterKind::Range, DynamicFilterKind::SmallInList, DynamicFilterKind::HashSetContains];
                 let id = DynamicFilterId::new(routes.len());
                 let producer_column = if aggregate_group_key_producer.is_some() {
-                    producer_lineage.source_column.clone()
+                    producer_lineage.source_column
                 } else {
                     orientation.producer_key.name().to_string()
                 };
@@ -265,7 +265,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                                 DynamicFilterConsumer::LocalParquetSource {
                                     source_node_id: consumer_lineage.source_node_id,
                                 },
-                                consumer_lineage.source_column.clone(),
+                                consumer_lineage.source_column,
                                 DynamicFilterConsumerLowering::PostDecodeOnly,
                             )
                         } else {
@@ -346,7 +346,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                             DynamicFilterConsumer::LocalParquetSource {
                                 source_node_id: consumer_lineage.source_node_id,
                             },
-                            consumer_lineage.source_column.clone(),
+                            consumer_lineage.source_column,
                             consumer_lowering(consumer_source, ctx),
                         )
                     }
@@ -448,7 +448,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     vec![DynamicFilterKind::Range, DynamicFilterKind::SmallInList, DynamicFilterKind::HashSetContains];
                 let id = DynamicFilterId::new(routes.len());
                 let producer_column = if aggregate_group_key_producer.is_some() {
-                    producer_lineage.source_column.clone()
+                    producer_lineage.source_column
                 } else {
                     orientation.producer_key.name().to_string()
                 };

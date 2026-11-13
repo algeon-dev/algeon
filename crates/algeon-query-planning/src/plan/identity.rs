@@ -21,7 +21,7 @@ use std::{
 
 use arrow::{
     datatypes::{DataType, Field, Schema, TimeUnit},
-    ipc::writer::StreamWriter,
+    ipc::writer,
     record_batch::RecordBatch,
 };
 
@@ -259,7 +259,7 @@ impl<K: StableHash, V: StableHash> StableHash for BTreeMap<K, V> {
 impl StableHash for RecordBatch {
     fn stable_hash(&self, hasher: &mut PlanHasher) {
         let mut encoded = Vec::new();
-        let written = StreamWriter::try_new(&mut encoded, &self.schema())
+        let written = writer::StreamWriter::try_new(&mut encoded, &self.schema())
             .and_then(|mut writer| writer.write(self).and_then(|()| writer.finish()));
         match written {
             Ok(()) => {

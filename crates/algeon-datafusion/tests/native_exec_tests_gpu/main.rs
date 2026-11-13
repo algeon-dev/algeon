@@ -28,10 +28,10 @@ use arrow::{
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
+    util::pretty::pretty_format_batches,
 };
 use cudf::testing;
 use datafusion::{
-    arrow::util::pretty::pretty_format_batches,
     common::{DataFusionError, config::ConfigOptions},
     datasource::{memory::MemorySourceConfig, source::DataSourceExec},
     execution::{SessionStateBuilder, context::TaskContext},
@@ -1104,9 +1104,9 @@ fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failur
     use datafusion::{
         common::Result as DfResult,
         execution::{SessionStateBuilder, context::TaskContext},
-        parquet::arrow::ArrowWriter,
         prelude::{ParquetReadOptions, SessionConfig, SessionContext},
     };
+    use parquet::arrow::ArrowWriter;
     let dir = unique_temp_dir("algeon-datafusion-native-exec-try-cast");
     let path = dir.join("input.parquet");
     {

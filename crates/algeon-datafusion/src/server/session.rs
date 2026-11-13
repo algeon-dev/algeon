@@ -12,7 +12,7 @@ use datafusion::{
     execution::{SessionState, SessionStateBuilder, runtime_env::RuntimeEnvBuilder},
     logical_expr::{CreateExternalTable, DdlStatement, LogicalPlan},
     prelude::{SessionConfig, SessionContext},
-    sql::{parser::DFParserBuilder, sqlparser::dialect::dialect_from_str},
+    sql::{parser::DFParserBuilder, sqlparser::dialect},
 };
 use futures::StreamExt;
 use url::Url;
@@ -255,7 +255,7 @@ pub(crate) async fn run_init_sql(ctx: &SessionContext, path: &Path) -> ServerRes
     // The parsed dialect is not `Send`; keep it out of the awaits below.
     let statements = {
         let options = state.config_options();
-        let dialect = dialect_from_str(options.sql_parser.dialect).ok_or_else(|| {
+        let dialect = dialect::dialect_from_str(options.sql_parser.dialect).ok_or_else(|| {
             ServerError::invalid_config(
                 "init_sql",
                 format!("cannot be parsed with the configured SQL dialect `{}`", options.sql_parser.dialect),

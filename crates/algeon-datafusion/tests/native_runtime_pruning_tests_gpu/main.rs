@@ -36,7 +36,6 @@ use datafusion::{
     execution::{SessionStateBuilder, context::TaskContext},
     functions_aggregate::{count::count_udaf, sum::sum_udaf},
     logical_expr::Operator,
-    parquet::file::reader::{FileReader, SerializedFileReader},
     physical_expr::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr,
         aggregate::AggregateExprBuilder,
@@ -55,6 +54,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use fixtures::*;
+use parquet::file::reader::{FileReader, SerializedFileReader};
 use query_planning::{optimizer::NativeOptimizerDiagnostics, source::SourceDiagnostics};
 use sql::*;
 use support::*;

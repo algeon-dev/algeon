@@ -1,10 +1,8 @@
 use std::{fs::File, path::Path};
 
 use arrow::datatypes::Schema;
-use datafusion::{
-    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    prelude::{ParquetReadOptions, SessionContext},
-};
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::{TPCDS_TABLES, TpcdsTableLayout, WorkloadError, WorkloadResult, discover_tpcds_table_layout};
 

@@ -4,7 +4,8 @@ use arrow::{
     array::{ArrayRef, Int64Array},
     record_batch::RecordBatch,
 };
-use datafusion::{parquet::arrow::ArrowWriter, physical_plan::displayable};
+use datafusion::physical_plan::displayable;
+use parquet::arrow::ArrowWriter;
 use query_planning::plan::{WindowFrame, WindowFunction, WindowNode};
 
 use super::*;

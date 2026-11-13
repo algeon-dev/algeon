@@ -26,7 +26,6 @@ use arrow::{
 use datafusion::{
     common::{DataFusionError, config::ConfigOptions},
     execution::context::TaskContext,
-    parquet::file::reader::{FileReader, SerializedFileReader},
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
@@ -39,6 +38,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use futures::{StreamExt, executor::block_on};
+use parquet::file::reader::{FileReader, SerializedFileReader};
 use query_engine::rapids_backend::rapids_analysis_context;
 use query_planning::{
     pipeline::{CompiledPipeline, PipelineTaskKind, compile_pipeline},

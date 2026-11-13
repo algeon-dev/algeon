@@ -1,7 +1,6 @@
 use arrow::{
     array::{Array, Int32Array, StringArray, UInt8Array},
     datatypes::Schema,
-    ipc::writer::IpcWriteOptions,
 };
 use arrow_flight::{
     FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, IpcMessage, SchemaAsIpc, Ticket,

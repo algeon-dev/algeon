@@ -1063,8 +1063,8 @@ async fn planning_after_the_result_stream_started_keeps_the_sealed_metrics_targe
 /// a failure after that drop is the attempt's outcome.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn internal_attempt_holds_its_grant_until_the_root_stream_ends() {
+    use arrow::record_batch::RecordBatch;
     use datafusion::{
-        arrow::record_batch::RecordBatch,
         common::DataFusionError,
         execution::TaskContext,
         physical_plan::{

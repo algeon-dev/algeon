@@ -6,10 +6,10 @@ use datafusion::{
     },
     execution::{cache::cache_manager::FileMetadataCache, runtime_env::RuntimeEnv},
     object_store::{ObjectStoreExt, memory::InMemory},
-    parquet::arrow::async_reader::AsyncFileReader,
     physical_plan::metrics::ExecutionPlanMetricsSet,
 };
 use futures::executor::block_on;
+use parquet::arrow::async_reader::AsyncFileReader;
 
 use super::*;
 use crate::native::FooterCache;

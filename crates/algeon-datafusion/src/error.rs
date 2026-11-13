@@ -34,8 +34,8 @@ use std::{
     sync::Arc,
 };
 
+use arrow::error::ArrowError;
 use datafusion::{
-    arrow::error::ArrowError,
     common::{DataFusionError, SchemaError},
     logical_expr::{DdlStatement, LogicalPlan},
     object_store::Error as ObjectStoreError,

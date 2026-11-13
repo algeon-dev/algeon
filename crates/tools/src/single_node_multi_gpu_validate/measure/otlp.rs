@@ -3,10 +3,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 #[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
-use {
-    opentelemetry::global, opentelemetry_proto::tonic::resource::v1::Resource, tokio::runtime::Builder,
-    tools::otlp_metrics::BackendMetricsOtlpExporter,
-};
+use opentelemetry::global;
+#[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
+use opentelemetry_proto::tonic::resource::v1::Resource;
+#[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
+use tokio::runtime::Builder;
+#[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
+use tools::otlp_metrics::BackendMetricsOtlpExporter;
 
 #[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
 use super::unix_epoch_ns;
