@@ -329,9 +329,10 @@ fn memory_failure_detail(error: &Error) -> Option<String> {
 /// per-column element limit a read or an intermediate result exceeded, the
 /// text names the element count, the limit and the change that fits under it:
 /// smaller Parquet row groups when one row group alone exceeds the limit,
-/// otherwise a filter or a split at the row cap. `column` is the caller's
-/// column name, which joins only the wire text. Counts are parsed as numbers,
-/// so no foreign text enters the message.
+/// otherwise a filter or a split at the row cap. A join concatenation names its
+/// node, chunk count and build side. `column` is the caller's column name,
+/// which joins only the wire text. Counts, node ids and sides are parsed, so no
+/// foreign text enters the message.
 fn size_overflow_message(error: &Error, column: Option<&str>) -> String {
     const NO_RETRY: &str = "retrying the same request unchanged cannot succeed";
     let count = |key: &str| error.fact_value(key).and_then(|value| value.parse::<u64>().ok());
@@ -342,6 +343,7 @@ fn size_overflow_message(error: &Error, column: Option<&str>) -> String {
         );
     };
     let subject = column.map_or_else(|| "one column".to_string(), |column| format!("column `{column}`"));
+    let site = size_overflow_site(error);
     if let Some(rows) = count("max_row_group_rows") {
         return format!(
             "one Parquet row group of {subject} decodes to {elements} elements, above the limit of {limit} elements per column. Rewrite the file with row groups of at most {rows} rows; {NO_RETRY}"
@@ -349,12 +351,33 @@ fn size_overflow_message(error: &Error, column: Option<&str>) -> String {
     }
     match count("row_cap") {
         Some(row_cap) => format!(
-            "{subject} would hold {elements} elements in one relation or intermediate result, above the limit of {limit} elements per column; at its width at most {row_cap} rows fit. Filter the input, or split the relation (for example a UNION ALL of calls over row ranges) so each part holds at most {row_cap} rows; {NO_RETRY}"
+            "{subject} would hold {elements} elements in one relation or intermediate result{site}, above the limit of {limit} elements per column; at its width at most {row_cap} rows fit. Filter the input, or split the relation (for example a UNION ALL of calls over row ranges) so each part holds at most {row_cap} rows; {NO_RETRY}"
         ),
         None => format!(
-            "{subject} would hold {elements} elements in one relation or intermediate result, above the limit of {limit} elements per column. Filter the input, or split the relation (for example a UNION ALL of calls over row ranges); {NO_RETRY}"
+            "{subject} would hold {elements} elements in one relation or intermediate result{site}, above the limit of {limit} elements per column. Filter the input, or split the relation (for example a UNION ALL of calls over row ranges); {NO_RETRY}"
         ),
     }
+}
+
+/// The plan node and chunk count of the concatenation that overflowed, as a
+/// parenthesized clause, or an empty string when the error carries none. The
+/// node id is `n` and its index, the side is `left` or `right`, and the chunk
+/// count is a number; any other value is left out.
+fn size_overflow_site(error: &Error) -> String {
+    let node = error
+        .fact_value("node_id")
+        .filter(|node| node.strip_prefix('n').is_some_and(|index| index.parse::<u64>().is_ok()));
+    let Some(node) = node else {
+        return String::new();
+    };
+    let mut parts = vec![format!("plan node {node}")];
+    if let Some(side) = error.fact_value("build_side").filter(|side| matches!(*side, "left" | "right")) {
+        parts.push(format!("build side {side}"));
+    }
+    if let Some(chunks) = error.fact_value("chunk_count").and_then(|chunks| chunks.parse::<u64>().ok()) {
+        parts.push(format!("{chunks} chunks concatenated"));
+    }
+    format!(" ({})", parts.join(", "))
 }
 
 /// Client text for rejections that name the caller's own schema identifiers.
