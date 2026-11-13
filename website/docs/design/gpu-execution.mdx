@@ -42,9 +42,52 @@ Related terms distinguish lane scopes:
 
 Cross-stream dependencies use completion fences such as CUDA events. Buffer
 ownership lasts through final consumption, and all lanes allocate within
-[one query memory cap](./admission.mdx). Within composed island executions,
+[one query memory cap](./admission.mdx). An aggregate's source chunks on
+separate lanes are live at the same time, so its chunk target divides the
+grant by the regions one chunk keeps live times the run's lane width; two
+lanes halve the target a serial run plans. Within composed island executions,
 shared execution scopes coordinate multi-reader lifecycles, retaining resident
 handles until the final reader completes.
+
+## Partitioned joins {/* #partitioned-joins */}
+
+A partitioned hash join splits its build side by key hash into one frame per
+partition and splits each probe piece the same way, so each pair holds only
+matching keys. When the probe side streams in, the join builds the hash table
+of each build partition at the first probe piece and probes it with every later
+piece. The attempt's kept tables stay within the share of its grant described
+in [kept join tables](./admission.mdx#kept-join-tables). A partition outside
+that share builds one table per batch of probe input instead of one per piece.
+The join copies that partition's rows out of each probe piece and holds them.
+When the rows held by the attempt's joins would pass one partitioned-join
+target, the join concatenates the rows of its partition holding the most bytes,
+joins them against a table built for that batch, and drops the table. It
+repeats until the rest fits, and joins the rows still held when the probe input
+ends. A probe of a single piece keeps no table and holds no rows. A retry that
+repartitions a pair builds its own tables for the smaller pairs.
+
+A build side that streams in chunk by chunk decides after each chunk whether to
+partition. Plan row and byte estimates bound the build from above and may far
+exceed it, for example after a `LIKE` filter over a large dimension. The build
+commits to partitions once its counted rows or bytes reach the large-build
+thresholds of `KeyedHashJoinStrategyOptions`. It also commits when its estimate
+allows a large build and the whole chunks it holds reach the quarter of the
+grant that also bounds [kept join tables](./admission.mdx#kept-join-tables).
+From then on each chunk is hash-partitioned as it arrives. A build that never
+commits is concatenated, and its strategy is chosen from the counted rows and
+bytes alone, where a large estimate no longer counts as large-build evidence.
+A build of medium size whose probe is large still ends partitioned, after that
+one concatenation.
+
+The coordinator builds the kept tables on the root stream before probe chunks
+reach execution lanes. Lanes probe them concurrently on their own streams,
+which only read the table. A lane returns its rows of partitions without a kept
+table to the coordinator, which holds them and joins their batches on the root
+stream. The outputs of one probe piece's partitions, with the batches its rows
+pushed out, are concatenated into one frame. The next operator therefore
+receives at most one frame per probe piece, none for a piece whose rows were
+all held, and one for the batches joined at the end of the input. That
+concatenation holds the piece's output twice at its peak.
 
 ## Runtime dynamic filters
 
@@ -65,9 +108,13 @@ takes no route on either input. Only single-key joins under
 `NullsDoNotMatch` produce a key route. Native execution builds the right input
 of every keyed left outer and mark join. Build-side selection may move a keyed
 semi or anti join's build to its left input, and the route then reduces the
-right input. A key route at a left outer or mark join, or at an anti join that
-builds its right input, would consume the left input and is rejected as
-`UnsupportedJoinShape`.
+right input. A join built on its left input keeps one match flag per left row:
+each right chunk marks the left rows it matches and is released, and the
+output is one gather of the marked rows for a semi join or the unmarked rows
+for an anti join. The join retains no right chunk after marking it. A
+null-aware anti join always builds its right input. A key route at a left
+outer or mark join, or at an anti join that builds its right input, would
+consume the left input and is rejected as `UnsupportedJoinShape`.
 
 Integer bounds and distinct counts classify empty, dense range, small-IN-list
 and larger exact keysets without copying the key column to the host. Resident

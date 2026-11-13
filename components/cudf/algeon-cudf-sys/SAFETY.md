@@ -126,3 +126,21 @@ Sealing is one way: native consumption and repeated sealing reject a sealed
 state. The safe API consumes its mutable owner into a finalized owner; only
 that owner exposes exact output rows and materialization. Gather-map outputs
 retain the original execution domain independently of state destruction.
+
+## Cumulative keyed left membership
+
+`cudf_hash_left_match_state` builds a `cudf::hash_join` over borrowed
+logical-left key views; callers retain left device storage until destruction.
+Right key batches are borrowed only through completion of `consume`, whose
+per-batch match indices are allocated from the call's MR and released on the
+state's stream. The safe DataFrame wrapper retains a frame clone and uses
+execution completion fences to order batch release across streams. Mutation
+requires exclusive access; this state is `Send` but not `Sync`.
+
+Construction, consumption, sealing, and materialization require the original
+device, stream and MR. The hash table and the one-byte match flags allocate
+through a statistics resource whose box outlives them and forwards to that MR,
+so the reported retained bytes exclude per-batch match indices. Sealing is one
+way, and the safe API exposes output rows and materialization only on the
+finalized owner. The ascending gather map retains the original execution domain
+independently of state destruction.

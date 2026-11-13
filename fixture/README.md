@@ -15,12 +15,14 @@ fixture/
   fixture.sh                         # public fixture command
   tpc-h/
     generate.py                      # TPC-H generator
+    expected_rows.json               # per-scale table row counts
     data/sf<N>/parquet/              # local, gitignored benchmark data
     models/                          # local, gitignored forest models
   tpc-ds/
     generate.py                      # TPC-DS generator
     data/sf<N>/parquet/              # local, gitignored benchmark data
   tpc/parquet_layout.py              # shared TPC layout/verification logic
+  tpc/describe_layout.py             # measures a fixture directory's Parquet layout into layout.json
   clickbench/data/                   # local, gitignored ClickBench layouts
   demo/                              # demo datasets; see demo/README.md
     citation_network/                # DBLP / AMiner V12 -> cuGraph edge and paper tables
@@ -56,12 +58,102 @@ fixture/tpc-ds/generate.py --scale 1 --scale 10 --variant both --out-root "$ALGE
 
 Both scripts drive `tpcgen-cli`, then rewrite the final files as one Parquet
 file per table, sorted by workload-specific pruning keys with row-group
-statistics and Snappy compression. DuckDB is the default external-memory
-optimizer; pass `--optimize-engine pyarrow` for the older in-memory path.
-Verification checks the expected tables, SF1/SF10/SF100 row counts, row groups,
-compression, and monotonic row-group statistics. The files deliberately omit
+statistics and Snappy compression. DuckDB sorts in external memory. TPC-H
+files are then written by Spark (below); TPC-DS files are written by DuckDB,
+or by pyarrow's older in-memory path with `--optimize-engine pyarrow`.
+Each DuckDB statement runs with half of the memory available when the table's
+sort starts, so a sort next to other jobs spills to temp space instead of
+being stopped by the OOM killer. A table whose estimated sort working set
+exceeds a quarter of the available memory is sorted in value ranges of its
+first sort key, so temp space stays bounded (one global sort of SF750 lineitem
+needed more than 388 GiB). The DuckDB writer concatenates the sorted ranges
+into the same file as one global sort, except that each range boundary can
+leave one short row group.
+Verification checks the expected tables, row counts for the scales in each
+generator's expected-row table (for TPC-H, `tpc-h/expected_rows.json`, which
+the TPC-H benchmark's dataset validation also reads), row groups, compression,
+and monotonic row-group statistics, and rejects a file with more than 32,767 row groups
+(the most the parquet 59 footer decoder in DataFusion 55 reads). Use DuckDB
+1.5.x: 1.2.0 writes string statistics that pyarrow
+cannot read, and 2.0.0 writes every column as NOT NULL where the other scales
+are nullable. The files deliberately omit
 Parquet footer sorting-column metadata: physical ordering is for pruning
 statistics, not an output-ordering promise to DataFusion.
+
+Each optimized directory holds a `_generation.json` manifest with `layout`,
+`scale_factor` (a number), `writer` (`spark`, `duckdb` or `pyarrow`),
+`compression`, and per table its `sort_keys` (empty when unsorted), field
+renames and casts. The DuckDB and pyarrow writers add `row_group_bytes`; the
+Spark writer adds `spark_version`, `parquet_java_version` (read from the
+written files' `created_by`), `parquet_block_size`, `parquet_page_size` and
+`parquet_page_row_count_limit`.
+
+### TPC-H Spark writer
+
+TPC-H files are written by Spark 4.0.1 (parquet-java 1.15.2) in local mode.
+Every setting is the Spark or parquet-java default except the single output
+file per table:
+
+| Setting | Value |
+| --- | --- |
+| `parquet.block.size` (row-group target) | 128 MiB |
+| `parquet.page.size` | 1 MiB |
+| `parquet.page.row.count.limit` | 20,000 rows |
+| Dictionary encoding | on; a dictionary past 1 MiB falls back to plain |
+| Compression | Snappy |
+| Data page format | v1 |
+| Decimal physical type | INT64 (`spark.sql.parquet.writeLegacyFormat=false`) |
+| Output files per table | 1 (`coalesce(1)`) |
+
+The block size is parquet-java's estimate of its write buffer, so a written
+row group is larger uncompressed: the first SF1 lineitem row group holds 4.0
+million rows and 230 MiB.
+
+DuckDB sorts each raw table into one or more value-range files. One Spark task
+reads them in range order and writes the table, and the generator renames
+`part-00000-*.parquet` to `<table>.parquet` and deletes the Spark output
+directory (`_SUCCESS`, `.crc` files) and the sorted files. Spark orders file
+splits by size, largest first, so a single read over several files could
+reorder rows; `tpc/spark_write.py` reads each file as exactly one split and
+unions those reads in file order. Spark writes integer columns as plain
+INT32 and INT64 without the `Int(bitWidth, signed)` annotation DuckDB adds;
+both read back as the same Arrow types. Verification of Spark output also
+requires a parquet-mr `created_by` and at most 20,000 rows in each data page,
+read from the offset index.
+
+| Table | Sort keys |
+| --- | --- |
+| `customer` | `c_nationkey`, `c_custkey` |
+| `lineitem` | `l_shipdate`, `l_receiptdate`, `l_commitdate`, `l_orderkey`, `l_linenumber` |
+| `nation` | `n_regionkey`, `n_nationkey` |
+| `orders` | `o_orderdate`, `o_orderkey`, `o_custkey` |
+| `part` | `p_brand`, `p_type`, `p_size`, `p_partkey` |
+| `partsupp` | `ps_partkey`, `ps_suppkey` |
+| `region` | `r_regionkey` |
+| `supplier` | `s_nationkey`, `s_suppkey` |
+
+Install PySpark from PyPI into its own environment and point the generator at
+it. Spark needs Java 17 or 21 on `PATH` or in `JAVA_HOME`:
+
+```bash
+python3 -m venv ~/.venvs/pyspark
+~/.venvs/pyspark/bin/pip install pyspark==4.0.1
+export ALGEON_SPARK_PYTHON=~/.venvs/pyspark/bin/python
+```
+
+`--spark-python` overrides `ALGEON_SPARK_PYTHON`; without either, the
+generator's own interpreter must have PySpark. The generator checks the
+PySpark version and Java before it runs `tpcgen-cli`.
+`--optimize-engine duckdb` writes TPC-H with DuckDB instead.
+
+`--unsorted` skips the DuckDB sort; Spark writes tpchgen's rows in generation
+order with the same settings. The manifest records the layout
+`single_file_per_table_unsorted` and empty `sort_keys`, and verification skips
+the monotonic statistics check:
+
+```bash
+fixture/tpc-h/generate.py --scale 100 --unsorted --out "$ALGEON_FIXTURE_ROOT/tpch/sf100-unsorted/parquet" --force
+```
 
 ### Lineitem forest model
 

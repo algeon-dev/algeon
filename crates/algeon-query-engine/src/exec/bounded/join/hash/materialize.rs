@@ -179,6 +179,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             probe_rows: side_metric(probe_side, original_left_rows, original_right_rows),
             probe_bytes,
             hash_table_bytes,
+            partition_hash_table_build_count: 0,
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes: 0,
             gather_map_bytes,

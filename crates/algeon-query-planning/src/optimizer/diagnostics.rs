@@ -252,7 +252,7 @@ fn format_join_build_side_selection_candidate(candidate: &JoinBuildSideSelection
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
     let selection_basis = candidate.selection_basis.map_or("none", |basis| basis.as_str());
     format!(
-        "rule={},candidate_node_id={},before_build_side={},after_build_side={},left_estimated_rows={},right_estimated_rows={},left_estimated_bytes={},right_estimated_bytes={},left_advisory_rows={},right_advisory_rows={},left_advisory_bytes={},right_advisory_bytes={},small_build_side_bytes={},small_build_side_rows={},selection_basis={},applied={},rejected_reason={}",
+        "rule={},candidate_node_id={},before_build_side={},after_build_side={},left_estimated_rows={},right_estimated_rows={},left_estimated_bytes={},right_estimated_bytes={},left_proved_rows={},right_proved_rows={},left_advisory_rows={},right_advisory_rows={},left_advisory_bytes={},right_advisory_bytes={},small_build_side_bytes={},small_build_side_rows={},selection_basis={},applied={},rejected_reason={}",
         candidate.rule_name,
         candidate.candidate_node_id,
         candidate.before_build_side,
@@ -261,6 +261,8 @@ fn format_join_build_side_selection_candidate(candidate: &JoinBuildSideSelection
         option_u64_text(candidate.right_estimated_rows),
         option_u64_text(candidate.left_estimated_bytes),
         option_u64_text(candidate.right_estimated_bytes),
+        option_u64_text(candidate.left_proved_rows),
+        option_u64_text(candidate.right_proved_rows),
         option_u64_text(candidate.left_advisory_rows),
         option_u64_text(candidate.right_advisory_rows),
         option_u64_text(candidate.left_advisory_bytes),
@@ -302,15 +304,20 @@ fn format_stream_fanout_replay_candidate(candidate: &StreamFanoutReplayCandidate
     } else {
         candidate.join_probe_consumer_node_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join("+")
     };
-    // Stream fanout replay has one rejection cause and stores no reason field,
-    // so the row derives it from `applied`.
-    let rejected_reason = if candidate.applied { "none" } else { "NotReachableFromSink" };
+    let selection_basis = candidate.selection_basis.map_or("none", |basis| basis.as_str());
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
     format!(
-        "rule={},fanout_node_id={},consumer_count={},join_probe_consumer_node_ids={},applied={},rejected_reason={}",
+        "rule={},fanout_node_id={},consumer_count={},join_probe_consumer_node_ids={},estimated_rows={},estimated_bytes={},budget_share_bytes={},column_row_limit={},selection_basis={},applied={},rejected_reason={}",
         candidate.rule_name,
         candidate.fanout_node_id,
         candidate.consumer_count,
         join_probe_consumer_node_ids,
+        option_u64_text(candidate.estimated_rows),
+        option_u64_text(candidate.estimated_bytes),
+        option_u64_text(candidate.budget_share_bytes),
+        candidate.column_row_limit,
+        selection_basis,
         candidate.applied,
         rejected_reason,
     )

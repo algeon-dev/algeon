@@ -1,6 +1,6 @@
 //! Finalization and metric rows of streamed one-shot and partitioned hash joins.
 //!
-//! A streamed probe yields one output frame per probe chunk or partition and accumulates counters
+//! A streamed probe yields one output frame per probe chunk or piece and accumulates counters
 //! in `StreamedOneShotJoinSummary` or `StreamedPartitionedJoinSummary`. The materialize stage then
 //! concatenates the frames, or passes them on as a stream, and writes one join metric row for the
 //! node from the summary. A lazy stream writes that row when it is exhausted instead.
@@ -47,8 +47,8 @@ pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
     Ok(output)
 }
 
-/// Concatenates the per-partition outputs of a streamed partitioned hash join and records its
-/// metrics. The probe stage has already released the build partitions.
+/// Concatenates the per-piece outputs of a streamed partitioned hash join and records its
+/// metrics. The probe stage has already released the build partitions and their kept tables.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -115,6 +115,7 @@ pub(super) fn record_streamed_one_shot_join_metrics(
             probe_rows: summary.probe_rows,
             probe_bytes: summary.probe_bytes,
             hash_table_bytes: 0,
+            partition_hash_table_build_count: 0,
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes: 0,
             gather_map_bytes: summary.index_bytes,
@@ -157,6 +158,7 @@ pub(super) fn record_one_shot_join_chunk_metrics(
             probe_rows: chunk.probe_rows,
             probe_bytes: chunk.probe_bytes,
             hash_table_bytes: 0,
+            partition_hash_table_build_count: 0,
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes: 0,
             gather_map_bytes: chunk.index_bytes,
@@ -199,7 +201,8 @@ pub(super) fn record_streamed_partitioned_hash_join_metrics(
             build_bytes,
             probe_rows: summary.probe_rows,
             probe_bytes: summary.probe_bytes,
-            hash_table_bytes: 0,
+            hash_table_bytes: summary.retained_hash_table_bytes,
+            partition_hash_table_build_count: summary.hash_table_build_count,
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes: summary.mixed_size_data_bytes,
             gather_map_bytes: summary.index_bytes,

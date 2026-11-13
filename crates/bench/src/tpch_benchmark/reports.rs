@@ -1,6 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
-use algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics;
+use algeon_datafusion::{
+    native_report::bench_support::ParityFloatTolerance, planner::NativeCapabilityCompiledGraphDiagnostics,
+};
 use query_planning::contract_report::CapabilityDecisionRow;
 
 use super::{
@@ -15,14 +20,15 @@ use super::{
 mod formatting;
 
 use formatting::{
-    duration_ms, format_aggregate_strategy_rows, format_capability_compiled_graphs, format_capability_decision_rows,
-    format_dynamic_filter_runtime_rows, format_failure_facts, format_graph_runtime_rows, format_join_strategy_rows,
-    format_task_operator_rows, format_task_runtime_rows, mean_duration, mean_optional_f64, metric_duration_ms,
-    optional_f64_text, optional_text, optional_usize_text, optional_usize_text_none, push_line, stable_tsv_field,
-    write_native_execution_policy_metadata, write_native_memory_policy_metadata, write_tpch_dataset_metadata,
+    duration_ms, f64_list_text, format_aggregate_strategy_rows, format_capability_compiled_graphs,
+    format_capability_decision_rows, format_dynamic_filter_runtime_rows, format_failure_facts,
+    format_graph_runtime_rows, format_join_strategy_rows, format_task_operator_rows, format_task_runtime_rows,
+    mean_optional_f64, median_duration, metric_duration_ms, optional_f64_text, optional_text, optional_usize_text,
+    optional_usize_text_none, push_line, stable_tsv_field, write_native_execution_policy_metadata,
+    write_native_memory_policy_metadata, write_tpch_dataset_metadata,
 };
 
-pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tcapability_decision_rows\tcapability_compiled_graphs\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\tmax_task_observed_peak_bytes\tmax_task_retained_bytes\tgraph_runtime_rows\ttask_operator_rows\ttask_runtime_rows\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\tdynamic_filter_row_groups_pruned\tdynamic_filter_source_bytes_pruned\tdynamic_filter_reader_predicate_rows_before\tdynamic_filter_reader_predicate_rows_after\tdynamic_filter_reader_predicate_rows_filtered\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\tdynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows\ttask_high_water_rows\tpeak_memory_operator_class\tpeak_memory_operator_class_bytes\truntime_operator_class\truntime_operator_class_ms\tsource_predicate_pushdown_status\tpartitioned_join_count\tjoin_partitioning_status\taggregate_merge_status\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_input_rows\tpartial_aggregate_rows\tpartial_aggregate_retained_bytes\tfinal_merge_attempts\tfinal_merge_levels\tfinal_merge_max_fan_in\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\taggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\taggregate_exact_cardinality_probe_input_rows\taggregate_prepared_sort_groupby_elapsed_ns\taggregate_encoded_key_partial_elapsed_ns\tretry_count\tretry_resource_exhausted_count\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tone_shot_join_index_bytes\tone_shot_join_materialization_bytes\tone_shot_join_output_bytes\tjoin_gather_map_bytes\taggregate_strategy_rows\tjoin_strategy_rows\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
+pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tcapability_decision_rows\tcapability_compiled_graphs\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tcpu_planning_ms\tnative_planning_ms\tcpu_execution_ms\tnative_execution_ms\tcpu_wall_ms_samples\tnative_wall_ms_samples\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\tmax_task_observed_peak_bytes\tmax_task_retained_bytes\tgraph_runtime_rows\ttask_operator_rows\ttask_runtime_rows\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\tdynamic_filter_row_groups_pruned\tdynamic_filter_source_bytes_pruned\tdynamic_filter_reader_predicate_rows_before\tdynamic_filter_reader_predicate_rows_after\tdynamic_filter_reader_predicate_rows_filtered\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\tdynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows\ttask_high_water_rows\tpeak_memory_operator_class\tpeak_memory_operator_class_bytes\truntime_operator_class\truntime_operator_class_ms\tsource_predicate_pushdown_status\tpartitioned_join_count\tjoin_partitioning_status\taggregate_merge_status\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_input_rows\tpartial_aggregate_rows\tpartial_aggregate_retained_bytes\tfinal_merge_attempts\tfinal_merge_levels\tfinal_merge_max_fan_in\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\taggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\taggregate_exact_cardinality_probe_input_rows\taggregate_prepared_sort_groupby_elapsed_ns\taggregate_encoded_key_partial_elapsed_ns\tretry_count\tretry_resource_exhausted_count\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tone_shot_join_index_bytes\tone_shot_join_materialization_bytes\tone_shot_join_output_bytes\tjoin_gather_map_bytes\taggregate_strategy_rows\tjoin_strategy_rows\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
 pub(super) const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "query_id",
     "planning_outcome",
@@ -52,6 +58,12 @@ pub(super) const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "parity_status",
     "cpu_wall_ms",
     "native_wall_ms",
+    "cpu_planning_ms",
+    "native_planning_ms",
+    "cpu_execution_ms",
+    "native_execution_ms",
+    "cpu_wall_ms_samples",
+    "native_wall_ms_samples",
     "speedup_vs_cpu",
     "cpu_output_batches",
     "native_output_batches",
@@ -176,13 +188,42 @@ impl NativeTpchBenchmarkReport {
         push_line(&mut output, format_args!("# tpch_benchmark_query_ids={}", self.config.query_ids.join(",")));
         push_line(&mut output, format_args!("# tpch_benchmark_warmups={}", self.config.warmup_iterations));
         push_line(&mut output, format_args!("# tpch_benchmark_iterations={}", self.config.iterations));
-        push_line(&mut output, format_args!("# tpch_benchmark_wall_time_fields=per_measured_iteration_mean"));
+        push_line(&mut output, format_args!("# tpch_benchmark_wall_time_fields=per_measured_iteration_median"));
+        push_line(&mut output, format_args!("# tpch_benchmark_wall_time_boundary=sql_planning_and_collect"));
+        push_line(
+            &mut output,
+            format_args!("# tpch_benchmark_wall_time_sample_fields=measured_iterations_in_run_order_comma_separated"),
+        );
         push_line(&mut output, format_args!("# tpch_benchmark_native_counter_fields=measured_iteration_totals"));
         push_line(
             &mut output,
             format_args!("# tpch_benchmark_native_peak_memory_fields=max_across_measured_iterations"),
         );
         push_line(&mut output, format_args!("# tpch_benchmark_native_timing_fields=per_measured_iteration_mean"));
+        // parity_status compares values within the float tolerance; the
+        // fingerprint columns hash rendered values exactly and only identify outputs.
+        push_line(
+            &mut output,
+            format_args!("# tpch_benchmark_parity_fields=last_measured_iteration_values_float_tolerant"),
+        );
+        push_line(
+            &mut output,
+            format_args!(
+                "# tpch_benchmark_parity_float_tolerance_absolute={}",
+                self.config.parity_float_tolerance.absolute
+            ),
+        );
+        push_line(
+            &mut output,
+            format_args!(
+                "# tpch_benchmark_parity_float_tolerance_relative={}",
+                self.config.parity_float_tolerance.relative
+            ),
+        );
+        push_line(
+            &mut output,
+            format_args!("# tpch_benchmark_output_fingerprint_fields=last_measured_iteration_exact_diagnostic"),
+        );
         push_line(&mut output, format_args!("# tpch_benchmark_dataset_mode={}", self.config.dataset_mode.as_str()));
         push_line(
             &mut output,
@@ -246,6 +287,12 @@ pub(super) struct NativeTpchBenchmarkRow {
     pub(super) parity_status: validation::ParityStatus,
     pub(super) cpu_wall_ms: Option<f64>,
     pub(super) native_wall_ms: Option<f64>,
+    pub(super) cpu_planning_ms: Option<f64>,
+    pub(super) native_planning_ms: Option<f64>,
+    pub(super) cpu_execution_ms: Option<f64>,
+    pub(super) native_execution_ms: Option<f64>,
+    pub(super) cpu_wall_ms_samples: Vec<f64>,
+    pub(super) native_wall_ms_samples: Vec<f64>,
     pub(super) speedup_vs_cpu: Option<f64>,
     pub(super) cpu_output_batches: Option<usize>,
     pub(super) native_output_batches: Option<usize>,
@@ -284,6 +331,12 @@ impl NativeTpchBenchmarkRow {
             parity_status: validation::ParityStatus::NotRun,
             cpu_wall_ms: None,
             native_wall_ms: None,
+            cpu_planning_ms: None,
+            native_planning_ms: None,
+            cpu_execution_ms: None,
+            native_execution_ms: None,
+            cpu_wall_ms_samples: Vec::new(),
+            native_wall_ms_samples: Vec::new(),
             speedup_vs_cpu: None,
             cpu_output_batches: None,
             native_output_batches: None,
@@ -322,6 +375,12 @@ impl NativeTpchBenchmarkRow {
             parity_status: validation::ParityStatus::NotRun,
             cpu_wall_ms: None,
             native_wall_ms: None,
+            cpu_planning_ms: None,
+            native_planning_ms: None,
+            cpu_execution_ms: None,
+            native_execution_ms: None,
+            cpu_wall_ms_samples: Vec::new(),
+            native_wall_ms_samples: Vec::new(),
             speedup_vs_cpu: None,
             cpu_output_batches: None,
             native_output_batches: None,
@@ -343,6 +402,7 @@ impl NativeTpchBenchmarkRow {
         planning_row: NativeDataFusionPlanningRow,
         cpu: Result<execution::TimedQueryRun, execution::CpuRunFailure>,
         native: Result<execution::TimedNativeQueryRun, execution::NativeRunFailure>,
+        parity_float_tolerance: ParityFloatTolerance,
     ) -> Self {
         let (cpu, cpu_failure, cpu_failure_details, cpu_runtime_started) = match cpu {
             Ok(run) => (Some(run), None, execution::FailureDetails::default(), true),
@@ -355,14 +415,29 @@ impl NativeTpchBenchmarkRow {
         let parity_status = validation::parity_status(
             cpu.as_ref().map(|run| &run.final_measurement),
             native.as_ref().map(|run| &run.final_measurement),
+            parity_float_tolerance,
         );
+        // A native output matched within the float tolerance can hash differently, so the CPU output names
+        // the matched result.
         let output_fingerprint = if parity_status == validation::ParityStatus::Matched {
             cpu.as_ref().map(|run| run.final_measurement.output_fingerprint.clone())
         } else {
             None
         };
-        let cpu_wall_ms = cpu.as_ref().map(|run| duration_ms(mean_duration(&run.samples)));
-        let native_wall_ms = native.as_ref().map(|run| duration_ms(mean_duration(&run.samples)));
+        let cpu_wall_samples = cpu.as_ref().map(execution::TimedQueryRun::wall_samples);
+        let native_wall_samples = native.as_ref().map(execution::TimedNativeQueryRun::wall_samples);
+        let median_ms = |samples: &[Duration]| duration_ms(median_duration(samples));
+        let cpu_wall_ms = cpu_wall_samples.as_deref().map(median_ms);
+        let native_wall_ms = native_wall_samples.as_deref().map(median_ms);
+        let cpu_planning_ms = cpu.as_ref().map(|run| median_ms(&run.planning_samples));
+        let native_planning_ms = native.as_ref().map(|run| median_ms(&run.planning_samples));
+        let cpu_execution_ms = cpu.as_ref().map(|run| median_ms(&run.execution_samples));
+        let native_execution_ms = native.as_ref().map(|run| median_ms(&run.execution_samples));
+        let sample_list = |samples: Option<Vec<Duration>>| {
+            samples.map_or_else(Vec::new, |samples| samples.into_iter().map(duration_ms).collect())
+        };
+        let cpu_wall_ms_samples = sample_list(cpu_wall_samples);
+        let native_wall_ms_samples = sample_list(native_wall_samples);
         let speedup_vs_cpu = cpu_wall_ms.zip(native_wall_ms).and_then(|(cpu_ms, native_ms)| {
             if native_ms == 0.0 {
                 Some(f64::INFINITY)
@@ -399,6 +474,12 @@ impl NativeTpchBenchmarkRow {
             parity_status,
             cpu_wall_ms,
             native_wall_ms,
+            cpu_planning_ms,
+            native_planning_ms,
+            cpu_execution_ms,
+            native_execution_ms,
+            cpu_wall_ms_samples,
+            native_wall_ms_samples,
             speedup_vs_cpu,
             cpu_output_batches: cpu.as_ref().map(|run| run.final_measurement.output_batches),
             native_output_batches: native.as_ref().map(|run| run.final_measurement.output_batches),
@@ -452,6 +533,12 @@ impl NativeTpchBenchmarkRow {
             self.parity_status.as_str().to_string(),
             optional_f64_text(self.cpu_wall_ms),
             optional_f64_text(self.native_wall_ms),
+            optional_f64_text(self.cpu_planning_ms),
+            optional_f64_text(self.native_planning_ms),
+            optional_f64_text(self.cpu_execution_ms),
+            optional_f64_text(self.native_execution_ms),
+            f64_list_text(&self.cpu_wall_ms_samples),
+            f64_list_text(&self.native_wall_ms_samples),
             optional_f64_text(self.speedup_vs_cpu),
             optional_usize_text(self.cpu_output_batches),
             optional_usize_text(self.native_output_batches),

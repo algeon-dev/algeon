@@ -85,6 +85,43 @@ cudf_status_t cudf_mixed_left_join_state_materialize_indices_ex(
 /// Consume ownership. Failure quarantines the handle and must not be retried.
 cudf_status_t cudf_mixed_left_join_state_destroy(cudf_mixed_left_join_state_handle state);
 
+/// Owning cumulative keyed left semi/anti membership state without a residual.
+typedef struct cudf_hash_left_match_state_handle_state* cudf_hash_left_match_state_handle;
+
+/// Build a hash table over the left keys and a one-byte match flag per left row.
+/// Left device storage must outlive the state. All subsequent execution calls
+/// must use the same device, stream, and MR. Partial construction is cleaned on
+/// failure and `out` remains NULL.
+cudf_status_t cudf_hash_left_match_state_create_ex(cudf_table_view_handle left_keys,
+                                                   cudf_null_equality_t null_equality,
+                                                   cudf_hash_left_match_state_handle* out,
+                                                   cudf_exec_options_t const* options);
+
+/// Mark the left rows that one right batch matches. Right storage is borrowed
+/// until stream completion. Rejects calls after seal. The batch's match indices
+/// are released before the call returns its stream work.
+cudf_status_t cudf_hash_left_match_state_consume_ex(cudf_hash_left_match_state_handle state,
+                                                    cudf_table_view_handle right_keys,
+                                                    cudf_exec_options_t const* options);
+
+/// Declare right EOF and select LEFT_SEMI or LEFT_ANTI output. Rejects repeated sealing.
+cudf_status_t cudf_hash_left_match_state_seal_ex(cudf_hash_left_match_state_handle state,
+                                                 cudf_join_kind_t kind,
+                                                 cudf_exec_options_t const* options);
+/// Exact selected left rows; valid only after seal.
+cudf_status_t cudf_hash_left_match_state_output_size(cudf_hash_left_match_state_handle state,
+                                                     size_t* out);
+/// Retained hash table and match flag bytes, excluding borrowed inputs and output gather maps.
+cudf_status_t cudf_hash_left_match_state_device_allocated_size(
+  cudf_hash_left_match_state_handle state, size_t* out);
+/// Exact-size ascending INT32 left indices, valid only after seal. Caller owns output on success.
+cudf_status_t cudf_hash_left_match_state_materialize_indices_ex(
+  cudf_hash_left_match_state_handle state,
+  cudf_column_handle* out,
+  cudf_exec_options_t const* options);
+/// Consume ownership. Failure quarantines the handle and must not be retried.
+cudf_status_t cudf_hash_left_match_state_destroy(cudf_hash_left_match_state_handle state);
+
 /// Inner join of two key tables.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive both returned tables.

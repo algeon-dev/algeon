@@ -151,13 +151,15 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
 /// The pair is owned by a `JoinMaterializationTxn`, and every failure path rolls it back before the
 /// error returns. The size data is consumed by the gather-map step, and its device size is reported
 /// as `mixed_size_data_bytes` for this partition. The driver may call this again for a smaller
-/// range of the same partition after a retryable resource error.
+/// range of the same partition after a retryable resource error. The mixed join keeps no table
+/// across calls, so the driver's whole-partition argument is unused.
 fn materialize_partitioned_mixed_keyed_residual_join_partition(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
+    _whole_build_partition: Option<usize>,
 ) -> Result<PartitionedJoinPartitionOutput> {
     let exec_runtime = execution.context().runtime()?;
     let overrides = exec_runtime.exec();

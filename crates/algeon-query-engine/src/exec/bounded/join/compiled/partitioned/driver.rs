@@ -104,6 +104,7 @@ pub(super) struct PartitionedJoinOutputSummary {
     pub(super) output_reservation_bytes: Option<u64>,
     pub(super) output_rows: u64,
     pub(super) output_bytes: u64,
+    pub(super) hash_table_build_count: u64,
 }
 
 impl Default for PartitionedJoinOutputSummary {
@@ -114,6 +115,7 @@ impl Default for PartitionedJoinOutputSummary {
             output_reservation_bytes: Some(0),
             output_rows: 0,
             output_bytes: 0,
+            hash_table_build_count: 0,
         }
     }
 }
@@ -243,7 +245,9 @@ impl PartitionedJoinProbeChunk {
 /// `root_partition` stays the original index for error facts and metrics.
 /// `logical_partition_count` is the width the tree would have if every
 /// partition had been split as deep as this one, and it bounds further
-/// repartitioning.
+/// repartitioning. `whole_build_partition` names the stored partition while the
+/// slice's build range is all of it: a probe split keeps it, and a repartition
+/// clears it because the children hold other rows in another order.
 #[derive(Clone, Copy)]
 struct PartitionedJoinWorkSlice {
     root_partition: usize,
@@ -251,6 +255,7 @@ struct PartitionedJoinWorkSlice {
     logical_partition_count: usize,
     left: PartitionedJoinRowRange,
     right: PartitionedJoinRowRange,
+    whole_build_partition: Option<usize>,
 }
 
 impl PartitionedJoinOutputSummary {
@@ -289,6 +294,7 @@ where
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
+        Option<usize>,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     let original = PartitionedJoinInputStats {
@@ -335,6 +341,10 @@ where
 
 /// Joins partition `partition` of both sides, with the retry tree rooted at
 /// the whole partition. Returns one output per leaf of that tree.
+///
+/// The callback's last argument is `Some(partition)` while the slice's build
+/// range is the whole stored partition, so a strategy may join it with a hash
+/// table kept over that partition; repartitioned retry children get `None`.
 pub(super) fn materialize_partitioned_join_partition_with_retry<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
@@ -350,6 +360,7 @@ where
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
+        Option<usize>,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     let work = PartitionedJoinWorkSlice {
@@ -358,6 +369,7 @@ where
         logical_partition_count: plan.partition_count,
         left: partition_row_range(left_partitioned, partition)?,
         right: partition_row_range(right_partitioned, partition)?,
+        whole_build_partition: Some(partition),
     };
     materialize_partitioned_join_work_with_retry(
         execution,
@@ -392,6 +404,7 @@ where
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
+        Option<usize>,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     execution.context().check_cancellation("query_engine.exec.bounded.partitioned_join_retry")?;
@@ -451,6 +464,7 @@ where
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
+        Option<usize>,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     record_partitioned_join_retry_error(&error, execution.metrics());
@@ -543,6 +557,7 @@ where
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
+        Option<usize>,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     let mut outputs = Vec::new();
@@ -590,6 +605,7 @@ where
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
+        Option<usize>,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     let repartitioned = repartition_partitioned_join_work(execution, plan, left_partitioned, right_partitioned, work)?;
@@ -698,6 +714,7 @@ where
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
+        Option<usize>,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     let left_part =
@@ -715,11 +732,12 @@ where
             return Err(error);
         },
     };
-    materialize_partition(execution, plan.node_id, plan.node, left_part, right_part).map_err(|error| {
-        error
-            .with_fact_if_absent("partition", work.root_partition)
-            .with_fact_if_absent("logical_partition_count", work.logical_partition_count)
-    })
+    materialize_partition(execution, plan.node_id, plan.node, left_part, right_part, work.whole_build_partition)
+        .map_err(|error| {
+            error
+                .with_fact_if_absent("partition", work.root_partition)
+                .with_fact_if_absent("logical_partition_count", work.logical_partition_count)
+        })
 }
 
 fn partitioned_join_retry_policy(context: &ExecutionContext) -> PartitionedJoinRetryPolicy {
@@ -812,6 +830,7 @@ fn repartitioned_join_child_work(
             .min(PARTITIONED_JOIN_MAX_LOGICAL_PARTITIONS),
         left: partition_row_range(left, partition)?,
         right: partition_row_range(right, partition)?,
+        whole_build_partition: None,
     })
 }
 
@@ -883,9 +902,10 @@ pub(super) struct PartitionedJoinSides {
 
 /// Records the strategy decision row before any partition work. The keys
 /// mirror the reusable hash join's row so reports compare the two;
-/// `probe_reuse_count` is always 1 because a partitioned join never reuses a
-/// build across probes, and `reusable_hash_join_rejected_reason` says why the
-/// planner did not pick the reusable strategy.
+/// `probe_reuse_count` is always 1 because the build input serves this one
+/// join node, and `reusable_hash_join_rejected_reason` says why the planner
+/// did not pick the reusable strategy. Whether a partition's hash table served
+/// several probe pieces shows in the operator row's build count instead.
 pub(super) fn record_partitioned_join_selection(
     plan: PartitionedJoinDriverPlan<'_>,
     original: PartitionedJoinInputStats,
@@ -977,6 +997,7 @@ pub(super) fn record_partitioned_join_operator_metrics(
             probe_rows: side_metric(probe_side(plan.node.spec.build_side), original.left_rows, original.right_rows),
             probe_bytes: side_metric(probe_side(plan.node.spec.build_side), original.left_bytes, original.right_bytes),
             hash_table_bytes: 0,
+            partition_hash_table_build_count: summary.hash_table_build_count,
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes: summary.mixed_size_data_bytes,
             gather_map_bytes: summary.index_bytes,
@@ -1008,6 +1029,7 @@ mod tests {
             logical_partition_count,
             left: PartitionedJoinRowRange { offset: 0, len: left_rows },
             right: PartitionedJoinRowRange { offset: 0, len: right_rows },
+            whole_build_partition: Some(3),
         }
     }
 

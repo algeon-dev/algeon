@@ -135,6 +135,7 @@ use tokio::{
 };
 #[cfg(not(test))]
 use tonic::transport::Channel;
+use workloads::tpch::{TPCH_QUERIES, TpchScaleFactor};
 
 use self::admission_sampling::AdmissionLog;
 #[cfg(not(test))]
@@ -311,6 +312,10 @@ struct FlightStressProfile {
     schema: String,
     name: String,
     server: FlightServerProfile,
+    /// Scale-factor label of the server's TPC-H data, such as `sf100`;
+    /// required when a statement names a `tpch_query`.
+    #[serde(default)]
+    tpch_scale_factor: Option<String>,
     statements: Vec<FlightStatementProfile>,
     load: FlightLoadProfile,
     #[serde(default)]
@@ -328,8 +333,9 @@ struct FlightServerProfile {
     config_file: PathBuf,
 }
 
-/// A statement carries inline `sql` or a `sql_file` path relative to the
-/// profile, never both.
+/// A statement carries exactly one of inline `sql`, a `sql_file` path
+/// relative to the profile, or a `tpch_query` id from the TPC-H catalog,
+/// rendered for the profile's `tpch_scale_factor`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FlightStatementProfile {
@@ -338,6 +344,8 @@ struct FlightStatementProfile {
     sql: Option<String>,
     #[serde(default)]
     sql_file: Option<PathBuf>,
+    #[serde(default)]
+    tpch_query: Option<String>,
 }
 
 /// Mode-specific fields are optional here and checked by
@@ -570,14 +578,24 @@ impl FlightStressProfile {
             if !names.insert(statement.name.as_str()) {
                 return Err(format!("statements[{index}].name repeats an earlier statement name"));
             }
-            match (&statement.sql, &statement.sql_file) {
-                (Some(sql), None) => {
+            match (&statement.sql, &statement.sql_file, &statement.tpch_query) {
+                (Some(sql), None, None) => {
                     validate_sql_text(sql).map_err(|reason| format!("statements[{index}].sql {reason}"))?
                 },
-                (None, Some(path)) if !path.as_os_str().is_empty() => {},
-                _ => return Err(format!("statements[{index}] must set exactly one of sql or a non-empty sql_file")),
+                (None, Some(path), None) if !path.as_os_str().is_empty() => {},
+                (None, None, Some(query_id)) => {
+                    if !TPCH_QUERIES.iter().any(|query| query.id == query_id) {
+                        return Err(format!("statements[{index}].tpch_query names no TPC-H catalog query"));
+                    }
+                },
+                _ => {
+                    return Err(format!(
+                        "statements[{index}] must set exactly one of sql, a non-empty sql_file, or tpch_query"
+                    ));
+                },
             }
         }
+        self.tpch_scale()?;
         self.load.shape(self.statements.len())?;
         if self.admission_sampling.is_some_and(|sampling| sampling.interval_ms == 0) {
             return Err("admission_sampling.interval_ms must be greater than zero".to_string());
@@ -608,6 +626,21 @@ impl FlightStressProfile {
             }
         }
         Ok(())
+    }
+
+    /// The declared TPC-H scale, present exactly when a statement names a
+    /// `tpch_query`.
+    fn tpch_scale(&self) -> Result<Option<TpchScaleFactor>, String> {
+        let uses_tpch = self.statements.iter().any(|statement| statement.tpch_query.is_some());
+        match (&self.tpch_scale_factor, uses_tpch) {
+            (Some(label), true) => match TpchScaleFactor::from_label(label) {
+                Ok(Some(scale)) => Ok(Some(scale)),
+                _ => Err("tpch_scale_factor must declare a TPC-H scale such as sf100".to_string()),
+            },
+            (None, true) => Err("tpch_scale_factor is required when a statement names a tpch_query".to_string()),
+            (Some(_), false) => Err("tpch_scale_factor requires a statement that names a tpch_query".to_string()),
+            (None, false) => Ok(None),
+        }
     }
 }
 
@@ -782,11 +815,12 @@ pub(crate) fn read_stress_config(config_path: &Path, out_dir: PathBuf) -> Result
     let server_config = fs::read(&server_config_path)
         .map_err(|_| format!("cannot read server.config_file {}", server_config_path.display()))?;
     ensure_redacted_server_config(&server_config)?;
+    let tpch_scale = profile.tpch_scale()?;
     let statements = profile
         .statements
         .iter()
         .enumerate()
-        .map(|(index, statement)| read_statement(profile_dir, index, statement))
+        .map(|(index, statement)| read_statement(profile_dir, index, statement, tpch_scale))
         .collect::<Result<Vec<_>, _>>()?;
     let shape = profile.load.shape(statements.len())?;
     let matched_in_process = profile
@@ -822,10 +856,16 @@ fn read_statement(
     profile_dir: &Path,
     index: usize,
     statement: &FlightStatementProfile,
+    tpch_scale: Option<TpchScaleFactor>,
 ) -> Result<StressStatement, String> {
-    let sql = match (&statement.sql, &statement.sql_file) {
-        (Some(sql), None) => sql.clone(),
-        (None, Some(path)) => {
+    let sql = match (&statement.sql, &statement.sql_file, &statement.tpch_query, tpch_scale) {
+        (Some(sql), None, None, _) => sql.clone(),
+        (None, None, Some(query_id), Some(scale)) => TPCH_QUERIES
+            .iter()
+            .find(|query| query.id == query_id)
+            .map(|query| query.sql(scale))
+            .ok_or_else(|| format!("statements[{index}].tpch_query names no TPC-H catalog query"))?,
+        (None, Some(path), None, _) => {
             let path = resolve_profile_path(profile_dir, path);
             let bytes =
                 fs::read(&path).map_err(|_| format!("cannot read statements[{index}].sql_file {}", path.display()))?;
@@ -836,7 +876,11 @@ fn read_statement(
             }
             sql
         },
-        _ => return Err(format!("statements[{index}] must set exactly one of sql or sql_file")),
+        _ => {
+            return Err(format!(
+                "statements[{index}] must set exactly one of sql, a non-empty sql_file, or tpch_query"
+            ));
+        },
     };
     Ok(StressStatement { name: statement.name.clone(), sql_sha256: sha256_bytes(sql.as_bytes()), sql })
 }
@@ -2366,10 +2410,9 @@ mod tests {
         *,
     };
 
-    /// Reads SQL from the workloads TPC-H catalog files by query identifier.
-    fn tpch_catalog_sql(query_id: &str) -> String {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../workloads/src/tpch/queries/{query_id}.sql"));
-        fs::read_to_string(path).expect("TPC-H catalog query file")
+    fn tpch_catalog_sql(query_id: &str, scale: &str) -> String {
+        let scale = TpchScaleFactor::from_label(scale).expect("scale label").expect("declared scale");
+        TPCH_QUERIES.iter().find(|query| query.id == query_id).expect("TPC-H catalog query").sql(scale)
     }
 
     const BASELINE_SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -2467,7 +2510,7 @@ mod tests {
             .statements
             .iter()
             .enumerate()
-            .map(|(index, statement)| read_statement(Path::new("."), index, statement))
+            .map(|(index, statement)| read_statement(Path::new("."), index, statement, None))
             .collect::<Result<Vec<_>, _>>()
             .expect("inline statements");
         StressConfig {
@@ -2613,13 +2656,32 @@ mod tests {
             ("at least one statement", Box::new(|p| p["statements"] = serde_json::json!([]))),
             ("repeats an earlier statement name", Box::new(|p| p["statements"][1]["name"] = "q01".into())),
             (
-                "exactly one of sql or a non-empty sql_file",
+                "exactly one of sql, a non-empty sql_file, or tpch_query",
                 Box::new(|p| p["statements"][0]["sql_file"] = "q01.sql".into()),
             ),
             (
-                "exactly one of sql or a non-empty sql_file",
+                "exactly one of sql, a non-empty sql_file, or tpch_query",
                 Box::new(|p| {
                     p["statements"][0].as_object_mut().expect("statement").remove("sql");
+                }),
+            ),
+            (
+                "tpch_scale_factor is required when a statement names a tpch_query",
+                Box::new(|p| p["statements"][0] = serde_json::json!({ "name": "q01", "tpch_query": "q01" })),
+            ),
+            (
+                "tpch_scale_factor must declare a TPC-H scale",
+                Box::new(|p| {
+                    p["statements"][0] = serde_json::json!({ "name": "q01", "tpch_query": "q01" });
+                    p["tpch_scale_factor"] = "unknown".into();
+                }),
+            ),
+            ("tpch_scale_factor requires a statement", Box::new(|p| p["tpch_scale_factor"] = "sf100".into())),
+            (
+                "tpch_query names no TPC-H catalog query",
+                Box::new(|p| {
+                    p["statements"][0] = serde_json::json!({ "name": "q01", "tpch_query": "q99" });
+                    p["tpch_scale_factor"] = "sf100".into();
                 }),
             ),
             ("statements[1].sql must be 1-16384", Box::new(|p| p["statements"][1]["sql"] = " ".into())),
@@ -2761,7 +2823,7 @@ mod tests {
             let statement = &profile.statements[0];
             assert_eq!(
                 statement.sql.as_deref().expect("inline SQL").split_whitespace().collect::<Vec<_>>(),
-                tpch_catalog_sql(&statement.name).split_whitespace().collect::<Vec<_>>()
+                tpch_catalog_sql(&statement.name, "sf10").split_whitespace().collect::<Vec<_>>()
             );
 
             let mut paired: serde_json::Value = serde_json::from_slice(&profile_bytes).expect("Flight JSON");
@@ -2783,7 +2845,7 @@ mod tests {
         let names = config.statements.iter().map(|statement| statement.name.clone()).collect::<Vec<_>>();
         assert_eq!(names, (1..=22).map(|query| format!("q{query:02}")).collect::<Vec<_>>());
         for statement in &config.statements {
-            assert_eq!(statement.sql, tpch_catalog_sql(&statement.name), "{}", statement.name);
+            assert_eq!(statement.sql, tpch_catalog_sql(&statement.name, "sf100"), "{}", statement.name);
         }
 
         let server = fs::read_to_string(fixture_dir.join("tpch-sf100-server.toml")).expect("server companion");

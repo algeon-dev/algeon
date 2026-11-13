@@ -12,13 +12,13 @@ use super::{
     Field, FilterNode, GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap,
     GpuResidentSource, Instant, JoinNode, JoinOutputColumn, JoinSide, JoinType, LimitNode, LimitSpec,
     LocalParquetSource, MemoryControlPolicy, NodeId, NullAwareAntiProbe, PartialAggregateInputEvidence, ProjectionNode,
-    QueryError, QueryErrorCode, QueryOutput, QueryPlan, RecordBatch, Result, RetryFacts, SortNode, SourceChunk,
-    SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel, aggregate_spec_has_avg,
-    aggregate_spec_has_distinct, aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median,
-    aggregate_spec_requires_whole_input, annotate_source_chunk_batching_reasons, attach_budget_token_failure_facts,
-    bounded_invariant_violation, budgeted_value, cast_count_output_columns_with_budget, cudf_query_error,
-    dataframe_cross_join_options, dataframe_mixed_join_options, dataframe_predicate_join_options,
-    datafusion_order_columns, execute_aggregate_with_budget, execute_aggregate_with_budget_for_node,
+    QueryError, QueryErrorCode, QueryOutput, QueryPlan, Result, RetryFacts, SortNode, SourceChunk, SourceChunkBatch,
+    SourceChunkPlanningPolicy, SourceTaskMemoryModel, aggregate_spec_has_avg, aggregate_spec_has_distinct,
+    aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
+    annotate_source_chunk_batching_reasons, attach_budget_token_failure_facts, bounded_invariant_violation,
+    budgeted_value, cast_count_output_columns_with_budget, cudf_query_error, dataframe_cross_join_options,
+    dataframe_mixed_join_options, dataframe_predicate_join_options, datafusion_order_columns,
+    execute_aggregate_with_budget, execute_aggregate_with_budget_for_node,
     execute_datafusion_exact_host_aggregate_batch, execute_edge_normalize, execute_filter_with_budget,
     execute_global_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
     execute_partial_aggregate_with_budget, execute_projection_with_budget, execute_projection_with_budget_and_prepared,
@@ -70,6 +70,7 @@ use aggregate::{
     execute_compiled_source_aggregate_chunk, is_source_adjacent_grouped_aggregate, reduce_merge_fan_in,
 };
 pub(in crate::exec) use attempt::BoundedExecutionAttempt;
+pub(in crate::exec::bounded) use attempt::{DeferredJoinProbeCharge, RetainedJoinTableCharge};
 use chunks::{
     RawSourceInput, chunk_retry_facts, concatenate_source_read_outputs, execute_bounded_raw_source_chunk,
     execute_bounded_raw_source_chunk_batch, is_retryable_chunk_error, join_leaf_prefetch_admitted,

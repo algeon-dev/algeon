@@ -132,6 +132,45 @@ source larger than the cap fails at the last chunk read, because the device
 result is complete before egress copies it to the client. Native execution
 does not provide general disk spilling.
 
+### Kept join tables {/* #kept-join-tables */}
+
+A [partitioned hash join](./gpu-execution.mdx#partitioned-joins) that streams
+its probe side keeps the hash table of each build partition from its first
+probe piece until the probe ends. The tables are allocations of the attempt's
+query domain and count against its grant like any other allocation. In
+addition, the tables an attempt keeps at one time total at most a quarter of
+its grant. Each table is charged at cuDF's pre-build size plus the key columns
+the table copies, before it is built. A partition whose charge does not fit
+keeps no table. When the allocator rejects a kept table, that partition and the
+ones after it keep none. The tables are released with the build partitions when
+the probe stream ends, stops early or fails, and their charge returns to the
+attempt then.
+
+The same quarter of the grant bounds the build chunks that a
+[streaming join build](./gpu-execution.mdx#partitioned-joins) holds whole while
+its estimate allows a large build and its counted size does not prove one. The
+held chunks are ordinary allocations of the query domain. When they reach the
+quarter, the build commits to partitions and partitions each held chunk.
+Until the last held chunk is partitioned, the chunks and their partition slices
+are resident together, up to twice the held bytes plus one chunk's partitioned
+copy. A build input that ends undecided is concatenated and holds twice its
+bytes during the concatenation. The coordinator consumes one build input at a
+time, and holds of different joins do not add up.
+
+A partition without a kept table holds its probe rows until they form a batch.
+The held rows are copies in the query domain. The rows that the attempt's joins
+hold at one time total at most one partitioned-join target, a sixteenth of the
+grant clamped to between 128 MiB and 8 GiB. For a grant of 2 GiB or more, kept
+tables and held rows together take at most five sixteenths of it across probe
+pieces. Joining one batch adds its concatenated copy, at most one more target,
+a table over one build partition, which the partition count sizes to about
+one target, and the batch's gather maps and output. These and the current probe
+piece use the rest of the grant. When the allocator rejects part of that work,
+the batch retries like any partition pair, by splitting its probe rows or
+repartitioning the pair. Held rows are released when their batch is joined, or
+with the probe state when the stream stops early or fails. Execution lanes keep
+no tables and hold no rows; they return their rows to the coordinator.
+
 ## Completion and resident data {/* #resident-handoff-and-release */}
 
 An output may remain on the GPU for another native consumer. Its resident

@@ -26,7 +26,9 @@ use datafusion::{
     },
     prelude::{SessionConfig, SessionContext},
 };
-use workloads::tpch::{TPCH_QUERIES, TpchDatasetMetadata, WorkloadResult, register_tpch_tables};
+use workloads::tpch::{
+    TPCH_QUERIES, TpchDatasetMetadata, WorkloadResult, read_tpch_scale_factor, register_tpch_tables,
+};
 
 pub(crate) trait TestReportDatasetMetadataExt {
     fn to_workload_dataset_metadata(&self) -> WorkloadDatasetMetadata;
@@ -146,11 +148,13 @@ pub(crate) async fn tpch_datafusion_planning_workload_items_with_optimizer_confi
     session_config: SessionConfig,
     optimizer_config: AlgeonNativeOptimizerConfig,
 ) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+    let scale = read_tpch_scale_factor(root)?;
+    let queries = TPCH_QUERIES.iter().map(|query| (query.id, query.sql(scale))).collect::<Vec<_>>();
     datafusion_planning_workload_items(
         root,
         session_config,
         optimizer_config,
-        TPCH_QUERIES.iter().map(|query| (query.id, query.sql)),
+        queries.iter().map(|(query_id, sql)| (*query_id, sql.as_str())),
     )
     .await
 }

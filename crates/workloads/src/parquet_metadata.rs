@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::Read,
+    io::{ErrorKind, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -104,6 +104,77 @@ where
         }
     }
     Ok(format!("content-fnv1a64:{:016x}", hasher.finish()))
+}
+
+/// Manifest the fixture generators write at a dataset root.
+const GENERATION_MANIFEST_FILE: &str = "_generation.json";
+const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
+/// Footer length (little-endian `u32`) followed by the closing magic.
+const PARQUET_TRAILER_LEN: u64 = 8;
+
+/// Hashes each file's relative path, byte size and serialized Parquet footer
+/// (the Thrift `FileMetaData` bytes), plus the generation manifest at `root`
+/// when one exists. Data pages are never read, so the cost depends on footer
+/// size rather than data size. The footer records every column chunk's
+/// offsets, sizes and statistics, so rewriting data with another layout,
+/// writer or row order changes the value; a data page edited in place without
+/// changing its size or statistics does not.
+pub(crate) fn dataset_footer_fingerprint<'a, Tables, Files>(
+    domain_tag: &str,
+    root: &Path,
+    tables: Tables,
+) -> WorkloadResult<String>
+where
+    Tables: IntoIterator<Item = (&'a str, Files)>,
+    Files: IntoIterator<Item = (&'a str, u64, &'a Path)>,
+{
+    let mut hasher = DatasetFingerprint::new();
+    hasher.update_field(domain_tag);
+    match fs::read(root.join(GENERATION_MANIFEST_FILE)) {
+        Ok(manifest) => {
+            hasher.update_field(GENERATION_MANIFEST_FILE);
+            hasher.update_field(&manifest.len().to_string());
+            hasher.update_bytes(&manifest);
+        },
+        Err(error) if error.kind() == ErrorKind::NotFound => hasher.update_field("no_generation_manifest"),
+        Err(error) => return Err(error.into()),
+    }
+    for (table, files) in tables {
+        hasher.update_field(table);
+        for (relative_path, byte_size, path) in files {
+            hasher.update_field(relative_path);
+            hasher.update_field(&byte_size.to_string());
+            let footer = read_parquet_footer(path, byte_size)?;
+            hasher.update_field(&footer.len().to_string());
+            hasher.update_bytes(&footer);
+        }
+    }
+    Ok(format!("content-fnv1a64:{:016x}", hasher.finish()))
+}
+
+/// Reads the serialized `FileMetaData` of a plaintext-footer Parquet file of
+/// `byte_size` bytes.
+fn read_parquet_footer(path: &Path, byte_size: u64) -> WorkloadResult<Vec<u8>> {
+    let invalid = |detail: &str| WorkloadError::InvalidDataset(format!("{} {detail}", path.display()));
+    let header_and_trailer = PARQUET_MAGIC.len() as u64 + PARQUET_TRAILER_LEN;
+    if byte_size < header_and_trailer {
+        return Err(invalid("is too small to be a Parquet file"));
+    }
+    let mut file = File::open(path)?;
+    let mut trailer = [0_u8; PARQUET_TRAILER_LEN as usize];
+    file.seek(SeekFrom::Start(byte_size - PARQUET_TRAILER_LEN))?;
+    file.read_exact(&mut trailer)?;
+    if &trailer[4..] != PARQUET_MAGIC {
+        return Err(invalid("does not end with the plaintext Parquet footer magic PAR1"));
+    }
+    let footer_len = u64::from(u32::from_le_bytes(trailer[..4].try_into().expect("four-byte footer length")));
+    if footer_len > byte_size - header_and_trailer {
+        return Err(invalid("declares a footer longer than the file"));
+    }
+    let mut footer = vec![0_u8; footer_len as usize];
+    file.seek(SeekFrom::Start(byte_size - PARQUET_TRAILER_LEN - footer_len))?;
+    file.read_exact(&mut footer)?;
+    Ok(footer)
 }
 
 pub(crate) fn canonical_schema(schema: &Schema) -> String {

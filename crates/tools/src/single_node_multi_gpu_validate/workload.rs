@@ -18,7 +18,11 @@ use std::{
 
 use serde::Serialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use workloads::{clickbench::CLICKBENCH_QUERIES, tpcds::TPCDS_QUERIES, tpch::TPCH_QUERIES};
+use workloads::{
+    clickbench::CLICKBENCH_QUERIES,
+    tpcds::TPCDS_QUERIES,
+    tpch::{TPCH_QUERIES, TpchScaleFactor},
+};
 
 use super::profile::{FixtureKind, FixtureWorkloadProfile};
 use crate::ToolResult;
@@ -281,17 +285,20 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
 /// Resolves profile query labels into executable statements.
 ///
 /// Preserves profile selection order for deterministic schedule replays.
+/// TPC-H SQL takes the scale factor the fixture's `scale` label declares;
+/// fixture preflight checks that declaration against the data.
 pub(super) fn select_queries(workloads: &[FixtureWorkloadProfile]) -> ToolResult<Vec<SelectedQuery>> {
     let mut selected = Vec::new();
     for (fixture_index, workload) in workloads.iter().enumerate() {
         for label in &workload.queries {
-            selected.push(resolve(fixture_index, workload.kind, label)?);
+            selected.push(resolve(fixture_index, workload, label)?);
         }
     }
     Ok(selected)
 }
 
-fn resolve(fixture_index: usize, kind: FixtureKind, label: &str) -> ToolResult<SelectedQuery> {
+fn resolve(fixture_index: usize, workload: &FixtureWorkloadProfile, label: &str) -> ToolResult<SelectedQuery> {
+    let kind = workload.kind;
     let selected = |label: &str, sql: &str, graph: bool| SelectedQuery {
         fixture_index,
         kind,
@@ -302,11 +309,14 @@ fn resolve(fixture_index: usize, kind: FixtureKind, label: &str) -> ToolResult<S
         completion_sink: None,
     };
     match kind {
-        FixtureKind::Tpch => TPCH_QUERIES
-            .iter()
-            .find(|query| query.id == label)
-            .map(|query| selected(label, query.sql, false))
-            .ok_or_else(|| unknown_label(kind, label).into()),
+        FixtureKind::Tpch => {
+            let query =
+                TPCH_QUERIES.iter().find(|query| query.id == label).ok_or_else(|| unknown_label(kind, label))?;
+            let scale = TpchScaleFactor::from_label(&workload.scale)?.ok_or_else(|| {
+                format!("tpch fixture scale {} must declare a scale factor such as sf1 or tiny", workload.scale)
+            })?;
+            Ok(selected(label, &query.sql(scale), false))
+        },
         FixtureKind::Tpcds => TPCDS_QUERIES
             .iter()
             .find(|query| query.id == label)
@@ -406,7 +416,7 @@ mod tests {
     fn every_catalog_label_resolves_and_the_graph_catalog_covers_construction_and_algorithms() {
         for kind in [FixtureKind::Tpch, FixtureKind::Tpcds, FixtureKind::Clickbench, FixtureKind::Dblp] {
             for label in known_labels(kind) {
-                resolve(0, kind, label).unwrap();
+                resolve(0, &workload(kind, &[]), label).unwrap();
             }
         }
     }

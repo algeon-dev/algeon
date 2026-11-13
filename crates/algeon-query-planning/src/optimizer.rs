@@ -123,7 +123,7 @@ pub use single_distinct_aggregate_split::{
 };
 pub use stream_fanout_replay::{
     STREAM_FANOUT_REPLAY_RULE_NAME, StreamFanoutReplayCandidateDiagnostics, StreamFanoutReplayDiagnostics,
-    StreamFanoutReplayOptions,
+    StreamFanoutReplayOptions, StreamFanoutReplayRejectedReason,
 };
 
 use crate::{backend::AnalysisContext, error::Result, plan::QueryPlan};
@@ -480,7 +480,11 @@ fn run_pass(
             (result.plan, result.change)
         },
         Pass::StreamFanoutReplay => {
-            let result = stream_fanout_replay::optimize_stream_fanout_replay(plan, &options.stream_fanout_replay)?;
+            let result = stream_fanout_replay::optimize_stream_fanout_replay(
+                plan,
+                &options.stream_fanout_replay,
+                ctx.backend().max_column_elements(),
+            )?;
             diagnostics.stream_fanout_replay.merge(result.diagnostics);
             (result.plan, result.change)
         },

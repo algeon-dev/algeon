@@ -45,8 +45,10 @@ mod conditional;
 mod cross;
 mod filter;
 mod hash;
+mod hash_left_match;
 mod mixed;
 mod mixed_left;
+pub use hash_left_match::{DataFrameHashLeftMatchFinalized, DataFrameHashLeftMatchState};
 pub use mixed_left::{DataFrameMixedLeftJoinFinalized, DataFrameMixedLeftJoinState};
 
 struct MixedDataFrameJoinTables<'a> {

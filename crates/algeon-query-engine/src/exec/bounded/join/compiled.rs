@@ -13,7 +13,9 @@
 //! functions exist for the interpreter paths where a task's consumer never
 //! runs (cancellation, an earlier task's failure). A build frame is released
 //! before the probe outputs are concatenated, so the hash table is not part of
-//! the concatenation's peak.
+//! the concatenation's peak. A partitioned hash join is the exception within
+//! one probe piece: it concatenates the piece's partition outputs while its
+//! build partitions and kept partition tables stay resident.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -60,6 +62,7 @@ use crate::exec::bounded::compiled::{
 mod cross;
 mod filtered;
 mod keyless;
+mod left_match;
 mod mixed;
 mod one_shot;
 mod partitioned;
@@ -76,11 +79,11 @@ use filtered::{
     release_compiled_filtered_join_probe_state,
 };
 use keyless::execute_compiled_keyless_join_materialize;
-use mixed::{
-    execute_compiled_mixed_join_materialize, execute_compiled_mixed_join_probe_from_stream,
-    execute_compiled_mixed_left_join_materialize, execute_compiled_mixed_left_join_probe_from_frame_stream,
-    release_compiled_mixed_left_join_probe_state,
+use left_match::{
+    LeftMatchFinalized, execute_compiled_left_match_join_materialize,
+    execute_compiled_left_match_join_probe_from_frame_stream, release_compiled_left_match_join_probe_state,
 };
+use mixed::{execute_compiled_mixed_join_materialize, execute_compiled_mixed_join_probe_from_stream};
 use one_shot::{
     OneShotEquiJoinFrameStreamProbeState, execute_compiled_one_shot_equi_join_materialize,
     execute_compiled_one_shot_equi_join_probe_from_frame_stream, execute_compiled_one_shot_equi_join_probe_from_stream,
@@ -91,7 +94,7 @@ pub(in crate::exec::bounded) use partitioned::{
     PartitionedJoinBuildCommitment, consume_bounded_join_build_input_stream, partitioned_join_build_commitment,
 };
 use partitioned::{
-    execute_compiled_partitioned_hash_equi_join_materialize,
+    PartitionedJoinHashTables, execute_compiled_partitioned_hash_equi_join_materialize,
     execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream,
     execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream,
     execute_compiled_partitioned_hash_equi_join_probe_from_split_build_frame_stream,
@@ -99,7 +102,8 @@ use partitioned::{
     execute_compiled_partitioned_mixed_keyed_residual_join_materialize,
     execute_compiled_partitioned_mixed_keyed_residual_join_materialize_preserving_stream,
     parallel_partitioned_lazy_drain, partitioned_hash_equi_join_frame_stream_probe_to_payload,
-    partitioned_parallel_probe_supported, partitioned_streaming_probe_supported, release_partitioned_join_side,
+    partitioned_parallel_probe_supported, partitioned_streaming_probe_supported,
+    release_partitioned_hash_equi_join_frame_stream_probe_state, release_partitioned_join_side,
 };
 use prepared::execute_compiled_prepared_join_materialize;
 use residual::materialize_compiled_one_shot_residual_output;
@@ -151,7 +155,7 @@ impl BoundedCompiledPartitionedJoinBuildState {
 /// Output of the probe task, consumed by the materialize task.
 ///
 /// Three shapes recur across the strategies. A plain variant (`Hash`,
-/// `Filtered`, `Prepared`, `MixedLeftMatched`) holds gather maps or match
+/// `Filtered`, `Prepared`, `LeftMatched`) holds gather maps or match
 /// state over whole inputs and materializes in one call. A `*Streamed` variant
 /// holds output frames already materialized one probe chunk at a time, plus
 /// the build state only so that materialize can release it. A `*LazyStream`
@@ -170,7 +174,7 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
         outputs: Vec<ResidentGpuFrame>,
     },
     Prepared(BoundedCompiledPreparedJoinProbeState),
-    MixedLeftMatched(BoundedCompiledMixedLeftJoinProbeState),
+    LeftMatched(BoundedCompiledLeftMatchJoinProbeState),
     MixedStreamed {
         build: BoundedCompiledPreparedJoinBuildState,
         outputs: Vec<ResidentGpuFrame>,
@@ -202,14 +206,14 @@ pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinBuildState {
     strategy_options: KeyedHashJoinStrategyOptions,
     side: JoinSide,
     input: BoundedJoinSideFrame,
-    /// A semi or anti join building its left side runs the mixed residual
-    /// join whose probe keeps per-left-row match state.
+    /// A semi or anti join building its left side, whose probe folds every
+    /// right chunk into per-left-row match state.
     left_match: bool,
 }
 
 impl BoundedCompiledPreparedJoinBuildState {
-    fn mixed_left_match(&self) -> bool {
-        self.left_match && self.strategy == JoinStrategy::MixedKeyedResidual
+    fn left_match(&self) -> bool {
+        self.left_match && matches!(self.strategy, JoinStrategy::MixedKeyedResidual | JoinStrategy::HashLeftMatch)
     }
 }
 
@@ -220,12 +224,12 @@ pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinProbeState {
     right: BoundedJoinSideFrame,
 }
 
-/// Semi or anti mixed join after every probe chunk has been folded into
-/// cuDF's left-row match state. `finalized` is the complement over the whole
+/// Semi or anti join building its left side after every probe chunk has been
+/// folded into cuDF's left-row match state. `finalized` selects over the whole
 /// left input, which is why this shape cannot stream its output per chunk.
-pub(in crate::exec::bounded) struct BoundedCompiledMixedLeftJoinProbeState {
+pub(in crate::exec::bounded) struct BoundedCompiledLeftMatchJoinProbeState {
     left: BoundedJoinSideFrame,
-    finalized: cudf::DataFrameMixedLeftJoinFinalized,
+    finalized: LeftMatchFinalized,
     probe_rows: u64,
     probe_bytes: u64,
     state_bytes: u64,
@@ -299,6 +303,11 @@ struct OneShotJoinChunkMetrics {
     output_bytes: u64,
 }
 
+/// Counters of a streamed partitioned hash join, reported in its join metric row.
+/// `hash_table_build_count` counts every partition table built, kept or not;
+/// `retained_hash_table_bytes` sums the device bytes of the tables kept across
+/// probe pieces.
+#[derive(Clone)]
 pub(in crate::exec::bounded) struct StreamedPartitionedJoinSummary {
     partition_count: usize,
     partition_target_bytes: u64,
@@ -312,6 +321,8 @@ pub(in crate::exec::bounded) struct StreamedPartitionedJoinSummary {
     output_reservation_bytes: Option<u64>,
     output_rows: u64,
     output_bytes: u64,
+    hash_table_build_count: u64,
+    retained_hash_table_bytes: u64,
 }
 
 // Hash-partitioned join input. `Contiguous` is one partitioned frame with
@@ -331,11 +342,15 @@ impl PartitionedJoinSide {
     }
 }
 
+/// Lazy probe of a partitioned hash join. The build side is held as one frame
+/// per partition, together with the hash tables kept over those partitions
+/// once the first probe piece arrives (`partitioned/hash_tables.rs`).
 pub(in crate::exec::bounded) struct PartitionedHashEquiJoinFrameStreamProbeState {
     build_side: JoinSide,
     build_rows: u64,
     build_bytes: u64,
     build_partitioned: PartitionedJoinSide,
+    hash_tables: PartitionedJoinHashTables,
     build_partitioned_bytes: u64,
     inputs: ResidentFrameStreamPayload,
     partition_count: usize,
@@ -429,6 +444,8 @@ impl StreamedPartitionedJoinSummary {
             output_reservation_bytes: Some(0),
             output_rows: 0,
             output_bytes: 0,
+            hash_table_build_count: 0,
+            retained_hash_table_bytes: 0,
         }
     }
 
@@ -445,6 +462,33 @@ impl StreamedPartitionedJoinSummary {
         self.output_reservation_bytes = sum_bounds(self.output_reservation_bytes, output.output_reservation_bytes);
         self.output_rows = self.output_rows.saturating_add(output.output_rows);
         self.output_bytes = self.output_bytes.saturating_add(output.output_bytes);
+    }
+
+    fn record_hash_table_builds(&mut self, count: u64) {
+        self.hash_table_build_count = self.hash_table_build_count.saturating_add(count);
+    }
+
+    fn record_retained_hash_table(&mut self, bytes: u64) {
+        self.record_hash_table_builds(1);
+        self.retained_hash_table_bytes = self.retained_hash_table_bytes.saturating_add(bytes);
+    }
+
+    /// Adds the probe-side counters of a lane that probed some of this join's
+    /// pieces. The partition shape and the build bytes are the join's own and
+    /// stay as they are.
+    fn merge_probe_counters(&mut self, lane: &Self) {
+        self.probe_partition_batch_count =
+            self.probe_partition_batch_count.saturating_add(lane.probe_partition_batch_count);
+        self.probe_partitioned_bytes = self.probe_partitioned_bytes.saturating_add(lane.probe_partitioned_bytes);
+        self.probe_rows = self.probe_rows.saturating_add(lane.probe_rows);
+        self.probe_bytes = self.probe_bytes.saturating_add(lane.probe_bytes);
+        self.index_bytes = self.index_bytes.saturating_add(lane.index_bytes);
+        self.mixed_size_data_bytes = self.mixed_size_data_bytes.saturating_add(lane.mixed_size_data_bytes);
+        self.output_reservation_bytes = sum_bounds(self.output_reservation_bytes, lane.output_reservation_bytes);
+        self.output_rows = self.output_rows.saturating_add(lane.output_rows);
+        self.output_bytes = self.output_bytes.saturating_add(lane.output_bytes);
+        self.hash_table_build_count = self.hash_table_build_count.saturating_add(lane.hash_table_build_count);
+        self.retained_hash_table_bytes = self.retained_hash_table_bytes.saturating_add(lane.retained_hash_table_bytes);
     }
 }
 
@@ -556,7 +600,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
         | JoinStrategy::KeylessConditional { .. }
         | JoinStrategy::KeylessOuterCross
         | JoinStrategy::ProjectedCross
-        | JoinStrategy::MixedKeyedResidual => {
+        | JoinStrategy::MixedKeyedResidual
+        | JoinStrategy::HashLeftMatch => {
             let side = node.spec.build_side;
             let columns = compiled_join_input_columns(node, strategy, side)?;
             let input = prepare_bounded_join_side_input_from_resident_frame(execution, input, &columns, side)?;
@@ -565,7 +610,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
                 strategy_options,
                 side,
                 input,
-                left_match: form == JoinForm::KeyedResidual { left_match: true },
+                left_match: matches!(form, JoinForm::KeyedResidual { left_match: true } | JoinForm::KeyedLeftMatch),
             }))
         },
     }
@@ -573,7 +618,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
 
 /// Runs the probe task over one resident probe frame.
 ///
-/// Partitioned builds and mixed semi/anti builds are forwarded to the frame
+/// Partitioned builds and left-match semi/anti builds are forwarded to the frame
 /// stream path wrapped as a one-frame stream, so each of those strategies has
 /// one probe implementation. On `Err` the build state has been released.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_resident_frame(
@@ -593,8 +638,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
                 .map(BoundedCompiledJoinProbeState::Filtered)
         },
         BoundedCompiledJoinBuildState::Prepared(build) => {
-            if build.mixed_left_match() {
-                return execute_compiled_mixed_left_join_probe_from_frame_stream(
+            if build.left_match() {
+                return execute_compiled_left_match_join_probe_from_frame_stream(
                     execution,
                     node,
                     build,
@@ -650,7 +695,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     let lazy_probe_supported = match &build {
         BoundedCompiledJoinBuildState::Hash(_) => lazy_output && stateless_streaming_probe_supported(node),
         BoundedCompiledJoinBuildState::Prepared(build) => {
-            build.mixed_left_match()
+            build.left_match()
                 || (lazy_output
                     && stateless_streaming_probe_supported(node)
                     && matches!(build.strategy, JoinStrategy::OneShotEqui | JoinStrategy::PartitionedHashEqui)
@@ -756,8 +801,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
     outer: Option<&AggregateLaneDispatch>,
 ) -> Result<BoundedCompiledJoinProbeState> {
     match build {
-        BoundedCompiledJoinBuildState::Prepared(build) if build.mixed_left_match() => {
-            execute_compiled_mixed_left_join_probe_from_frame_stream(execution, node, build, inputs)
+        BoundedCompiledJoinBuildState::Prepared(build) if build.left_match() => {
+            execute_compiled_left_match_join_probe_from_frame_stream(execution, node, build, inputs)
         },
         BoundedCompiledJoinBuildState::Hash(build) if stateless_streaming_probe_supported(node) => {
             // Reusable build with parallel probe chunks: one table built once,
@@ -905,8 +950,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
         BoundedCompiledJoinProbeState::Prepared(probe) => {
             execute_compiled_prepared_join_materialize(execution, node_id, node, probe)
         },
-        BoundedCompiledJoinProbeState::MixedLeftMatched(probe) => {
-            execute_compiled_mixed_left_join_materialize(execution, node_id, node, probe)
+        BoundedCompiledJoinProbeState::LeftMatched(probe) => {
+            execute_compiled_left_match_join_materialize(execution, node_id, node, probe)
         },
         BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
             release_bounded_join_side_frame(build.input);
@@ -1108,8 +1153,8 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
             release_bounded_join_side_frame(left);
             release_bounded_join_side_frame(right);
         },
-        BoundedCompiledJoinProbeState::MixedLeftMatched(probe) => {
-            release_compiled_mixed_left_join_probe_state(probe);
+        BoundedCompiledJoinProbeState::LeftMatched(probe) => {
+            release_compiled_left_match_join_probe_state(probe);
         },
         BoundedCompiledJoinProbeState::MixedStreamed { build, .. } => {
             release_bounded_join_side_frame(build.input);
@@ -1123,8 +1168,7 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
         },
         BoundedCompiledJoinProbeState::PartitionedStreamed { .. } => {},
         BoundedCompiledJoinProbeState::PartitionedLazyStream(probe) => {
-            probe.inputs.release_all(execution);
-            release_partitioned_join_side(probe.build_partitioned);
+            release_partitioned_hash_equi_join_frame_stream_probe_state(execution, probe);
         },
     }
 }
@@ -1213,7 +1257,7 @@ fn compiled_join_input_columns(node: &JoinNode, strategy: JoinStrategy, side: Jo
                 side,
             ))
         },
-        JoinStrategy::OneShotEqui | JoinStrategy::PartitionedHashEqui => {
+        JoinStrategy::OneShotEqui | JoinStrategy::PartitionedHashEqui | JoinStrategy::HashLeftMatch => {
             let residual_columns = residual_input_columns(node)?;
             let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
             let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
@@ -1392,11 +1436,9 @@ struct CompiledEqualityJoinPreflightIndices {
 
 /// Computes the gather maps of a one-shot equality join.
 ///
-/// The hash table is built for this call only; cuDF's size pass runs first and
-/// the probe then allocates the gather maps at their exact length and does not
-/// grow them. The returned indices do not depend on the table, which is
-/// dropped on return. Indices come back in plan orientation whichever side
-/// was built.
+/// The hash table is built for this call only and dropped on return; the
+/// returned indices do not depend on it. See
+/// `probe_compiled_keyed_equality_join_indices` for the probe.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -1415,27 +1457,49 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
         JoinSide::Left => (left, left_keys, right, right_keys),
         JoinSide::Right => (right, right_keys, left, left_keys),
     };
-    let hash_options =
-        cudf::DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
     let (hash_join, _hash_table_bytes) = super::hash::build_bounded_hash_join(
         execution,
         node,
         &build.frame,
         build_keys,
-        hash_options,
+        compiled_keyed_equality_hash_join_options(node),
         build_side,
         overrides,
         false,
     )?;
-    let output_size = compiled_hash_join_probe_size(node, hash_join.hash_join(), &probe.frame, probe_keys, overrides)?;
-    let hash_indices = compiled_hash_join_probe_with_output_size(
+    probe_compiled_keyed_equality_join_indices(
         node,
         hash_join.hash_join(),
+        build_side,
         &probe.frame,
         probe_keys,
-        output_size,
         overrides,
-    )?;
+    )
+}
+
+/// Options of every hash table a compiled keyed equality join builds. A table
+/// kept across probes and its pre-build size use the same options.
+fn compiled_keyed_equality_hash_join_options(node: &JoinNode) -> cudf::DataFrameHashJoinOptions {
+    cudf::DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality))
+}
+
+/// Probes a hash table built over the `build_side` input and returns the
+/// gather maps in plan orientation.
+///
+/// cuDF's size pass runs first and the probe then allocates the gather maps at
+/// their exact length and does not grow them. The table is only read, so one
+/// table can serve probes from several lanes at once.
+fn probe_compiled_keyed_equality_join_indices(
+    node: &JoinNode,
+    hash_join: &cudf::DataFrameHashJoin,
+    build_side: JoinSide,
+    probe: &DataFrame,
+    probe_keys: &[String],
+    overrides: Exec<'_>,
+) -> Result<CompiledEqualityJoinPreflightIndices> {
+    let output_size = compiled_hash_join_probe_size(node, hash_join, probe, probe_keys, overrides)?;
+    let hash_indices =
+        compiled_hash_join_probe_with_output_size(node, hash_join, probe, probe_keys, output_size, overrides)?;
 
     let index_bytes = match hash_indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
         Ok(bytes) => bytes,
@@ -1751,6 +1815,7 @@ fn materialize_compiled_indices_output(
             probe_rows: side_metric(probe_side, left.rows, right.rows),
             probe_bytes: side_metric(probe_side, left.bytes, right.bytes),
             hash_table_bytes: 0,
+            partition_hash_table_build_count: 0,
             filtered_probe_state_bytes,
             mixed_size_data_bytes,
             gather_map_bytes,

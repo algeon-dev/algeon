@@ -111,6 +111,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             probe_rows: side_metric(probe_side, left.rows, right.rows),
             probe_bytes: side_metric(probe_side, left.bytes, right.bytes),
             hash_table_bytes: 0,
+            partition_hash_table_build_count: 0,
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes: 0,
             gather_map_bytes: 0,

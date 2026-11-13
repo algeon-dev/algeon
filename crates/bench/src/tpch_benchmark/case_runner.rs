@@ -88,7 +88,10 @@ async fn run_query(
     artifact_dir: Option<&Path>,
     pending_observations: &mut Vec<(String, execution::ObservationCapture)>,
 ) -> DataFusionResult<NativeTpchBenchmarkRow> {
-    let planned = match execution::plan_native_query(metadata, query, config).await {
+    // The measured iterations replan with these resources and must reproduce this planning row. Native
+    // planning reads the backend's optimizer configuration and device budget, so a row planned without
+    // the backend can differ from every measured one.
+    let planned = match execution::plan_native_query(metadata, query, config, runtime_resources).await {
         Ok(planned) => planned,
         Err(error) => return Ok(NativeTpchBenchmarkRow::planning_failure(query.id, error)),
     };
@@ -126,5 +129,5 @@ async fn run_query(
     if let Some(dir) = artifact_dir {
         artifacts::write_samples(dir, query.id, cpu.as_ref().ok(), native.as_ref().ok())?;
     }
-    Ok(NativeTpchBenchmarkRow::accepted(query.id, planned.planning_row, cpu, native))
+    Ok(NativeTpchBenchmarkRow::accepted(query.id, planned.planning_row, cpu, native, config.parity_float_tolerance))
 }

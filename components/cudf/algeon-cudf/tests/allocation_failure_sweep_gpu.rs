@@ -122,6 +122,24 @@ fn join_groupby_sort_and_string_allocation_failures_are_typed_and_leave_no_live_
         );
     });
 
+    with_domain(80_006, 81_006, |runtime, domain, member_id| {
+        let left = DataFrame::from_series([("key", runtime.series(&[1i32, 1, 2]).unwrap())]).unwrap();
+        let right = DataFrame::from_series([("key", runtime.series(&[1i32, 3]).unwrap())]).unwrap();
+        sweep_operation(
+            "hash_left_match_state",
+            runtime,
+            domain,
+            member_id,
+            || {
+                let options = cudf::DataFrameJoinOptions::new().on(["key"]);
+                let mut state = cudf::DataFrameHashLeftMatchState::new(&left, options, cudf::Exec::RETAINED)?;
+                state.consume(&right)?;
+                state.seal(false)?.materialize_indices()
+            },
+            |output| assert_eq!(output.indices().to_vec_strict::<i32>().unwrap(), vec![0, 1]),
+        );
+    });
+
     with_domain(80_001, 81_001, |runtime, domain, member_id| {
         let left = DataFrame::from_series([
             ("id", runtime.series(&[1i32, 2, 3]).unwrap()),

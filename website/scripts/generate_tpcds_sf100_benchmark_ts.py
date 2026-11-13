@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Regenerate website/src/data/tpcdsSf100Benchmark.ts from TPC-DS benchmark artifacts.
 
-Timings come from the tpcds_gpu_cpu_bench TSVs. Result-value agreement comes from
+Timings come from the tpcds_gpu_cpu_bench TSVs, one row per measured iteration; the
+page reports the median of the measured iterations. Result-value agreement comes from
 the native_tpcds_parity_report TSV, which must cover the same dataset root and
-query set as the timing runs.
+query set as the timing runs. The Parquet layout comes from fixture/tpc/describe_layout.py
+and the page-cache residency from the run directory of
+scripts/dev/relational_benchmarks_driver.py.
 """
 from __future__ import annotations
 
@@ -34,11 +37,36 @@ def read_tsv(path: Path):
     return meta, rows
 
 
+WALL_TIME_BOUNDARY = "sql_planning_and_collect"
+
+
+def median_ms(rows, column: str, path: Path, query: str):
+    values = [fnum(row.get(column)) for row in rows]
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise SystemExit(f"{path}: {column} is empty in some iterations of {query}")
+    return round(statistics.median(values), 3)
+
+
 def load(path: Path, engine: str):
+    """Per query, the last measured row with `wall_ms` replaced by the median of its measured iterations."""
     meta, rows = read_tsv(path)
-    measured = {
-        row["query_id"]: row for row in rows if row.get("engine") == engine and row.get("warmup") != "true"
-    }
+    if required_meta(meta, "tpcds_benchmark_wall_time_boundary", path) != WALL_TIME_BOUNDARY:
+        raise SystemExit(f"{path}: wall time boundary is {meta['tpcds_benchmark_wall_time_boundary']}, expected {WALL_TIME_BOUNDARY}")
+    iterations = int(required_meta(meta, "tpcds_benchmark_iterations", path))
+    by_query: dict[str, list] = {}
+    for row in rows:
+        if row.get("engine") == engine and row.get("warmup") != "true":
+            by_query.setdefault(row["query_id"], []).append(row)
+    measured = {}
+    for query, query_rows in by_query.items():
+        if len(query_rows) != iterations:
+            raise SystemExit(f"{path}: {query} has {len(query_rows)} measured rows, expected {iterations}")
+        if len({row.get("outcome") for row in query_rows}) != 1:
+            raise SystemExit(f"{path}: {query} has different outcomes across its measured iterations")
+        median = median_ms(query_rows, "wall_ms", path, query)
+        measured[query] = {**query_rows[-1], "wall_ms": "" if median is None else str(median)}
     return meta, measured
 
 
@@ -107,6 +135,8 @@ def main() -> None:
     ap.add_argument("--gpu-tsv", type=Path, required=True)
     ap.add_argument("--parity-tsv", type=Path, required=True)
     ap.add_argument("--environment", type=Path, required=True)
+    ap.add_argument("--layout", type=Path, required=True, help="layout.json from fixture/tpc/describe_layout.py")
+    ap.add_argument("--page-cache", type=Path, required=True, help="page-cache.json from the benchmark driver")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--kvikio-compat-mode", default="ON")
     ap.add_argument("--generated-at-utc", default=None)
@@ -183,50 +213,48 @@ def main() -> None:
         threshold = float("inf")
     outliers = [row["queryId"] for row in rows if max(row["cpuMs"], row["gpuWallMs"] or 0) > threshold]
 
-    root_value = gpu_meta.get("tpcds_benchmark_root")
-    if not root_value:
-        raise SystemExit(f"tpcds_benchmark_root missing from {args.gpu_tsv}")
-    root = Path(root_value)
-    if not root.is_dir():
-        raise SystemExit(f"tpcds_benchmark_root {root} is not a directory")
-    files = sorted(root.glob("*.parquet"))
+    layout = json.loads(args.layout.read_text())
+    tables = layout["tables"]
+    for key, field in (("dataset_table_row_counts", "rows"), ("dataset_table_byte_sizes", "bytes")):
+        reported = {
+            name: int(count)
+            for name, _, count in (item.partition("=") for item in required_meta(parity_meta, key, args.parity_tsv).split(","))
+        }
+        if reported != {name: table[field] for name, table in tables.items()}:
+            raise SystemExit(f"{args.parity_tsv} {key} differs from {args.layout}")
+    page_cache = json.loads(args.page_cache.read_text())
     dataset = {
         "generationScript": "fixture/fixture.sh tpcds generate",
         "generatorImplementation": "fixture/tpc-ds/generate.py",
+        "generationCommand": required_meta(parity_meta, "dataset_generation_command", args.parity_tsv),
         "scaleFactor": "sf100",
-        "tableCount": len(files),
-        "fileCount": len(files),
-        "totalBytes": sum(path.stat().st_size for path in files),
-        "tableFileCounts": ",".join(f"{path.stem}=1" for path in files),
-        "tableByteSizes": ",".join(f"{path.stem}={path.stat().st_size}" for path in files),
+        "tableCount": len(tables),
+        "fileCount": layout["partitioning"]["fileCount"],
+        "totalRows": sum(table["rows"] for table in tables.values()),
+        "totalBytes": sum(table["bytes"] for table in tables.values()),
     }
+
+    def req(name: str) -> str:
+        return required_meta(gpu_meta, f"tpcds_benchmark_{name}", args.gpu_tsv)
+
     config = {
         "queryIds": query_ids,
-        "warmups": int(gpu_meta.get("tpcds_benchmark_warmups", "1")),
-        "iterations": int(gpu_meta.get("tpcds_benchmark_iterations", "1")),
-        "wallTimeFields": gpu_meta.get("tpcds_benchmark_wall_time_fields", "per_measured_iteration"),
+        "warmups": int(req("warmups")),
+        "iterations": int(req("iterations")),
+        "wallTimeFields": req("wall_time_fields"),
+        "wallTimeBoundary": req("wall_time_boundary"),
         "datasetMode": "sf100_external",
-        "nativePipelineExecutionMode": gpu_meta.get(
-            "tpcds_benchmark_native_pipeline_execution_mode", "bounded"
-        ),
-        "nativeProfileName": gpu_meta.get("tpcds_benchmark_native_profile_name", "sf100_gpu_throughput"),
-        "nativeProfileSource": gpu_meta.get("tpcds_benchmark_native_profile_source", "env_profile"),
+        "relationalExecution": req("relational_execution"),
+        "nativeProfileName": req("native_profile_name"),
+        "nativeProfileSource": req("native_profile_source"),
         # No device budget: the bench header prints the profile's 256 MiB placeholder,
         # and the run used an automatic limit.
-        "nativeMaxSourceChunkBytes": int(gpu_meta.get("tpcds_benchmark_native_max_source_chunk_bytes", "0") or 0),
-        "nativeMaxRowGroupsPerChunk": int(
-            gpu_meta.get("tpcds_benchmark_native_max_row_groups_per_chunk", "0") or 0
-        ),
-        "nativeMaxRetryAttempts": int(gpu_meta.get("tpcds_benchmark_native_max_retry_attempts", "0") or 0),
-        "nativeMinRetryChunkRowGroups": int(
-            gpu_meta.get("tpcds_benchmark_native_min_retry_chunk_row_groups", "0") or 0
-        ),
-        "nativeSourceChunkPlanningMode": gpu_meta.get(
-            "tpcds_benchmark_native_source_chunk_planning_mode", "parquet_throughput"
-        ),
-        "nativeStatisticalAggregateExecutionMode": gpu_meta.get(
-            "tpcds_benchmark_native_statistical_aggregate_execution_mode", "gpu_native_tolerant"
-        ),
+        "nativeMaxSourceChunkBytes": int(req("native_max_source_chunk_bytes")),
+        "nativeMaxRowGroupsPerChunk": int(req("native_max_row_groups_per_chunk")),
+        "nativeMaxRetryAttempts": int(req("native_max_retry_attempts")),
+        "nativeMinRetryChunkRowGroups": int(req("native_min_retry_chunk_row_groups")),
+        "nativeSourceChunkPlanningMode": req("native_source_chunk_planning_mode"),
+        "nativeStatisticalAggregateExecutionMode": req("native_statistical_aggregate_execution_mode"),
         "kvikioCompatMode": args.kvikio_compat_mode,
         "parity": {
             "floatToleranceAbsolute": float(
@@ -276,6 +304,12 @@ def main() -> None:
         "generatedAtUtc": stamp,
         "environment": environment,
         "dataset": dataset,
+        "layout": layout,
+        "pageCache": {
+            "totalBytes": page_cache["before"]["total_bytes"],
+            "residentFractionBefore": round(page_cache["before"]["resident_fraction_by_bytes"], 4),
+            "residentFractionAfter": round(page_cache["after"]["resident_fraction_by_bytes"], 4),
+        },
         "config": config,
         "summary": summary,
         "rows": rows,
@@ -306,13 +340,15 @@ def main() -> None:
     text = (
         f"// Timings generated from {args.cpu_tsv.as_posix()} and {args.gpu_tsv.as_posix()}.\n"
         f"// Result-value parity: {args.parity_tsv.as_posix()}.\n"
-        f"// Environment and CPU tuning: {args.environment.as_posix()}.\n"
+        f"// Environment and CPU settings: {args.environment.as_posix()}; layout: {args.layout.as_posix()}.\n"
         f"// Do not hand-edit benchmark values; regenerate from the TSV artifacts.\n\n"
         f"{type_block}\n"
         f"export const tpcdsSf100Benchmark = {body} satisfies {{\n"
         f"  generatedAtUtc: string;\n"
         f"  environment: Record<string, unknown>;\n"
         f"  dataset: Record<string, unknown>;\n"
+        f"  layout: Record<string, unknown>;\n"
+        f"  pageCache: Record<string, unknown>;\n"
         f"  config: Record<string, unknown>;\n"
         f"  summary: Record<string, unknown>;\n"
         f"  rows: readonly TpcdsSf100BenchmarkRow[];\n"

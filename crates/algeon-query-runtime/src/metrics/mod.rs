@@ -146,16 +146,21 @@ pub struct QueryMetrics {
     pub retry_count: u64,
     /// Retries caused by lower-level resource exhaustion.
     pub retry_resource_exhausted_count: u64,
-    /// Number of reusable cuDF hash-join artifacts built during this query.
+    /// Number of cuDF hash-join tables built during this query: one per
+    /// reusable hash join, and one per partition table a partitioned hash join
+    /// builds, whether it keeps the table or drops it after one probe piece.
     pub hash_join_build_count: u64,
     /// Number of reusable cuDF filtered-join artifacts built during this query.
     pub filtered_join_build_count: u64,
     /// Number of one-shot keyed equality joins executed during this query.
     pub one_shot_join_count: u64,
-    /// Unique device bytes retained by reusable cuDF hash-join build artifacts.
+    /// Unique device bytes retained by reusable cuDF hash-join build artifacts
+    /// and by the partition tables partitioned hash joins keep across probe
+    /// pieces.
     ///
     /// The value is recorded when an artifact is constructed. Reusing an artifact
-    /// does not record it again.
+    /// does not record it again, and a partition table dropped after one probe
+    /// piece records nothing.
     pub hash_join_hash_table_bytes: u64,
     /// Unique device bytes retained by reusable cuDF filtered-join build artifacts.
     ///

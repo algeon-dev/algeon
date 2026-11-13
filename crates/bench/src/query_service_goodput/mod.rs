@@ -43,7 +43,10 @@ use algeon_datafusion::{
 use datafusion::prelude::SessionContext;
 use query_runtime::observability::{AttemptFailureFactKey, SealedAttemptProjection};
 use tokio::time::{Instant as TokioInstant, sleep_until};
-use workloads::{tpcds::describe_tpcds_dataset, tpch::describe_tpch_dataset};
+use workloads::{
+    tpcds::describe_tpcds_dataset,
+    tpch::{TpchDatasetMetadata, describe_tpch_dataset},
+};
 
 mod arrival;
 mod calibration;
@@ -97,9 +100,19 @@ async fn run_with_backend(config: &Arc<GoodputConfig>, backend: &AlgeonGpuBacken
         Some(ctx) => discover_graph_seed(ctx).await?,
         None => 0,
     };
-    let items =
-        config.mix.iter().map(|entry| resolve_item(&entry.item_id, graph_seed)).collect::<Result<Vec<_>, _>>()?;
-    let identity = live_identity(config, backend)?;
+    let tpch_dataset = config
+        .tpch_root
+        .as_deref()
+        .map(|root| describe_tpch_dataset(root, config.tpch_scale.clone(), "bench.goodput", "unspecified"))
+        .transpose()
+        .map_err(|error| format!("failed to describe the TPC-H dataset: {error}"))?;
+    let tpch_scale = tpch_dataset.as_ref().map(TpchDatasetMetadata::scale).transpose()?;
+    let items = config
+        .mix
+        .iter()
+        .map(|entry| resolve_item(&entry.item_id, graph_seed, tpch_scale))
+        .collect::<Result<Vec<_>, _>>()?;
+    let identity = live_identity(config, backend, tpch_dataset.as_ref())?;
     match config.mode {
         Mode::Calibrate => calibrate(config, backend, &sessions, &items, &identity).await,
         Mode::Measure => measure(config, backend, &sessions, &items, &identity, &families).await,
@@ -141,7 +154,11 @@ fn build_backend(config: &GoodputConfig) -> Result<AlgeonGpuBackend, Box<dyn Err
         .build()?)
 }
 
-fn live_identity(config: &GoodputConfig, backend: &AlgeonGpuBackend) -> Result<CalibrationIdentity, Box<dyn Error>> {
+fn live_identity(
+    config: &GoodputConfig,
+    backend: &AlgeonGpuBackend,
+    tpch_dataset: Option<&TpchDatasetMetadata>,
+) -> Result<CalibrationIdentity, Box<dyn Error>> {
     // NVML product names need this package's optional `nvml` feature. The
     // CUDA capacity fact is always present and is enough to catch a
     // calibration carried over from different hardware.
@@ -153,14 +170,7 @@ fn live_identity(config: &GoodputConfig, backend: &AlgeonGpuBackend) -> Result<C
             record.model_name.clone().unwrap_or_else(|| format!("cuda_total_bytes:{}", record.facts.total_bytes))
         })
         .unwrap_or_else(|| "unknown".to_string());
-    let tpch_fingerprint = match config.tpch_root.as_deref() {
-        Some(root) => {
-            describe_tpch_dataset(root, config.tpch_scale.clone(), "bench.goodput", "unspecified")
-                .map_err(|error| format!("failed to describe the TPC-H dataset: {error}"))?
-                .metadata_fingerprint
-        },
-        None => String::new(),
-    };
+    let tpch_fingerprint = tpch_dataset.map(|metadata| metadata.metadata_fingerprint.clone()).unwrap_or_default();
     let tpcds_fingerprint = match config.tpcds_root.as_deref() {
         Some(root) => {
             describe_tpcds_dataset(root, config.tpcds_scale.clone(), "bench.goodput", "unspecified")

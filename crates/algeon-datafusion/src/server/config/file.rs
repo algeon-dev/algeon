@@ -16,6 +16,7 @@ pub(super) struct ServerFile {
     pub(super) http2_keepalive_interval_secs: Option<u64>,
     pub(super) http2_keepalive_timeout_secs: Option<u64>,
     pub(super) init_sql: Option<PathBuf>,
+    pub(super) metadata_cache_limit_bytes: Option<usize>,
     pub(super) admission: ServerAdmissionFileConfig,
     pub(super) native: ServerNativeFileConfig,
     pub(super) observability: ServerObservabilityFileConfig,
@@ -204,6 +205,7 @@ impl ServerFile {
             http2_keepalive_interval_secs: Some(0),
             http2_keepalive_timeout_secs: Some(0),
             init_sql: Some(PathBuf::new()),
+            metadata_cache_limit_bytes: Some(0),
             admission: ServerAdmissionFileConfig {
                 max_queued_attempts: Some(0),
                 max_queue_wait_ms: Some(0),

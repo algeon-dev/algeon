@@ -109,7 +109,8 @@ pub mod bench_support {
         NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
         NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport,
         NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityComparisonResult,
-        ParityFloatTolerance, ParityStageStatus, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
+        ParityFloatTolerance, ParityRowOrdering, ParitySortKey, ParityStageStatus, ParityStatus,
+        compare_record_batches, compare_record_batches_with_ordering, sql_has_top_level_order_by,
         sql_top_level_order_by_covers_output_columns,
     };
 }

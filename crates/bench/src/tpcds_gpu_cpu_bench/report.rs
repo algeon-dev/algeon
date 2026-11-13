@@ -13,7 +13,7 @@ use super::{
 };
 
 pub(super) const TSV_HEADER: &str = concat!(
-    "engine\tquery_id\titeration\twarmup\twall_ms\toutcome\tplanning_outcome\toutput_batches\toutput_rows\toutput_bytes",
+    "engine\tquery_id\titeration\twarmup\twall_ms\tplanning_ms\texecution_ms\toutcome\tplanning_outcome\toutput_batches\toutput_rows\toutput_bytes",
     "\tretry_count\tnative_runtime_started\tfailure",
     "\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms",
     "\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms",
@@ -46,6 +46,8 @@ const TSV_COLUMNS: &[&str] = &[
     "iteration",
     "warmup",
     "wall_ms",
+    "planning_ms",
+    "execution_ms",
     "outcome",
     "planning_outcome",
     "output_batches",
@@ -122,6 +124,7 @@ pub(super) fn print_metadata(cfg: &BenchConfig) {
     println!("# tpcds_benchmark_warmups={}", cfg.warmups);
     println!("# tpcds_benchmark_iterations={}", cfg.iterations);
     println!("# tpcds_benchmark_wall_time_fields=per_measured_iteration");
+    println!("# tpcds_benchmark_wall_time_boundary=sql_planning_and_collect");
     println!("# tpcds_benchmark_native_profile_name={}", cfg.native_profile.profile_name);
     println!("# tpcds_benchmark_native_profile_source={}", cfg.native_profile.profile_source);
     println!("# tpcds_benchmark_relational_execution={}", cfg.relational_execution.as_str());
@@ -175,7 +178,9 @@ fn row_fields(
         query.id.to_string(),
         iteration.to_string(),
         if warmup { "true" } else { "false" }.to_string(),
-        duration_ms_text(outcome.wall),
+        duration_ms_text(outcome.wall()),
+        duration_ms_text(outcome.planning),
+        duration_ms_text(outcome.execution),
         outcome.outcome.to_string(),
         sanitize(&outcome.planning_outcome),
         format_opt(outcome.output_batches),
@@ -580,7 +585,8 @@ mod tests {
     fn tsv_header_matches_row_field_count_for_cpu_rows() {
         let query = TPCDS_QUERIES.iter().find(|query| query.id == "q85").unwrap();
         let outcome = IterOutcome {
-            wall: Some(Duration::from_millis(1)),
+            planning: Some(Duration::from_millis(1)),
+            execution: Some(Duration::from_millis(1)),
             outcome: "succeeded",
             planning_outcome: "cpu_only".to_string(),
             output_batches: Some(1),
@@ -611,7 +617,8 @@ mod tests {
     fn statistical_aggregate_contract_columns_are_visible_per_engine() {
         let query = TPCDS_QUERIES.iter().find(|query| query.id == "q39").unwrap();
         let outcome = IterOutcome {
-            wall: Some(Duration::from_millis(1)),
+            planning: Some(Duration::from_millis(1)),
+            execution: Some(Duration::from_millis(1)),
             outcome: "succeeded",
             planning_outcome: "selected=1 not_selected=0".to_string(),
             output_batches: Some(1),
@@ -638,10 +645,42 @@ mod tests {
     }
 
     #[test]
+    fn wall_time_is_planning_plus_execution_and_planning_failures_report_planning_only() {
+        let query = TPCDS_QUERIES.iter().find(|query| query.id == "q85").unwrap();
+        let outcome = |planning: u64, execution: Option<u64>, outcome: &'static str| IterOutcome {
+            planning: Some(Duration::from_millis(planning)),
+            execution: execution.map(Duration::from_millis),
+            outcome,
+            planning_outcome: "cpu_only".to_string(),
+            output_batches: None,
+            output_rows: None,
+            output_bytes: None,
+            retry_count: None,
+            native_runtime_started: false,
+            native_metrics: None,
+            timing_metrics: NativeTimingMetrics::default(),
+            failure: None,
+        };
+        let header = TSV_HEADER.split('\t').collect::<Vec<_>>();
+        let index = |name: &str| header.iter().position(|field| *field == name).unwrap();
+
+        let succeeded = row_fields(query, 0, false, &outcome(2, Some(5), "succeeded"), Engine::CpuDataFusion);
+        assert_eq!(succeeded[index("wall_ms")], "7.000");
+        assert_eq!(succeeded[index("planning_ms")], "2.000");
+        assert_eq!(succeeded[index("execution_ms")], "5.000");
+
+        let failed = row_fields(query, 0, false, &outcome(3, None, "physical_planning_failed"), Engine::CpuDataFusion);
+        assert_eq!(failed[index("wall_ms")], "3.000");
+        assert_eq!(failed[index("planning_ms")], "3.000");
+        assert_eq!(failed[index("execution_ms")], "");
+    }
+
+    #[test]
     fn native_no_runtime_not_run_rows_suppress_wall_time() {
         let query = TPCDS_QUERIES.iter().find(|query| query.id == "q67").unwrap();
         let outcome = IterOutcome {
-            wall: None,
+            planning: None,
+            execution: None,
             outcome: "native_rejected_not_run",
             planning_outcome: "selected=0 not_selected=1 reasons=native_bounded_join_unsupported".to_string(),
             output_batches: None,
@@ -661,6 +700,8 @@ mod tests {
         let outcome_index = header.iter().position(|field| *field == "outcome").unwrap();
         let native_runtime_started_index = header.iter().position(|field| *field == "native_runtime_started").unwrap();
         assert_eq!(fields[wall_ms_index], "");
+        assert_eq!(fields[header.iter().position(|field| *field == "planning_ms").unwrap()], "");
+        assert_eq!(fields[header.iter().position(|field| *field == "execution_ms").unwrap()], "");
         assert_eq!(fields[outcome_index], "native_rejected_not_run");
         assert_eq!(fields[native_runtime_started_index], "false");
     }

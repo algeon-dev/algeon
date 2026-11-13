@@ -3,7 +3,7 @@
 
 The sweep drives `tpcds_gpu_cpu_bench` with a matrix of bounded native source
 profiles, writes one raw TSV per candidate, and emits a compact summary TSV
-using median measured wall time per query. Defaults encode the native-profile
+using median measured wall time per query (wall_ms is SQL planning plus collect). Defaults encode the native-profile
 analysis matrix.
 """
 

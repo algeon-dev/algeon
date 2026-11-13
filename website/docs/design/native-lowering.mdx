@@ -108,6 +108,49 @@ build-before-probe barrier. The
 [pipeline compiler](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-planning/src/pipeline/compile.rs)
 owns these task and resource relationships.
 
+### Shared probe inputs {/* #shared-probe-inputs */}
+
+A node read by several joins is collected into one device frame, and that frame
+stays resident until its last reader finishes. The `stream_fanout_replay` rule
+copies such a node's subtree once for each join when three conditions hold:
+each reader is a join probe that pulls its input chunk by chunk under every
+strategy that can run the join, the node has no other reader, and the subtree
+contains only scans, filters, projections and inner joins without residuals.
+Each join then streams its own copy, and the attempt repeats the scan and
+filter work.
+
+When a reading join has a residual predicate, the rule replays the node only
+when one shared frame would not fit. Two conservative estimates decide it: a
+row estimate at or above the most rows one backend column holds (2^31 - 1 for
+cuDF), or a byte estimate at or above a quarter of the device budget
+(`MemoryControlPolicy::retained_state_share_bytes`). Below both, and for a node
+with neither estimate, the node stays shared. A filter keeps its input's
+estimate; the comparison counts the rows a scan selects before its predicate.
+
+The adapter plans against the attempt's requested cap, or else the smallest
+default query grant among the backend's devices. Resident data frozen at
+admission can lower the actual grant below that value. Planning without a
+backend has no budget, and then only the row limit replays a node.
+
+TPC-H Q21 shows both outcomes. At SF10 and larger scales, an inner join and an
+anti join with a residual both probe its filtered `lineitem` scan. At SF10 the
+scan selects about 60 million rows and stays shared; replaying it at that
+scale read 4,656 row groups in about 450 ms, against 3,189 row groups in
+314 ms when shared. At SF100 the estimate is about 600 million rows and
+9.6 GB, below a quarter of a 94 GiB grant, and the query took about 965 ms
+shared against 1,360 ms replayed. At SF500 one shared frame would hold about
+1.9 billion rows and 30 GB, and the rule replays the scan. At SF1000 it would
+need about 3.8 billion rows, more than a cuDF column holds.
+
+The rule's planning report row lists `estimated_rows`, `estimated_bytes`,
+`budget_share_bytes` (`none` without a budget) and `column_row_limit` for each
+candidate, with a `selection_basis` (`residual_free_consumers`,
+`column_row_limit` or `budget_share_bytes`) when the node is selected and a
+`rejected_reason` when it stays shared. A node kept shared for size reports
+`ResidualConsumerBelowLimits`, `ResidualConsumerBudgetUnknown` or
+`ResidualConsumerUnestimated`. A selected node outside the subtree the sink
+reaches reports `NotReachableFromSink`.
+
 ### Shared resident subplans {/* #shared-resident-subplans */}
 
 When DataFusion inlines a CTE or common subquery across physical units,

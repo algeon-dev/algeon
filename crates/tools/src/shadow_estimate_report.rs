@@ -93,33 +93,48 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     }
     let config = parse_args(args)?;
     fs::create_dir_all(&config.artifact_dir)?;
-    let queries = resolve_workload_queries(config.workload, &config.query_ids)?;
     let tiny_root = config.artifact_dir.join("tiny-fixture");
 
-    let (root, dataset_json, base_optimizer_config, device_memory_limit, device_budget_bytes) = match config.workload {
-        Workload::Tpch => {
-            let (root, metadata) = prepare_tpch_report_dataset(&tiny_root)?;
-            let optimizer_config = RelationalExecutionSelection::strict_native()
-                .configure_native_optimizer(tpch_native_optimizer_config())
-                .ok_or("strict-native selection must install the native optimizer rule")?;
-            (
-                root,
-                tpch_dataset_metadata_json(&metadata),
-                optimizer_config,
-                GpuDeviceMemoryLimit::Explicit { limit_bytes: TPCH_NATIVE_DEVICE_BUDGET_BYTES },
-                TPCH_NATIVE_DEVICE_BUDGET_BYTES,
-            )
-        },
-        Workload::Tpcds => {
-            let (root, metadata) = prepare_tpcds_report_dataset(&tiny_root)?;
-            let (profile, device_memory_limit) = tpcds_native_profile_settings_and_device_memory_limit_from_env();
-            let optimizer_config = RelationalExecutionSelection::strict_native()
-                .configure_native_optimizer(tpcds_native_analytics_optimizer_config_with_profile_settings(&profile))
-                .ok_or("strict-native selection must install the native optimizer rule")?;
-            let device_budget_bytes = profile.device_budget_bytes;
-            (root, tpcds_dataset_metadata_json(&metadata), optimizer_config, device_memory_limit, device_budget_bytes)
-        },
-    };
+    let (root, queries, dataset_json, base_optimizer_config, device_memory_limit, device_budget_bytes) =
+        match config.workload {
+            Workload::Tpch => {
+                let (root, metadata) = prepare_tpch_report_dataset(&tiny_root)?;
+                let scale = metadata.scale()?;
+                let queries = resolve_workload_queries(config.workload, &config.query_ids, |id| {
+                    TPCH_QUERIES.iter().find(|query| query.id == id).map(|query| query.sql(scale))
+                })?;
+                let optimizer_config = RelationalExecutionSelection::strict_native()
+                    .configure_native_optimizer(tpch_native_optimizer_config())
+                    .ok_or("strict-native selection must install the native optimizer rule")?;
+                (
+                    root,
+                    queries,
+                    tpch_dataset_metadata_json(&metadata),
+                    optimizer_config,
+                    GpuDeviceMemoryLimit::Explicit { limit_bytes: TPCH_NATIVE_DEVICE_BUDGET_BYTES },
+                    TPCH_NATIVE_DEVICE_BUDGET_BYTES,
+                )
+            },
+            Workload::Tpcds => {
+                let (root, metadata) = prepare_tpcds_report_dataset(&tiny_root)?;
+                let queries = resolve_workload_queries(config.workload, &config.query_ids, |id| {
+                    TPCDS_QUERIES.iter().find(|query| query.id == id).map(|query| query.sql.to_string())
+                })?;
+                let (profile, device_memory_limit) = tpcds_native_profile_settings_and_device_memory_limit_from_env();
+                let optimizer_config = RelationalExecutionSelection::strict_native()
+                    .configure_native_optimizer(tpcds_native_analytics_optimizer_config_with_profile_settings(&profile))
+                    .ok_or("strict-native selection must install the native optimizer rule")?;
+                let device_budget_bytes = profile.device_budget_bytes;
+                (
+                    root,
+                    queries,
+                    tpcds_dataset_metadata_json(&metadata),
+                    optimizer_config,
+                    device_memory_limit,
+                    device_budget_bytes,
+                )
+            },
+        };
     let session_config = match config.workload {
         Workload::Tpch => tpch_report_session_config(),
         Workload::Tpcds => tpcds_native_report_session_config(),
@@ -163,14 +178,14 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     Ok(())
 }
 
-fn resolve_workload_queries(workload: Workload, query_ids: &[String]) -> ToolResult<Vec<(String, &'static str)>> {
+fn resolve_workload_queries(
+    workload: Workload,
+    query_ids: &[String],
+    sql_for_id: impl Fn(&str) -> Option<String>,
+) -> ToolResult<Vec<(String, String)>> {
     let mut resolved = Vec::with_capacity(query_ids.len());
     for id in query_ids {
-        let sql = match workload {
-            Workload::Tpch => TPCH_QUERIES.iter().find(|query| query.id == id).map(|query| query.sql),
-            Workload::Tpcds => TPCDS_QUERIES.iter().find(|query| query.id == id).map(|query| query.sql),
-        };
-        let sql = sql.ok_or_else(|| format!("unknown {} query id: {id}", workload.as_str()))?;
+        let sql = sql_for_id(id).ok_or_else(|| format!("unknown {} query id: {id}", workload.as_str()))?;
         resolved.push((id.clone(), sql));
     }
     Ok(resolved)
@@ -355,7 +370,9 @@ async fn plan_workload_physical_for_attempt(
 
 async fn register_workload_tables(workload: Workload, ctx: &SessionContext, root: &Path) -> ToolResult<()> {
     match workload {
-        Workload::Tpch => register_tpch_tables(ctx, root).await?,
+        Workload::Tpch => {
+            register_tpch_tables(ctx, root).await?;
+        },
         Workload::Tpcds => register_tpcds_tables_with_native_metadata(ctx, root).await?,
     }
     Ok(())
@@ -721,7 +738,7 @@ struct Manifest {
 
 fn build_manifest(
     config: &ReportConfig,
-    queries: &[(String, &'static str)],
+    queries: &[(String, String)],
     dataset_json: Value,
     optimizer_config: &AlgeonNativeOptimizerConfig,
     device_budget_bytes: u64,

@@ -1532,7 +1532,7 @@ mod tests {
         FixtureWorkloadProfile {
             kind,
             path: PathBuf::from("/fixture"),
-            scale: "test".to_string(),
+            scale: "sf1".to_string(),
             preparation_command: String::new(),
             queries: queries.iter().map(|query| (*query).to_string()).collect(),
         }

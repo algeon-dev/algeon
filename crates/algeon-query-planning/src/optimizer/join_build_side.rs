@@ -11,6 +11,12 @@
 //! conservative estimates, the small thresholds, frontend advisories, then a
 //! grouped-aggregate keyset. A conservative estimate is never replaced by an
 //! advisory one. Rejection reasons and the selection basis are report contracts.
+//!
+//! The small thresholds also accept a proved row bound, under which an inner
+//! join emits at most the product of its inputs' bounds. A product is a sound
+//! ceiling but usually far above the real count, so it only proves a side
+//! small: it never orders two sides and never reaches
+//! `estimated_output_rows`, which admission and replay sizing read.
 
 use crate::{
     capability::classify_join,
@@ -126,6 +132,13 @@ pub struct JoinBuildSideSelectionCandidateDiagnostics {
     pub left_estimated_bytes: Option<u64>,
     /// Estimated bytes on the right input, if known.
     pub right_estimated_bytes: Option<u64>,
+    /// Proved upper bound on the left input's rows, if one exists. Unlike the
+    /// row estimate it bounds an inner join by the product of its inputs, and
+    /// it only decides whether the left input is small.
+    pub left_proved_rows: Option<u64>,
+    /// Proved upper bound on the right input's rows, if one exists; see
+    /// `left_proved_rows`.
+    pub right_proved_rows: Option<u64>,
     /// Frontend advisory rows on the left input, if the frontend estimated them.
     pub left_advisory_rows: Option<u64>,
     /// Frontend advisory rows on the right input, if the frontend estimated them.
@@ -153,9 +166,9 @@ pub enum JoinBuildSideSelectionBasis {
     ConservativeBytes,
     /// Both sides had conservative row estimates and one was smaller.
     ConservativeRows,
-    /// The current build side is conservatively small.
+    /// The current build side is small by its conservative bytes or proved rows.
     SmallCurrentSide,
-    /// The other side is conservatively small.
+    /// The other side is small by its conservative bytes or proved rows.
     SmallOtherSide,
     /// A frontend advisory byte estimate stood in for an unknown side.
     AdvisoryBytes,
@@ -235,6 +248,8 @@ pub(crate) fn optimize_join_build_side_selection(
             right_estimated_rows: right.rows,
             left_estimated_bytes: left.bytes,
             right_estimated_bytes: right.bytes,
+            left_proved_rows: left.proved_rows,
+            right_proved_rows: right.proved_rows,
             left_advisory_rows: left.advisory_rows,
             right_advisory_rows: right.advisory_rows,
             left_advisory_bytes: left.advisory_bytes,
@@ -364,6 +379,9 @@ struct SideEstimate {
     /// no estimate for the node.
     rows: Option<u64>,
     bytes: Option<u64>,
+    /// `rows`, or when that is unknown a bound that also multiplies through
+    /// inner joins. Read only by `is_small`.
+    proved_rows: Option<u64>,
     /// Frontend estimate; consulted only when `rows` is unknown on a side.
     advisory_rows: Option<u64>,
     advisory_bytes: Option<u64>,
@@ -376,33 +394,49 @@ impl SideEstimate {
     fn for_join_side(plan: &QueryPlan, join: &JoinNode, side: JoinSide) -> Self {
         let node_id = join.inputs[join_side_index(side)];
         Self {
-            rows: estimated_output_rows(plan, node_id).or_else(|| bounded_left_semijoin_rows(plan, node_id)),
+            rows: proved_output_rows(plan, node_id, JoinRowBound::LeftInput),
             bytes: estimated_output_bytes(plan, node_id).or_else(|| bounded_left_semijoin_bytes(plan, node_id)),
+            proved_rows: proved_output_rows(plan, node_id, JoinRowBound::LeftInputOrInnerProduct),
             advisory_rows: advisory_output_rows(plan, node_id),
             advisory_bytes: advisory_output_bytes(plan, node_id),
             has_grouped_aggregate_keyset: join_side_keys_are_grouped_aggregate_keyset(plan, join, side),
         }
     }
 
+    /// `proved_rows` equals `rows` whenever `rows` is known, so it covers the
+    /// row clause of the threshold on its own.
     fn is_small(self, options: &JoinBuildSideSelectionOptions) -> bool {
         self.bytes.is_some_and(|bytes| bytes <= options.small_build_side_bytes)
-            || self.rows.is_some_and(|rows| rows <= options.small_build_side_rows)
+            || self.proved_rows.is_some_and(|rows| rows <= options.small_build_side_rows)
     }
 }
 
-/// Row bound for a side the plan has no estimate for: a left-semi or left-anti
-/// join that outputs left columns only emits at most its left input's rows, and
-/// filters, projections, windows and sorts keep that count while a limit cuts
-/// it. The byte variant below stops at windows, which append columns, and at
-/// limits.
-fn bounded_left_semijoin_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+/// Join outputs a [`proved_output_rows`] walk bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JoinRowBound {
+    /// A left-semi or left-anti join that outputs left columns only emits at
+    /// most its left input's rows.
+    LeftInput,
+    /// An inner join also emits at most the product of its inputs' bounds.
+    LeftInputOrInnerProduct,
+}
+
+/// Upper bound on a node's output rows: its conservative estimate, or for a
+/// node without one, the bound of the joins `joins` admits. Filters,
+/// projections, windows and sorts keep their input's bound and a limit cuts
+/// it. An overflowing product is unknown. The byte variant below stops at
+/// windows, which append columns, and at limits.
+fn proved_output_rows(plan: &QueryPlan, node_id: NodeId, joins: JoinRowBound) -> Option<u64> {
+    if let Some(rows) = estimated_output_rows(plan, node_id) {
+        return Some(rows);
+    }
     let node = plan.node(node_id)?;
     match &node.kind {
-        PlanNode::Projection(projection) => bounded_left_semijoin_rows(plan, projection.input),
-        PlanNode::Filter(filter) => bounded_left_semijoin_rows(plan, filter.input),
-        PlanNode::Window(window) => bounded_left_semijoin_rows(plan, window.input),
-        PlanNode::Sort(sort) => bounded_left_semijoin_rows(plan, sort.input),
-        PlanNode::Limit(limit) => bounded_left_semijoin_rows(plan, limit.input).map(|rows| {
+        PlanNode::Projection(projection) => proved_output_rows(plan, projection.input, joins),
+        PlanNode::Filter(filter) => proved_output_rows(plan, filter.input, joins),
+        PlanNode::Window(window) => proved_output_rows(plan, window.input, joins),
+        PlanNode::Sort(sort) => proved_output_rows(plan, sort.input, joins),
+        PlanNode::Limit(limit) => proved_output_rows(plan, limit.input, joins).map(|rows| {
             limit.spec.fetch.map_or(rows.saturating_sub(limit.spec.skip as u64), |fetch| {
                 rows.min(limit.spec.skip.saturating_add(fetch) as u64).saturating_sub(limit.spec.skip as u64)
             })
@@ -411,7 +445,13 @@ fn bounded_left_semijoin_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> 
             if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. })
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left) =>
         {
-            estimated_output_rows(plan, join.inputs[0]).or_else(|| bounded_left_semijoin_rows(plan, join.inputs[0]))
+            proved_output_rows(plan, join.inputs[0], joins)
+        },
+        PlanNode::Join(join)
+            if joins == JoinRowBound::LeftInputOrInnerProduct && join.spec.join_type == JoinType::Inner =>
+        {
+            let left = proved_output_rows(plan, join.inputs[0], joins)?;
+            left.checked_mul(proved_output_rows(plan, join.inputs[1], joins)?)
         },
         PlanNode::Source(_)
         | PlanNode::Aggregate(_)

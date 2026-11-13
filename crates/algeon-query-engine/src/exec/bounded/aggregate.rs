@@ -35,11 +35,7 @@
 
 use std::sync::Arc;
 
-use arrow::{
-    array::new_empty_array,
-    datatypes::{DataType as ArrowDataType, SchemaRef as ArrowSchemaRef},
-    record_batch::RecordBatchOptions,
-};
+use arrow::datatypes::{DataType as ArrowDataType, SchemaRef as ArrowSchemaRef};
 use query_planning::pipeline::AggregateInputHints;
 use query_runtime::observability::{
     RuntimeObservationRecordClass, RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind,
@@ -52,20 +48,19 @@ use super::{
     BoundedSourceBatchingPolicy, CommittedPartial, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
     Expr, Field, FilterNode, GpuDataFrame, Instant, LimitNode, LocalParquetSource, MemoryControlPolicy, NodeId,
     PartialAggregateInputEvidence, PlanningPolicy, ProjectionNode, QueryError, QueryErrorCode, RawSourceInput,
-    RecordBatch, ResidentGpuFrame, Result, RuntimeResourceFacts, SortNode, SourceChunk, SourceChunkBatch,
-    SourceChunkPlanningPolicy, aggregate_spec_has_avg, aggregate_spec_has_distinct,
-    aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
-    attach_budget_token_failure_facts, bounded_invariant_violation, budgeted_value,
-    cast_count_output_columns_with_budget, compiled::ResidentFrameStreamPayload, cudf_query_error,
-    execute_aggregate_with_budget, execute_aggregate_with_budget_for_node, execute_bounded_raw_source_chunk,
-    execute_bounded_raw_source_chunk_batch, execute_bounded_union, execute_datafusion_exact_host_aggregate_batch,
-    execute_final_sort_node_with_retry, execute_global_aggregate_with_budget,
-    execute_groupby_aggregate_with_budget_observed, execute_partial_aggregate_with_budget,
-    execution_budget_token_for_boundary, final_global_aggregate_state_output_schema,
-    finalize_avg_output_columns_with_budget, global_valid_count_state_alias, is_retryable_chunk_error,
-    lower_aggregate_spec_keys, lower_column_expr, lower_final_aggregate_spec, lower_named_column_expr,
-    materialize_datafusion_exact_host_aggregate_input, observe_device_memory_bytes,
-    partial_aggregate_source_chunk_fingerprint, partial_global_aggregate_output_schema,
+    ResidentGpuFrame, Result, RuntimeResourceFacts, SortNode, SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy,
+    aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_floating_statistical_aggregate,
+    aggregate_spec_has_median, aggregate_spec_requires_whole_input, attach_budget_token_failure_facts,
+    bounded_invariant_violation, budgeted_value, cast_count_output_columns_with_budget,
+    compiled::ResidentFrameStreamPayload, cudf_query_error, execute_aggregate_with_budget,
+    execute_aggregate_with_budget_for_node, execute_bounded_raw_source_chunk, execute_bounded_raw_source_chunk_batch,
+    execute_bounded_union, execute_datafusion_exact_host_aggregate_batch, execute_final_sort_node_with_retry,
+    execute_global_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
+    execute_partial_aggregate_with_budget, execution_budget_token_for_boundary,
+    final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget,
+    global_valid_count_state_alias, is_retryable_chunk_error, lower_aggregate_spec_keys, lower_column_expr,
+    lower_final_aggregate_spec, lower_named_column_expr, materialize_datafusion_exact_host_aggregate_input,
+    observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint, partial_global_aggregate_output_schema,
     plan_source_chunk_batches_with_row_cap, prepare_aggregate_input_frame,
     prepare_datafusion_exact_host_aggregate_input_frame, record_batch_memory_size, record_chunk_retry_error,
     record_default_grouped_aggregate_strategy_decision, record_device_memory_observation,
@@ -405,25 +400,10 @@ fn empty_resident_frame_for_schema(
     node_id: NodeId,
     schema: &ArrowSchemaRef,
 ) -> Result<ResidentGpuFrame> {
-    let arrays = schema.fields().iter().map(|field| new_empty_array(field.data_type())).collect::<Vec<_>>();
-    let batch = RecordBatch::try_new_with_options(
-        Arc::clone(schema),
-        arrays,
-        &RecordBatchOptions::new().with_row_count(Some(0)),
-    )
-    .map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::Internal,
-            "query_engine.bounded.aggregate.empty_input",
-            "failed to construct zero-row aggregate input batch",
-        )
-        .with_fact("node_id", node_id)
-        .with_source(error)
-    })?;
-    let frame = DataFrame::from_record_batch(&execution.context().runtime()?, &batch).map_err(|error| {
+    let frame = execution.context().runtime()?.empty_dataframe_from_arrow_schema(schema).map_err(|error| {
         cudf_query_error(
             "query_engine.bounded.aggregate.empty_input",
-            "failed to upload zero-row aggregate input",
+            "failed to build zero-row aggregate input",
             error,
         )
         .with_fact("node_id", node_id)

@@ -201,7 +201,71 @@ fn bounded_join_cases_1() {
             "native_optimizer_rule_executes_left_anti_over_join_probe_keeping_duplicate_rows",
             native_optimizer_rule_executes_left_anti_over_join_probe_keeping_duplicate_rows,
         ),
+        (
+            "native_optimizer_rule_builds_small_left_side_of_exists_and_not_exists_and_matches_cpu_results",
+            native_optimizer_rule_builds_small_left_side_of_exists_and_not_exists_and_matches_cpu_results,
+        ),
     ]);
+}
+
+/// `EXISTS` and `NOT EXISTS` against a much larger correlated table lower to
+/// residual-free semi and anti joins. Build-side selection moves the build to
+/// the small left input, whose rows each right chunk marks, and the native
+/// rows equal DataFusion's, including duplicate and null keys on both sides.
+fn native_optimizer_rule_builds_small_left_side_of_exists_and_not_exists_and_matches_cpu_results() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-left-match-exists");
+    let orders = dir.join("orders.parquet");
+    let lineitem = dir.join("lineitem.parquet");
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("o_key", DataType::Int32, true),
+        Field::new("o_row", DataType::Int32, false),
+    ]));
+    let order_keys = (0..200).map(|row| (row % 50 != 7).then_some(row % 130 + 50)).collect::<Vec<_>>();
+    write_batch(
+        &orders,
+        Arc::clone(&orders_schema),
+        RecordBatch::try_new(
+            orders_schema,
+            vec![Arc::new(Int32Array::from(order_keys)), Arc::new(Int32Array::from((0..200).collect::<Vec<_>>()))],
+        )
+        .unwrap(),
+    );
+    let lineitem_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, true)]));
+    let lineitem_keys = (0..20_000).map(|row| (row % 97 != 0).then_some(row % 400 + 100)).collect::<Vec<_>>();
+    write_batch(
+        &lineitem,
+        Arc::clone(&lineitem_schema),
+        RecordBatch::try_new(lineitem_schema, vec![Arc::new(Int32Array::from(lineitem_keys))]).unwrap(),
+    );
+
+    for (sql, expected_rows) in [
+        ("SELECT o_row FROM orders o WHERE EXISTS (SELECT 1 FROM lineitem l WHERE l.l_key = o.o_key)", 98),
+        ("SELECT o_row FROM orders o WHERE NOT EXISTS (SELECT 1 FROM lineitem l WHERE l.l_key = o.o_key)", 102),
+    ] {
+        let plan = single_partition_sql_plan_with_parquet_tables(&[("orders", &orders), ("lineitem", &lineitem)], sql);
+        let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
+        let (optimized, diagnostics) =
+            rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+        let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+        assert_eq!(diagnostics.report.selected_count(), 1, "{sql}: outcomes={:?}", diagnostics.report.outcomes());
+        let selection = &diagnostics.native_optimizer.join_build_side_selection;
+        let [candidate] = selection.candidates.as_slice() else {
+            panic!("{sql}: the semi or anti join should be the only candidate: {selection:?}");
+        };
+        assert_eq!((candidate.before_build_side, candidate.after_build_side), (JoinSide::Right, Some(JoinSide::Left)));
+
+        let rows = |batches: Vec<RecordBatch>| {
+            let mut rows = batches.iter().flat_map(|batch| int32_array(batch, 0).values().to_vec()).collect::<Vec<_>>();
+            rows.sort_unstable();
+            rows
+        };
+        let native = rows(block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap());
+        let cpu = rows(block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap());
+        assert_eq!(native, cpu, "{sql}");
+        assert_eq!(native.len(), expected_rows, "{sql}");
+    }
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 fn native_optimizer_rule_executes_null_aware_left_anti_join_with_null_right_key_as_empty() {

@@ -37,6 +37,7 @@ pub(in crate::exec::bounded) struct BoundedSourceBatchingPolicy {
     source_adjacent_local_reduction_max_partial_bytes_divisor: u64,
     source_adjacent_local_reduction_min_partition_count: usize,
     source_adjacent_local_reduction_max_partition_occupancy_divisor: usize,
+    source_adjacent_local_reduction_key_sample_rows: u64,
     remote_direct_materialized_join_source_batch_max_bytes: u64,
 }
 
@@ -71,6 +72,10 @@ impl BoundedSourceBatchingPolicy {
     /// partitions held few distinct keys.
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_PARTITION_OCCUPANCY_DIVISOR: usize =
         4;
+    /// Rows of group-key columns a raw input without prior batch evidence
+    /// gathers to estimate its key cardinality. The cost of the sample is fixed
+    /// by this count, not by the batch size.
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_KEY_SAMPLE_ROWS: u64 = 1 << 20;
 
     /// Byte target for one generic (not source-adjacent) source batch.
     ///
@@ -230,8 +235,16 @@ impl BoundedSourceBatchingPolicy {
                 <= partition_count / self.source_adjacent_local_reduction_max_partition_occupancy_divisor
     }
 
+    /// Upper bound on the rows of the group-key sample that decides local
+    /// reduction for a raw input before any batch has been observed.
+    pub(in crate::exec::bounded) fn source_adjacent_local_reduction_key_sample_rows(self) -> u64 {
+        self.source_adjacent_local_reduction_key_sample_rows
+    }
+
     /// Whether one observed batch reduced strongly enough that the next batch
     /// can be partially aggregated whole, without hash partitioning first.
+    /// Before any batch is observed, a raw input's group-key sample supplies
+    /// `input_rows` and `partial_rows` (its rows and distinct keys).
     pub(in crate::exec::bounded) fn source_adjacent_local_reduction_effective(
         self,
         input_rows: u64,
@@ -275,6 +288,8 @@ impl Default for BoundedSourceBatchingPolicy {
                 Self::DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MIN_PARTITION_COUNT,
             source_adjacent_local_reduction_max_partition_occupancy_divisor:
                 Self::DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_PARTITION_OCCUPANCY_DIVISOR,
+            source_adjacent_local_reduction_key_sample_rows:
+                Self::DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_KEY_SAMPLE_ROWS,
             remote_direct_materialized_join_source_batch_max_bytes:
                 Self::DEFAULT_REMOTE_DIRECT_MATERIALIZED_JOIN_SOURCE_BATCH_MAX_BYTES,
         }

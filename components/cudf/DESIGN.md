@@ -175,7 +175,7 @@ owner and borrowed-token rows at compile time.
 | `Series`, `DataFrame`, `Runtime` | yes | yes | reference-counted owners over the types above |
 | `CudaStream`, `CudaEvent`, `DeviceMemoryResource` | yes | yes | CUDA handles and RMM resources accept concurrent use |
 | `ColumnView`, `TableView` | no | no | hold a raw native view handle bound to the owner's lifetime |
-| `DataFrameMixedLeftJoinState` | yes | no | mutation requires exclusive access |
+| `DataFrameMixedLeftJoinState`, `DataFrameHashLeftMatchState` | yes | no | mutation requires exclusive access |
 | `DeviceEntryGuard` | no | no | the current CUDA device is host-thread state |
 | `cudf_sys::BorrowedStream` | yes | no | moving is allowed; shared submission needs the owner's synchronization |
 | `cudf_sys::BorrowedEvent`, `BorrowedMemoryResource` | yes | yes | carry no ownership or mutable Rust state |

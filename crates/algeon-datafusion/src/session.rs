@@ -17,6 +17,10 @@
 //! to a builder after installation run after that check. Embedded applications
 //! should use a backend entry point; the raw extension methods are for
 //! planning, coverage, and controlled composition.
+//!
+//! Installation never replaces a caller's `RuntimeEnv`. An embedded session
+//! that plans over large Parquet files sets its own metadata cache limit; see
+//! [`RECOMMENDED_METADATA_CACHE_LIMIT_BYTES`].
 
 use std::sync::Arc;
 
@@ -53,6 +57,19 @@ use crate::{
 pub const ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "algeon_datafusion_native";
 /// Public name and deduplication key for the count-only native probe rule.
 pub const ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "algeon_datafusion_native_count_only";
+/// Host-memory limit for DataFusion's file metadata cache that the Flight SQL
+/// server and the Algeon benchmarks give their sessions: 1 GiB.
+///
+/// DataFusion charges the cache for decoded footers, about 430 bytes per
+/// column chunk, and its 50 MB default evicts a footer that does not fit.
+/// The scan then decodes that footer again on every planning pass: a
+/// 50,512-row-group `lineitem` footer needs 300 to 400 MB and planned in
+/// 3,134 ms at the default against 134 ms with room for it. Algeon never
+/// changes an embedder's `RuntimeEnv`; an embedded session passes this value,
+/// or its own, to
+/// [`RuntimeEnvBuilder::with_metadata_cache_limit`](datafusion::execution::runtime_env::RuntimeEnvBuilder::with_metadata_cache_limit)
+/// before [`AlgeonGpuBackend::install_on`](crate::backend::AlgeonGpuBackend::install_on).
+pub const RECOMMENDED_METADATA_CACHE_LIMIT_BYTES: usize = 1024 * 1024 * 1024;
 const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
 #[cfg(feature = "cugraph")]

@@ -126,8 +126,8 @@ fn bounded_native_query_partitions_streamed_leaf_build_without_whole_leaf_concat
         });
     let probe_schema = write_join_right_keys_parquet(&runtime, &probe_path, &[2, 3]);
 
-    // Footer row counts far above the large-build threshold settle the
-    // partitioned strategy before the first chunk is read.
+    // Footer row counts far above the large-build threshold leave a large
+    // build possible while the 2,048 counted rows do not prove one.
     let mut build_source = join_left_source(&build_path, &build_schema, &["order_id", "qty", "payload"]);
     build_source.files[0].row_group_rows = Some(vec![25_000_000; row_groups]);
 
@@ -159,7 +159,9 @@ fn bounded_native_query_partitions_streamed_leaf_build_without_whole_leaf_concat
     let output = result.unwrap();
     let metrics = &metrics;
     let decision = partitioned_build_decision(metrics, "n2");
-    assert_eq!(decision.facts.get("build_chunks_before_commitment").map(String::as_str), Some("0"));
+    // The whole chunks held while the build is undecided reach a quarter of
+    // the 30 MiB grant, 7.5 MiB, with the fourth 2 MiB chunk.
+    assert_eq!(decision.facts.get("build_chunks_before_commitment").map(String::as_str), Some("4"));
     let partition_count = decision.facts["partition_count"].parse::<usize>().unwrap();
     assert!(partition_count >= 2, "{decision:?}");
     let join_metrics =
@@ -174,7 +176,7 @@ fn bounded_native_query_partitions_streamed_leaf_build_without_whole_leaf_concat
         "query domain peak {peak_bytes} must stay below a second whole build copy of {} bytes",
         join_metrics.build_bytes
     );
-    assert_eq!(metrics.hash_join_build_count, 0);
+    assert_eq!(metrics.hash_join_build_count, partition_count as u64);
     assert!(metrics.source_chunks_committed >= row_groups as u64, "{metrics:#?}");
     assert!(metrics.join_strategy_decisions.iter().any(|decision| {
         decision.node_id == "n2"
@@ -187,6 +189,81 @@ fn bounded_native_query_partitions_streamed_leaf_build_without_whole_leaf_concat
     expected_qty_total(batch, &[2, 3], rows_per_row_group);
     let categories = string_array(batch, 3);
     assert!((0..batch.num_rows()).all(|row| categories.value(row).starts_with("category_")));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+// q09 shape: a filtered dimension keeps the row estimate of the whole table.
+// The held chunks never reach the grant's quarter and the counted build is
+// small, so the complete observation selects a hash table over the whole build.
+#[test]
+fn bounded_native_query_selects_counted_small_build_over_a_large_row_estimate() {
+    let runtime = backend_runtime();
+    let dir = unique_temp_dir("query-engine-bounded-overestimated-build");
+    let build_path = dir.join("build.parquet");
+    let probe_path = dir.join("probe.parquet");
+    let row_groups = 8;
+    let rows_per_row_group = 256;
+    let build_schema =
+        write_partitioned_build_payload_parquet(&build_path, row_groups, rows_per_row_group, true, |row_group| {
+            i32::try_from(row_group + 1).unwrap()
+        });
+    let probe_schema = write_join_right_keys_parquet(&runtime, &probe_path, &[2, 3]);
+    let mut build_source = join_left_source(&build_path, &build_schema, &["order_id", "qty", "payload"]);
+    build_source.files[0].row_group_rows = Some(vec![25_000_000; row_groups]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let build = builder.add_source(SourceNode::LocalParquet(build_source));
+    let probe = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &probe_path,
+        &probe_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder
+        .add_join(
+            build,
+            probe,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_output_projection(partitioned_build_join_projection())
+                .with_build_side(JoinSide::Left),
+            partitioned_build_join_output_schema(),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
+    // A quarter of 128 MiB holds the whole 16 MiB build.
+    let context = backend_context_with_grant(128 * 1024 * 1024);
+
+    let (result, metrics, _peak_bytes) = execute_admitted_with_peak(&context, &plan);
+    let output = result.unwrap();
+    assert!(
+        !metrics.join_strategy_decisions.iter().any(|decision| {
+            decision.facts.get("build_consumption").map(String::as_str) == Some("partitioned_input_stream")
+        }),
+        "an undecided build within the held share must not commit to partitions: {:?}",
+        metrics.join_strategy_decisions
+    );
+    let decision = metrics
+        .join_strategy_decisions
+        .iter()
+        .find(|decision| decision.node_id == "n2" && decision.facts.contains_key("observed_build_rows"))
+        .unwrap_or_else(|| panic!("join n2 records its build decision: {:?}", metrics.join_strategy_decisions));
+    assert!(
+        matches!(decision.facts.get("join_strategy").map(String::as_str), Some("reusable_hash_equi" | "one_shot_equi")),
+        "{decision:?}"
+    );
+    assert_eq!(decision.facts.get("estimated_build_rows").map(String::as_str), Some("200000000"));
+    assert_eq!(
+        decision.facts.get("observed_build_rows").map(String::as_str),
+        Some((row_groups * rows_per_row_group).to_string().as_str())
+    );
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_ne!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
+
+    let QueryOutput::HostArrow(batch) = &output else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    expected_qty_total(batch, &[2, 3], rows_per_row_group);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -350,15 +427,16 @@ fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build()
         )
         .unwrap();
     // The inner join output has no plan estimate; the lazy inner stream
-    // carries its probe leaf's encoded size, which settles the outer build
-    // as large before its first chunk arrives.
+    // carries its probe leaf's encoded size, which allows a large outer build.
+    // The third output chunk brings the counted bytes past the 3 MiB
+    // large-build threshold, and the outer build commits to partitions there.
     let plan = builder.finish_with_host_sink(outer).unwrap();
 
     let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
     let output = result.unwrap();
     let metrics = &metrics;
     let decision = partitioned_build_decision(metrics, "n4");
-    assert_eq!(decision.facts.get("build_chunks_before_commitment").map(String::as_str), Some("0"));
+    assert_eq!(decision.facts.get("build_chunks_before_commitment").map(String::as_str), Some("3"));
     let joins = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
     assert!(joins.iter().any(|join| join.execution_strategy.starts_with("bounded_reusable_hash_join")), "{joins:?}");
     let outer_metrics = joins
@@ -368,8 +446,10 @@ fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build()
     assert_eq!(outer_metrics.build_rows, (row_groups * rows_per_row_group) as u64);
     // Collecting the inner output eagerly and concatenating it for the outer
     // build holds that output twice; streaming it into partitions does not.
+    // The outer probe's single piece concatenates its partition outputs while
+    // the build partitions are resident, which adds one copy of the output.
     assert!(
-        peak_bytes < outer_metrics.build_bytes * 7 / 4,
+        peak_bytes < outer_metrics.build_bytes * 7 / 4 + outer_metrics.output_bytes,
         "query domain peak {peak_bytes} must stay below a second whole copy of the {} byte inner output",
         outer_metrics.build_bytes
     );

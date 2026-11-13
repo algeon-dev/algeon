@@ -104,11 +104,11 @@ pub async fn tpch_fallback_pressure_workload_items(
     config: SessionConfig,
 ) -> WorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
-    register_tpch_tables(&ctx, root).await?;
+    let scale = register_tpch_tables(&ctx, root).await?;
 
     let mut items = Vec::with_capacity(TPCH_QUERIES.len());
     for query in TPCH_QUERIES {
-        items.push(fallback_pressure_workload_item(&ctx, query.id, query.sql).await);
+        items.push(fallback_pressure_workload_item(&ctx, query.id, &query.sql(scale)).await);
     }
     Ok(items)
 }
@@ -188,11 +188,11 @@ pub async fn tpch_datafusion_planning_workload_items_with_optimizer_config(
         .with_algeon_native(optimizer_config)
         .build();
     let ctx = SessionContext::new_with_state(state);
-    register_tpch_tables(&ctx, root).await?;
+    let scale = register_tpch_tables(&ctx, root).await?;
 
     let mut items = Vec::with_capacity(TPCH_QUERIES.len());
     for query in TPCH_QUERIES {
-        items.push(datafusion_planning_workload_item(&ctx, query.id, query.sql).await);
+        items.push(datafusion_planning_workload_item(&ctx, query.id, &query.sql(scale)).await);
     }
     Ok(items)
 }
@@ -215,11 +215,11 @@ pub async fn tpch_datafusion_execution_workload_items_with_optimizer_config(
         let builder = SessionStateBuilder::new_with_default_features().with_config(session_config);
         let builder = backend.install_on(builder).map_err(|error| DataFusionError::External(Box::new(error)))?;
         let ctx = SessionContext::new_with_state(builder.build());
-        register_tpch_tables(&ctx, root).await?;
+        let scale = register_tpch_tables(&ctx, root).await?;
 
         let mut items = Vec::with_capacity(TPCH_QUERIES.len());
         for query in TPCH_QUERIES {
-            let item = match ctx.sql(query.sql).await {
+            let item = match ctx.sql(&query.sql(scale)).await {
                 Ok(df) => {
                     let (state, logical) = df.into_parts();
                     match plan_with_native_diagnostics(&state, &logical).await {

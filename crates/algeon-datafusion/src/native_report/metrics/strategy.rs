@@ -574,9 +574,11 @@ pub struct NativeJoinStrategyMetricRow {
     pub one_shot_equi_rejected_reason: Option<String>,
     /// Count of partitioned hash joins executed at this site.
     pub partitioned_hash_join_count: usize,
-    /// Count of reusable hash-join builds executed at this site.
+    /// Count of hash-join builds executed at this site; a partitioned hash join counts each
+    /// partition table it builds.
     pub hash_join_build_count: usize,
-    /// Device bytes retained by hash-join build artifacts.
+    /// Device bytes retained by hash-join build artifacts, including the partition tables a
+    /// partitioned hash join keeps across probe pieces.
     pub hash_join_hash_table_bytes: usize,
     /// Count of filtered-join builds executed at this site.
     pub filtered_join_build_count: usize,

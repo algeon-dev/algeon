@@ -175,9 +175,15 @@ pub(super) fn metric_duration_ms(metrics: &MetricsSet, name: &str) -> Option<f64
         .map(|value| duration_ms(Duration::from_nanos(value.as_usize().min(u64::MAX as usize) as u64)))
 }
 
-pub(super) fn mean_duration(samples: &[Duration]) -> Duration {
-    let total_nanos = samples.iter().map(Duration::as_nanos).sum::<u128>();
-    Duration::from_nanos((total_nanos / samples.len().max(1) as u128).min(u128::from(u64::MAX)) as u64)
+/// Middle sample of the sorted values; the mean of the two middle samples for an even count.
+pub(super) fn median_duration(samples: &[Duration]) -> Duration {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    match sorted.len() {
+        0 => Duration::ZERO,
+        count if count % 2 == 1 => sorted[count / 2],
+        count => (sorted[count / 2 - 1] + sorted[count / 2]) / 2,
+    }
 }
 
 pub(super) fn duration_ms(duration: Duration) -> f64 {
@@ -186,6 +192,13 @@ pub(super) fn duration_ms(duration: Duration) -> f64 {
 
 pub(super) fn optional_f64_text(value: Option<f64>) -> String {
     value.map_or_else(|| "not_run".to_string(), |value| format!("{value:.3}"))
+}
+
+pub(super) fn f64_list_text(values: &[f64]) -> String {
+    if values.is_empty() {
+        return "not_run".to_string();
+    }
+    values.iter().map(|value| format!("{value:.3}")).collect::<Vec<_>>().join(",")
 }
 
 pub(super) fn optional_usize_text(value: Option<usize>) -> String {

@@ -29,6 +29,7 @@ use crate::{
         native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
         planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     },
+    session::RECOMMENDED_METADATA_CACHE_LIMIT_BYTES,
 };
 
 const TEST_DEVICE_BUDGET_BYTES: u64 = 4096;
@@ -67,6 +68,7 @@ fn base_config() -> ServerConfig {
         data_root: None,
         tls: None,
         init_sql: None,
+        metadata_cache_limit_bytes: RECOMMENDED_METADATA_CACHE_LIMIT_BYTES,
         iceberg_catalogs: Vec::new(),
     }
 }
@@ -438,6 +440,18 @@ async fn build_session_context_with_backend_installs_backend_admission_source() 
     let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
 
     assert!(backend.is_session_state_bound(&ctx.state()));
+}
+
+#[tokio::test]
+async fn server_session_limits_the_file_metadata_cache_to_the_configured_bytes() {
+    let mut config = bounded_config(1);
+    assert_eq!(config.metadata_cache_limit_bytes, RECOMMENDED_METADATA_CACHE_LIMIT_BYTES);
+    config.metadata_cache_limit_bytes = 64 * 1024 * 1024;
+    let backend = runtime_backend(1);
+
+    let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
+
+    assert_eq!(ctx.runtime_env().cache_manager.get_metadata_cache_limit(), 64 * 1024 * 1024);
 }
 
 #[tokio::test]

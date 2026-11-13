@@ -1,7 +1,9 @@
 use std::{path::Path, sync::Arc};
 
 use query_engine::{exec::output::QueryExecutionResult, rapids_backend::rapids_analysis_context};
-use query_planning::{admission::admit, error::QueryError, expr::ColumnRef, plan::QueryPlan};
+use query_planning::{
+    admission::admit, capability::KeyedHashJoinStrategyOptions, error::QueryError, expr::ColumnRef, plan::QueryPlan,
+};
 
 use super::*;
 
@@ -57,6 +59,18 @@ pub(super) fn qty_gt_right_order_id_times_ten() -> Expr {
 
 pub(super) fn bounded_join_execution_context(_runtime: &Arc<cudf::Runtime>) -> BackendQueryContext {
     backend_context_with_grant(1024 * 1024_u64)
+}
+
+/// Planning policy under which a keyed build of `rows` or more counted rows is
+/// large. A materialized build's counted size overrides any plan estimate, so
+/// fixtures of a few rows reach partitioned joins through this threshold.
+pub(super) fn planning_policy_with_large_build_rows(rows: u64) -> PlanningPolicy {
+    PlanningPolicy {
+        keyed_hash_join: KeyedHashJoinStrategyOptions::default()
+            .with_small_reusable_hash_build_row_threshold(1)
+            .with_large_keyed_hash_build_row_threshold(rows),
+        ..PlanningPolicy::default()
+    }
 }
 
 pub(super) fn execute_bounded_keyless_left_only_conditional_join(

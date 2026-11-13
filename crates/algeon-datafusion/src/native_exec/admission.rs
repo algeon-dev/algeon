@@ -63,11 +63,25 @@ pub(crate) struct QueryAdmissionSource {
     /// Largest device total of the backend; part of the identity
     /// `same_backend` compares.
     max_device_total_memory_bytes: u64,
+    /// Smallest default query grant among the backend's devices.
+    min_default_query_grant_bytes: u64,
 }
 
 impl QueryAdmissionSource {
-    pub(crate) fn new(session: GpuBackendSession, max_device_total_memory_bytes: u64) -> Self {
-        Self { session, max_device_total_memory_bytes }
+    pub(crate) fn new(
+        session: GpuBackendSession,
+        max_device_total_memory_bytes: u64,
+        min_default_query_grant_bytes: u64,
+    ) -> Self {
+        Self { session, max_device_total_memory_bytes, min_default_query_grant_bytes }
+    }
+
+    /// The grant an attempt is planned against: its requested cap, else the
+    /// smallest default grant among the backend's devices, so the plan fits
+    /// whichever device admission places it on. Resident data frozen at
+    /// admission can lower an actual default grant below this value.
+    pub(crate) fn planned_query_grant_bytes(&self, requested_query_cap_bytes: Option<u64>) -> u64 {
+        requested_query_cap_bytes.unwrap_or(self.min_default_query_grant_bytes)
     }
 
     pub fn backend_matches(&self, session: &GpuBackendSession) -> bool {
