@@ -45,8 +45,8 @@ use query_runtime::observability::{
 use super::{
     AggregateFunction, AggregateNode, AggregateSpec, AvgStateAliases, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedPartitionRowPolicy, BoundedPartitionTargetPolicy,
-    BoundedSourceBatchingPolicy, CommittedPartial, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr,
-    Field, FilterNode, GpuDataFrame, Instant, LimitNode, LocalParquetSource, MemoryControlPolicy, NodeId,
+    BoundedSourceBatchingPolicy, CommittedPartial, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
+    Expr, Field, FilterNode, GpuDataFrame, Instant, LimitNode, LocalParquetSource, MemoryControlPolicy, NodeId,
     PartialAggregateInputEvidence, PlanningPolicy, ProjectionNode, QueryError, QueryErrorCode, RawSourceInput,
     ResidentGpuFrame, Result, RuntimeResourceFacts, SortNode, SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy,
     aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_floating_statistical_aggregate,

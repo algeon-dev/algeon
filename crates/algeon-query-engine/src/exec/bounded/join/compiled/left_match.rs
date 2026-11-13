@@ -235,6 +235,7 @@ pub(super) fn execute_compiled_left_match_join_materialize(
             probe_rows,
             probe_bytes,
             hash_table_bytes,
+            partition_hash_table_build_count: 0,
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes,
             gather_map_bytes,
