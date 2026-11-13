@@ -160,6 +160,16 @@
   white-space: normal;
 }
 
+/* Prose cells, such as the Parquet layout table, wrap at a readable width. */
+.wrapCells td {
+  min-width: 11rem;
+  white-space: normal;
+}
+
+.wrapCells td:first-child {
+  min-width: 9rem;
+}
+
 .queryCell {
   color: var(--ifm-heading-color);
   font-weight: 700;

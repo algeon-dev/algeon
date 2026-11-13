@@ -12,7 +12,7 @@ import {
 } from 'recharts';
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
-import {tpchSf100Benchmark} from '@site/src/data/tpchSf100Benchmark';
+import {tpchBenchmark} from '@site/src/data/tpchBenchmark';
 import {
   bytesPerGiB,
   formatGiB,
@@ -23,7 +23,7 @@ import {
   tooltipItemStyle,
   tooltipLabelStyle,
 } from './benchmarkChartUtils';
-import styles from './TpchSf100Benchmark.module.css';
+import styles from './benchmarks.module.css';
 
 // Palette values match the Tremor chart colors.
 const colorCpu = '#0071C5'; // cpu-blue
@@ -46,8 +46,19 @@ function formatSpeedup(value: number): string {
   return `${value.toFixed(1)}x`;
 }
 
-export default function TpchSf100Benchmark(): React.ReactElement {
-  const {dataset, config, rows, summary} = tpchSf100Benchmark;
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(value < 0.1 ? 1 : 0)}%`;
+}
+
+type TpchConfig = (typeof tpchBenchmark)['config'];
+type TpchDataset = (typeof tpchBenchmark)['datasets'][number];
+
+function TpchDatasetCharts({dataset, config}: {dataset: TpchDataset; config: TpchConfig}): React.ReactElement {
+  const {rows, summary, pageCache} = dataset;
+  const measurement =
+    `Median of ${config.iterations} measured iterations after ${config.warmups} warm-up; each time covers SQL planning and execution. ` +
+    `Parquet files ${formatPercent(pageCache.residentFractionBefore)} resident in the OS page cache before the first query ` +
+    `and ${formatPercent(pageCache.residentFractionAfter)} after the last; no GPU resident cache.`;
   const runtimeData = rows.map((row) => ({
     query: row.queryId,
     CPU: row.cpuMs,
@@ -70,7 +81,8 @@ export default function TpchSf100Benchmark(): React.ReactElement {
             <li>
               <strong>Result:</strong> CPU {formatSeconds(summary.cpuTotalMs)},
               GPU {formatSeconds(summary.gpuTotalMs)}, CPU / GPU{' '}
-              {formatSpeedup(summary.speedup)}, largest task memory peak{' '}
+              {formatSpeedup(summary.speedup)}, planning {formatPercent(summary.cpuPlanningShare)} of CPU time
+              and {formatPercent(summary.gpuPlanningShare)} of GPU time, largest task memory peak{' '}
               {formatGiB(summary.maxPeakMemoryOperatorClassBytes)}.
             </li>
           </ul>
@@ -79,11 +91,9 @@ export default function TpchSf100Benchmark(): React.ReactElement {
 
       <section className={styles.chartPanel} aria-label="Benchmark charts">
         <div className={`${styles.chartCard} ${styles.tabChartCard}`}>
-          <Tabs className={styles.chartTabs} groupId="tpch-sf100-chart-tabs" queryString={false}>
+          <Tabs className={styles.chartTabs} groupId="tpch-chart-tabs" queryString={false}>
             <TabItem value="runtime" label="Per-query runtime" default>
-              <p className={styles.chartCaption}>
-                Wall time of the single measured iteration after one warm-up. Parquet in the OS page cache; no GPU resident cache.
-              </p>
+              <p className={styles.chartCaption}>{measurement}</p>
               <div className={styles.chart}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={runtimeData} margin={{top: 8, right: 16, left: 0, bottom: 0}}>
@@ -105,7 +115,7 @@ export default function TpchSf100Benchmark(): React.ReactElement {
               </div>
             </TabItem>
             <TabItem value="speedup" label="Speedup">
-              <p className={styles.chartCaption}>CPU wall time divided by GPU wall time.</p>
+              <p className={styles.chartCaption}>CPU time divided by GPU time, both including planning.</p>
               <div className={styles.chart}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={speedupData} margin={{top: 8, right: 16, left: 0, bottom: 0}}>
@@ -147,7 +157,9 @@ export default function TpchSf100Benchmark(): React.ReactElement {
               </div>
             </TabItem>
             <TabItem value="results" label="Per-query results">
-              <p className={styles.chartCaption}>{summary.queryCount} TPC-H queries.</p>
+              <p className={styles.chartCaption}>
+                {summary.queryCount} TPC-H queries. Times include planning; the planning columns show the share.
+              </p>
               <div className={clsx(styles.tablePanel, 'thin-scrollbar')}>
                 <table className={styles.resultsTable}>
                   <thead>
@@ -156,6 +168,8 @@ export default function TpchSf100Benchmark(): React.ReactElement {
                       <th>CPU</th>
                       <th>GPU</th>
                       <th>Speedup</th>
+                      <th>CPU planning</th>
+                      <th>GPU planning</th>
                       <th>Peak class</th>
                       <th>Peak bytes</th>
                       <th>Row groups</th>
@@ -168,6 +182,8 @@ export default function TpchSf100Benchmark(): React.ReactElement {
                         <td>{formatMs(row.cpuMs)}</td>
                         <td>{formatMs(row.gpuMs)}</td>
                         <td>{formatSpeedup(row.speedup)}</td>
+                        <td>{formatMs(row.cpuPlanningMs)}</td>
+                        <td>{formatMs(row.gpuPlanningMs)}</td>
                         <td>{row.peakMemoryOperatorClass}</td>
                         <td>{formatGiB(row.peakMemoryOperatorClassBytes)}</td>
                         <td>{formatNumber(row.rowGroupsSelected)}</td>
@@ -181,5 +197,18 @@ export default function TpchSf100Benchmark(): React.ReactElement {
         </div>
       </section>
     </div>
+  );
+}
+
+export default function TpchBenchmark(): React.ReactElement {
+  const {config, datasets} = tpchBenchmark;
+  return (
+    <Tabs lazy groupId="tpch-dataset-tabs" queryString={false}>
+      {datasets.map((dataset) => (
+        <TabItem key={dataset.id} value={dataset.id} label={dataset.label}>
+          <TpchDatasetCharts dataset={dataset} config={config} />
+        </TabItem>
+      ))}
+    </Tabs>
   );
 }
