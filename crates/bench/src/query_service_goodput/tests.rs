@@ -1,5 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
+use workloads::tpch::TpchScaleFactor;
+
 use super::{
     arrival::{Phase, build_trace},
     calibration::{CalibrationIdentity, CalibrationRow, CalibrationStore},
@@ -9,6 +11,10 @@ use super::{
     report::{REQUEST_MANIFEST_COLUMNS, request_manifest_tsv},
     workload::{MixEntry, WorkloadFamily, parse_mix},
 };
+
+fn sf100() -> TpchScaleFactor {
+    TpchScaleFactor::from_label("sf100").unwrap().unwrap()
+}
 
 fn test_config() -> GoodputConfig {
     GoodputConfig {
@@ -272,7 +278,7 @@ fn sequence_only_assignments_cannot_silently_choose_a_calibration_cap() {
     let assignment =
         CapAssignment::parse("# schema=algeon-goodput-cap-assignment\nkind\tkey\tcap_bytes\nsequence\t0\t256\n")
             .unwrap();
-    let item = super::workload::resolve_item("tpch.q06", 0).unwrap();
+    let item = super::workload::resolve_item("tpch.q06", 0, Some(sf100())).unwrap();
     assert!(assignment.calibration_caps(&[item], 512).is_err());
 }
 
@@ -390,27 +396,27 @@ fn a_measurement_refuses_a_calibration_from_another_environment() {
 
 #[test]
 fn ad_hoc_items_resolve_and_graph_items_report_their_work_units() {
-    let item = super::workload::resolve_item("adhoc.skew_join", 0).unwrap();
+    let item = super::workload::resolve_item("adhoc.skew_join", 0, None).unwrap();
     assert_eq!(item.family, WorkloadFamily::Adhoc);
     assert!(item.sql.contains("JOIN orders"));
     assert_eq!(item.work_units, 1);
 
-    assert!(super::workload::resolve_item("tpch.q06", 0).is_ok());
-    assert!(super::workload::resolve_item("tpch.q99", 0).is_err());
-    assert!(super::workload::resolve_item("nosuch.item", 0).is_err());
+    assert!(super::workload::resolve_item("tpch.q06", 0, Some(sf100())).is_ok());
+    assert!(super::workload::resolve_item("tpch.q99", 0, Some(sf100())).is_err());
+    assert!(super::workload::resolve_item("nosuch.item", 0, None).is_err());
 }
 
 #[cfg(feature = "cugraph")]
 #[test]
 fn graph_items_carry_their_seed_count_as_work_units() {
-    let batched = super::workload::resolve_item("graph.betweenness_k256", 7).unwrap();
-    let split = super::workload::resolve_item("graph.betweenness_k64", 7).unwrap();
+    let batched = super::workload::resolve_item("graph.betweenness_k256", 7, None).unwrap();
+    let split = super::workload::resolve_item("graph.betweenness_k64", 7, None).unwrap();
 
     assert_eq!(batched.work_units, 256);
     assert_eq!(split.work_units, 64);
     assert!(batched.sql.contains("k => 256"));
 
-    let bfs = super::workload::resolve_item("graph.bfs", 7).unwrap();
+    let bfs = super::workload::resolve_item("graph.bfs", 7, None).unwrap();
     assert!(bfs.sql.contains("source_vertex => 7"), "the discovered seed must reach the traversal item: {}", bfs.sql);
 }
 
@@ -429,7 +435,7 @@ fn graph_items_fingerprint_computed_values_and_not_only_row_counts() {
         "graph.betweenness_k64",
         "graph.betweenness_k256",
     ] {
-        let item = super::workload::resolve_item(item_id, 7).unwrap();
+        let item = super::workload::resolve_item(item_id, 7, None).unwrap();
         assert!(
             item.sql.contains("SUM(") || item.sql.contains("COUNT(DISTINCT"),
             "{item_id} fingerprints only its cardinality, so a wrong result would still match: {}",

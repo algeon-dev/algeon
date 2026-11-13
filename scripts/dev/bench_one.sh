@@ -19,8 +19,11 @@
 #
 # Flags (a flag wins when given, otherwise an already-exported env value wins,
 # otherwise the default below applies):
-#   --scale 1|10|100            dataset scale factor (default: 1;
-#                               sf1/sf10/sf100 also accepted)
+#   --scale N                   dataset scale factor (default: 1; sfN also
+#                               accepted): tpch 1|10|100|300|500|1000,
+#                               tpcds 1|10|100. tpch 300, 500 and 1000 have
+#                               no in-repo fixture root and need
+#                               --parquet-dir, $ALGEON_PARQUET_DIR or /scratch
 #   --warmups N                 warmup iterations (default: 0)
 #   --iterations N              measured iterations (default: 1)
 #   --engine E                  tpcds only: native_gpu (default) |
@@ -41,6 +44,7 @@
 #
 # Dataset auto-detection order: --parquet-dir, $ALGEON_PARQUET_DIR,
 # /scratch/<tpch|tpcds>/sf<scale>/parquet, then the in-repo fixture root.
+# A dataset's _generation.json manifest is copied next to the TSV.
 # Set ALGEON_BENCH_ONE_NO_ENV=1 to skip sourcing env.sh.
 
 set -euo pipefail
@@ -141,7 +145,7 @@ pick() {
     fi
 }
 
-# Accept 1, 10, 100 as well as sf1, sf10, sf100 (any case).
+# Accept N as well as sfN (any case).
 normalize_scale() {
     local raw="$1"
     raw="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]' | tr -d '[:blank:]')"
@@ -153,8 +157,13 @@ WARMUPS="$(pick ALGEON_BENCH_ONE_WARMUPS "${WARMUPS_FLAG}" 0)"
 ITERATIONS="$(pick ALGEON_BENCH_ONE_ITERATIONS "${ITERATIONS_FLAG}" 1)"
 ENGINE="$(pick ALGEON_TPCDS_BENCH_ENGINE "${ENGINE_FLAG}" native_gpu)"
 
-if [[ "${SCALE}" != "1" && "${SCALE}" != "10" && "${SCALE}" != "100" ]]; then
-    echo "ERROR: --scale must be 1, 10, or 100 (sf1/sf10/sf100 also accepted); got '${SCALE}'" >&2
+if [[ "${WORKLOAD}" == "tpch" ]]; then
+    SCALES="1 10 100 300 500 1000"
+else
+    SCALES="1 10 100"
+fi
+if [[ " ${SCALES} " != *" ${SCALE} "* ]]; then
+    echo "ERROR: ${WORKLOAD} --scale must be one of ${SCALES// /, } (sfN also accepted); got '${SCALE}'" >&2
     exit 2
 fi
 if [[ "${WORKLOAD}" == "tpcds" ]]; then
@@ -226,11 +235,14 @@ resolve_parquet_dir() {
     fi
     local fixture=""
     if [[ "${workload}" == "tpch" ]]; then
-        if [[ "${scale}" == "100" ]]; then
-            fixture="${REPO_ROOT}/fixture/tpc-h/data/sf100_optimized/parquet"
-        else
-            fixture="${REPO_ROOT}/fixture/tpc-h/data/sf${scale}/parquet"
-        fi
+        case "${scale}" in
+            100) fixture="${REPO_ROOT}/fixture/tpc-h/data/sf100_optimized/parquet" ;;
+            1 | 10) fixture="${REPO_ROOT}/fixture/tpc-h/data/sf${scale}/parquet" ;;
+            *)
+                echo "ERROR: tpch sf${scale} has no in-repo fixture root; pass --parquet-dir PATH or set ALGEON_PARQUET_DIR" >&2
+                return 1
+                ;;
+        esac
     else
         fixture="${REPO_ROOT}/fixture/tpc-ds/data/sf${scale}/parquet"
     fi
@@ -253,7 +265,7 @@ resolve_vd() {
     fi
 }
 
-PARQUET_DIR="$(resolve_parquet_dir "${WORKLOAD}" "${SCALE}")"
+PARQUET_DIR="$(resolve_parquet_dir "${WORKLOAD}" "${SCALE}")" || exit 2
 if [[ ! -d "${PARQUET_DIR}" ]]; then
     echo "ERROR: parquet dir not found: ${PARQUET_DIR}" >&2
     echo "       Generate it (fixture/fixture.sh ${WORKLOAD} generate --scale ${SCALE}) or pass --parquet-dir PATH" >&2
@@ -297,6 +309,11 @@ else
 fi
 mkdir -p "$(dirname "${TSV_OUT}")"
 STDERR_LOG="${TSV_OUT}.stderr.log"
+GENERATION_MANIFEST="${PARQUET_DIR}/_generation.json"
+GENERATION_OUT=""
+if [[ -f "${GENERATION_MANIFEST}" ]]; then
+    GENERATION_OUT="${TSV_OUT}.generation.json"
+fi
 
 # Benchmarks always default to the release profile: dev-profile timings are
 # meaningless for tuning. --dev opts back into a fast-compile debug build.
@@ -324,6 +341,9 @@ if [[ "${WORKLOAD}" == "tpcds" ]]; then
 fi
 echo "tsv:            ${TSV_OUT}"
 echo "stderr log:     ${STDERR_LOG}"
+if [[ -n "${GENERATION_OUT}" ]]; then
+    echo "generation:     ${GENERATION_OUT}"
+fi
 echo ""
 
 review_command() {
@@ -384,6 +404,9 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     exit 0
 fi
 
+if [[ -n "${GENERATION_OUT}" ]]; then
+    cp "${GENERATION_MANIFEST}" "${GENERATION_OUT}"
+fi
 # stdout is the TSV (kept machine-clean); stderr stays live on the terminal
 # and is also saved to the stderr log.
 "${CMD[@]}" > "${TSV_OUT}" 2> >(tee "${STDERR_LOG}" >&2)

@@ -4,7 +4,9 @@
 Reads the TSV emitted by `native_tpch_benchmark`, classifies every row into
 exactly one outcome class (planning_rejected, cpu_failed,
 runtime_failed:<code>, matched, mismatched, or not_run), and prints:
-  - per-query CPU/GPU wall, speedup, parity, final disposition, dominant
+  - per-query CPU/GPU wall (mean of measured iterations), the first measured
+    iteration and the median of iterations 2..N when the TSV carries the
+    cpu_wall_ms_samples / native_wall_ms_samples columns, speedup, parity, final disposition, dominant
     runtime class and the GPU time breakdown that explains where the wall
     went;
   - a coverage block: how many queries fall into each outcome bucket, and
@@ -33,7 +35,7 @@ with --pretty and --width.
 Usage: tpch_bench_review.py <tsv> [--slow-threshold 2.0] [--pretty auto] [--width 0]
 """
 from __future__ import annotations
-import sys, argparse, shutil
+import sys, argparse, shutil, statistics
 
 try:
     from rich.console import Console
@@ -48,10 +50,11 @@ except ImportError:
 FINAL_DISPOSITION_TSV_COLUMN = "post_native_execution_path"
 
 # Wide-table columns and widths; the table needs the sum plus two-space gaps.
-WIDE_COLUMNS = ["query", "disposition", "parity", "cpu_ms", "gpu_ms", "speedup", "rt_class",
+WIDE_COLUMNS = ["query", "disposition", "parity", "cpu_ms", "gpu_ms", "cpu_1st", "cpu_med2+", "gpu_1st", "gpu_med2+",
+        "speedup", "rt_class",
         "src_read", "operator", "fmerge", "fsort", "matzn", "alloc_hw_GiB", "task_peak_GiB",
         "retry", "retry_rx"]
-WIDE_WIDTHS = [5, 14, 9, 9, 9, 7, 16, 9, 9, 8, 8, 8, 12, 12, 5, 8]
+WIDE_WIDTHS = [5, 14, 9, 9, 9, 9, 9, 9, 9, 7, 16, 9, 9, 8, 8, 8, 12, 12, 5, 8]
 WIDE_TABLE_WIDTH = sum(WIDE_WIDTHS) + 2 * (len(WIDE_WIDTHS) - 1)
 
 
@@ -80,6 +83,21 @@ def f(x):
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def samples(x):
+    """Per-iteration wall times in run order; empty when the side did not run."""
+    try:
+        return [float(v) for v in x.split(",")]
+    except (AttributeError, ValueError):
+        return []
+
+
+def first_and_rest_median(values):
+    """First measured iteration and the median of iterations 2..N (None below 2)."""
+    first = values[0] if values else None
+    rest = statistics.median(values[1:]) if len(values) > 1 else None
+    return first, rest
 
 
 def fmt_ms(x):
@@ -236,7 +254,9 @@ def header_lines(meta):
     line1 = (f"dataset: scale={scale} "
              f"fingerprint={meta.get('tpch_dataset_metadata_fingerprint', '?')} "
              f"warmups={meta.get('tpch_benchmark_warmups', '?')} "
-             f"iterations={meta.get('tpch_benchmark_iterations', '?')}")
+             f"iterations={meta.get('tpch_benchmark_iterations', '?')} "
+             f"parity_float_tolerance=abs:{meta.get('tpch_benchmark_parity_float_tolerance_absolute', '?')}"
+             f",rel:{meta.get('tpch_benchmark_parity_float_tolerance_relative', '?')}")
 
     cap_bytes = f(meta.get("tpch_benchmark_native_device_budget_bytes"))
     cap = f"{cap_bytes / (1024 ** 3):.2f}GiB" if cap_bytes is not None else "?"
@@ -312,11 +332,15 @@ def summarize(meta, rows, slow_threshold):
         cpu = f(r.get("cpu_wall_ms"))
         gpu = f(r.get("native_wall_ms"))
         sp = f(r.get("speedup_vs_cpu"))
+        cpu_first, cpu_rest = first_and_rest_median(samples(r.get("cpu_wall_ms_samples")))
+        gpu_first, gpu_rest = first_and_rest_median(samples(r.get("native_wall_ms_samples")))
         disposition = r.get(FINAL_DISPOSITION_TSV_COLUMN, "?")
         cls = classify(r)
         rec = {
             "q": r.get("query_id", "?"),
             "cpu": cpu, "gpu": gpu, "sp": sp,
+            "cpu_first": cpu_first, "cpu_rest": cpu_rest,
+            "gpu_first": gpu_first, "gpu_rest": gpu_rest,
             "disposition": disposition,
             "parity": r.get("parity_status", "?"),
             "rt": rt_label(r),
@@ -380,6 +404,8 @@ def timing_breakdown_text(rec):
 def flagged_detail_text(rec):
     text = (f"class={rec['cls']} speedup={c_sp(rec['sp'])} disposition={rec['disposition']} "
             f"parity={rec['parity']} rt={rec['rt']} cpu={c_ms(rec['cpu'])} gpu={c_ms(rec['gpu'])} "
+            f"cpu_1st={c_ms(rec['cpu_first'])} cpu_med2+={c_ms(rec['cpu_rest'])} "
+            f"gpu_1st={c_ms(rec['gpu_first'])} gpu_med2+={c_ms(rec['gpu_rest'])} "
             f"{timing_breakdown_text(rec)} retry={rec['retry']} retry_rx={rec['retry_rx']}")
     if rec["detail"]:
         text += f" detail={rec['detail']}"
@@ -403,13 +429,16 @@ def render_rich(records, summary, slow_threshold, full, width):
     console.print()
     if full:
         table = Table()
-        for col in ["q", "disposition", "parity", "cpu", "gpu", "speedup", "rt",
+        for col in ["q", "disposition", "parity", "cpu", "gpu", "cpu 1st", "cpu med2+",
+                    "gpu 1st", "gpu med2+", "speedup", "rt",
                     "src", "op", "fmerge", "fsort", "mat", "alloc_hw GiB", "task_peak GiB", "retry", "retry_rx"]:
             table.add_column(col)
         for rec in records:
             table.add_row(
                 rec["q"], rec["disposition"], rec["parity"],
                 c_ms(rec["cpu"]), c_ms(rec["gpu"]),
+                c_ms(rec["cpu_first"]), c_ms(rec["cpu_rest"]),
+                c_ms(rec["gpu_first"]), c_ms(rec["gpu_rest"]),
                 speedup_cell(rec["sp"], slow_threshold), rec["rt"],
                 c_ms(rec["src"]), c_ms(rec["op"]),
                 c_ms(rec["fmerge"]), c_ms(rec["fsort"]), c_ms(rec["matzn"]),
@@ -449,6 +478,8 @@ def render_wide(records, summary, slow_threshold):
         print("  ".join([
             rec["q"].ljust(5), rec["disposition"].ljust(14), rec["parity"].ljust(9),
             fmt_ms(rec["cpu"]), fmt_ms(rec["gpu"]),
+            fmt_ms(rec["cpu_first"]), fmt_ms(rec["cpu_rest"]),
+            fmt_ms(rec["gpu_first"]), fmt_ms(rec["gpu_rest"]),
             (f"{rec['sp']:6.2f}" if rec["sp"] is not None else "   n/a").ljust(7),
             rec["rt"][:16].ljust(16),
             fmt_ms(rec["src"]), fmt_ms(rec["op"]),
