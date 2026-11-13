@@ -45,6 +45,9 @@ pub(super) struct QueryOutput {
 #[derive(Debug, Clone)]
 pub(super) struct TimedQueryRun {
     pub(super) samples: Vec<Duration>,
+    /// Session construction through table registration, per measured iteration.
+    pub(super) setup_samples: Vec<Duration>,
+    /// `ctx.sql` through the physical plan, per measured iteration.
     pub(super) planning_samples: Vec<Duration>,
     pub(super) final_measurement: QueryMeasurement,
 }
@@ -54,6 +57,8 @@ pub(super) struct PlannedCpuQuery {
     _ctx: SessionContext,
     plan: Arc<dyn ExecutionPlan>,
     row_ordering: ParityRowOrdering,
+    setup: Duration,
+    planning: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +96,11 @@ impl FailureDetails {
 #[derive(Debug, Clone)]
 pub(super) struct TimedNativeQueryRun {
     pub(super) samples: Vec<Duration>,
+    /// Session construction through table registration, per measured iteration.
+    pub(super) setup_samples: Vec<Duration>,
+    /// `ctx.sql` through native physical planning, per measured iteration.
     pub(super) planning_samples: Vec<Duration>,
+    /// Planning plus execution, excluding setup.
     pub(super) plan_plus_execution_samples: Vec<Duration>,
     pub(super) iteration_wall_samples: Vec<Duration>,
     pub(super) final_measurement: QueryMeasurement,
@@ -111,6 +120,8 @@ pub(super) struct PlannedNativeQuery {
     pub(super) plan: Arc<dyn ExecutionPlan>,
     pub(super) planning_row: NativeDataFusionPlanningRow,
     pub(super) row_ordering: ParityRowOrdering,
+    pub(super) setup: Duration,
+    pub(super) planning: Duration,
 }
 
 pub(super) async fn plan_native_query(
@@ -119,23 +130,27 @@ pub(super) async fn plan_native_query(
     config: &NativeTpchBenchmarkConfig,
     resources: &NativeTpchRuntimeResources,
 ) -> DataFusionResult<PlannedNativeQuery> {
+    let setup_started = Instant::now();
     let optimizer_config = native_optimizer_config(config, resources);
     let builder = SessionStateBuilder::new_with_default_features().with_config(native_session_config(config));
     let builder = resources.install_on(builder)?;
     let state = builder.with_algeon_native(optimizer_config).build();
     let ctx = SessionContext::new_with_state(state);
     let scale = dataset::register_tpch_tables(&ctx, metadata).await?;
+    let setup = setup_started.elapsed();
+    let planning_started = Instant::now();
     let df = ctx.sql(&query.sql(scale)).await?;
     let (state, logical) = df.into_parts();
     let row_ordering = validation::row_ordering(&logical);
     let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await?;
+    let planning = planning_started.elapsed();
     let planning_report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
         query.id,
         Arc::clone(&plan),
         diagnostics,
     )]);
     let planning_row = select_benchmark_planning_row(query.id, planning_report.rows)?;
-    Ok(PlannedNativeQuery { plan, planning_row, row_ordering })
+    Ok(PlannedNativeQuery { plan, planning_row, row_ordering, setup, planning })
 }
 
 pub(super) fn native_optimizer_config(
@@ -300,12 +315,13 @@ pub(super) async fn run_cpu_query_iterations(
     }
 
     let mut samples = Vec::with_capacity(config.iterations);
+    let mut setup_samples = Vec::with_capacity(config.iterations);
     let mut planning_samples = Vec::with_capacity(config.iterations);
     let mut final_measurement = None;
     for _ in 0..config.iterations {
-        let planning_started = Instant::now();
         let planned = plan_cpu_query(metadata, query, config).await?;
-        planning_samples.push(planning_started.elapsed());
+        setup_samples.push(planned.setup);
+        planning_samples.push(planned.planning);
         let schema = planned.plan.schema();
         let row_ordering = planned.row_ordering.clone();
         let started = Instant::now();
@@ -315,6 +331,7 @@ pub(super) async fn run_cpu_query_iterations(
     }
     Ok(TimedQueryRun {
         samples,
+        setup_samples,
         planning_samples,
         final_measurement: final_measurement.expect("validated benchmark config requires iterations"),
     })
@@ -345,6 +362,7 @@ pub(super) async fn run_native_query_iterations(
     }
 
     let mut samples = Vec::with_capacity(config.iterations);
+    let mut setup_samples = Vec::with_capacity(config.iterations);
     let mut planning_samples = Vec::with_capacity(config.iterations);
     let mut plan_plus_execution_samples = Vec::with_capacity(config.iterations);
     let mut iteration_wall_samples = Vec::with_capacity(config.iterations);
@@ -354,7 +372,8 @@ pub(super) async fn run_native_query_iterations(
         let iteration_started = Instant::now();
         let observation_capture = (iteration == 0 && artifact_dir.is_some()).then(|| Arc::new(Mutex::new(None)));
         let planned = plan_native_query(metadata, query, config, resources).await.map_err(native_not_started)?;
-        planning_samples.push(iteration_started.elapsed());
+        setup_samples.push(planned.setup);
+        planning_samples.push(planned.planning);
         if planned.planning_row.outcome != Some(CandidateOutcomeKind::Selected) {
             return Err(NativeRunFailure {
                 runtime_started: false,
@@ -370,8 +389,9 @@ pub(super) async fn run_native_query_iterations(
             collect_native_plan_once(Arc::clone(&planned.plan), resources, observation_capture.as_ref())
                 .await
                 .map_err(native_started)?;
-        samples.push(started.elapsed());
-        plan_plus_execution_samples.push(iteration_started.elapsed());
+        let execution = started.elapsed();
+        samples.push(execution);
+        plan_plus_execution_samples.push(planned.planning + execution);
         final_measurement =
             Some(measure_output(schema, planned.row_ordering.clone(), batches).map_err(native_started)?);
         iteration_wall_samples.push(iteration_started.elapsed());
@@ -386,6 +406,7 @@ pub(super) async fn run_native_query_iterations(
     let timing_metrics = NativeTpchTimingMetrics::mean_from_metrics(&measured_metrics);
     Ok(TimedNativeQueryRun {
         samples,
+        setup_samples,
         planning_samples,
         plan_plus_execution_samples,
         iteration_wall_samples,
@@ -421,12 +442,16 @@ async fn plan_cpu_query(
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
 ) -> Result<PlannedCpuQuery, CpuRunFailure> {
+    let setup_started = Instant::now();
     let ctx = SessionContext::new_with_config(cpu_session_config(config));
     let scale = dataset::register_tpch_tables(&ctx, metadata).await.map_err(cpu_not_started)?;
+    let setup = setup_started.elapsed();
+    let planning_started = Instant::now();
     let df = ctx.sql(&query.sql(scale)).await.map_err(cpu_not_started)?;
     let row_ordering = validation::row_ordering(df.logical_plan());
     let plan = df.create_physical_plan().await.map_err(cpu_not_started)?;
-    Ok(PlannedCpuQuery { _ctx: ctx, plan, row_ordering })
+    let planning = planning_started.elapsed();
+    Ok(PlannedCpuQuery { _ctx: ctx, plan, row_ordering, setup, planning })
 }
 
 async fn collect_cpu_plan_once(planned: PlannedCpuQuery) -> Result<Vec<RecordBatch>, CpuRunFailure> {
