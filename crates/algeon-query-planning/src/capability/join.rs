@@ -272,6 +272,10 @@ pub enum JoinForm {
     /// Equality keys without a residual: a semi, anti, or mark join that
     /// builds its right side and outputs only left columns.
     KeyedFilteredSemiAnti,
+    /// Equality keys without a residual: a semi or anti join that builds its
+    /// left side and is not null-aware. Each right chunk marks the left rows
+    /// it matches, so the right side streams without being retained.
+    KeyedLeftMatch,
     /// Equality keys and a residual the mixed join evaluates while matching.
     /// `left_match` marks a semi or anti join that builds its left side.
     KeyedResidual { left_match: bool },
@@ -292,6 +296,7 @@ impl JoinForm {
             },
             Self::KeyedEquiPostFilter => &[JoinStrategy::OneShotEqui],
             Self::KeyedFilteredSemiAnti => &[JoinStrategy::FilteredSemiAnti],
+            Self::KeyedLeftMatch => &[JoinStrategy::HashLeftMatch],
             Self::KeyedResidual { left_match: false } => {
                 &[JoinStrategy::MixedKeyedResidual, JoinStrategy::PartitionedMixedKeyedResidual]
             },
@@ -350,8 +355,12 @@ pub(crate) fn classify_join(node_id: NodeId, join: &JoinNode) -> std::result::Re
         (false, None) => match spec.join_type {
             JoinType::Inner | JoinType::Full => Some(JoinForm::KeyedEqui),
             JoinType::Left => build_right.then_some(JoinForm::KeyedEqui),
-            JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } => {
-                build_right.then_some(JoinForm::KeyedFilteredSemiAnti)
+            JoinType::LeftMark { .. } => build_right.then_some(JoinForm::KeyedFilteredSemiAnti),
+            JoinType::LeftSemi | JoinType::LeftAnti { .. } if build_right => Some(JoinForm::KeyedFilteredSemiAnti),
+            // Null-aware anti semantics read the whole right side's nulls and
+            // emptiness; only the filtered semi/anti executor implements them.
+            JoinType::LeftSemi | JoinType::LeftAnti { .. } => {
+                (!spec.join_type.is_null_aware()).then_some(JoinForm::KeyedLeftMatch)
             },
             JoinType::Cross => None,
         },
@@ -434,6 +443,7 @@ pub(crate) fn choose_join_strategy(
             JoinStrategyChoice::without_evidence(JoinStrategy::MixedKeyedResidual)
         },
         JoinForm::KeyedFilteredSemiAnti => JoinStrategyChoice::without_evidence(JoinStrategy::FilteredSemiAnti),
+        JoinForm::KeyedLeftMatch => JoinStrategyChoice::without_evidence(JoinStrategy::HashLeftMatch),
         JoinForm::KeylessConditional(join_type) => {
             JoinStrategyChoice::without_evidence(JoinStrategy::KeylessConditional { join_type })
         },
@@ -648,6 +658,9 @@ pub(crate) fn join_probe_streams_chunks(join: &JoinNode, form: JoinForm, strateg
             strategy == JoinStrategy::OneShotEqui && join.spec.join_type == JoinType::Inner
         },
         JoinForm::KeyedResidual { left_match } => left_match && strategy == JoinStrategy::MixedKeyedResidual,
+        // Each right chunk only marks left rows; the output is selected once
+        // after the last chunk.
+        JoinForm::KeyedLeftMatch => true,
         JoinForm::KeylessConditional(_) | JoinForm::ProjectedCross => false,
     }
 }
@@ -825,6 +838,7 @@ mod tests {
             "left_value",
         )]);
         assert_eq!(form(&join), Some(JoinForm::KeyedFilteredSemiAnti));
+        assert_eq!(form(&JoinNode { spec: join.spec.clone().with_build_side(JoinSide::Left), ..join }), None);
 
         join.spec = join.spec.with_residual_predicate(Expr::binary(
             Expr::column("left_value"),

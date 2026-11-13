@@ -3298,6 +3298,22 @@ pub cudf::ops::join::NullEquality::Unequal = 1
 pub enum cudf::ops::join::NullableJoin
 pub cudf::ops::join::NullableJoin::MaybeNull
 pub cudf::ops::join::NullableJoin::NoNulls
+pub struct cudf::ops::join::DataFrameHashLeftMatchFinalized
+impl cudf::DataFrameHashLeftMatchFinalized
+pub fn cudf::DataFrameHashLeftMatchFinalized::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameHashLeftMatchFinalized::materialize_indices(&self) -> cudf::core::error::Result<cudf::DataFrameJoinIndices>
+pub fn cudf::DataFrameHashLeftMatchFinalized::output_size(&self) -> usize
+pub struct cudf::ops::join::DataFrameHashLeftMatchState
+impl cudf::DataFrameHashLeftMatchState
+pub fn cudf::DataFrameHashLeftMatchState::consume(&mut self, &cudf::DataFrame) -> cudf::core::error::Result<()>
+pub fn cudf::DataFrameHashLeftMatchState::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameHashLeftMatchState::new(&cudf::DataFrame, cudf::DataFrameJoinOptions, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrameHashLeftMatchState::seal(self, bool) -> cudf::core::error::Result<cudf::DataFrameHashLeftMatchFinalized>
+impl core::fmt::Debug for cudf::DataFrameHashLeftMatchState
+pub fn cudf::DataFrameHashLeftMatchState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for cudf::DataFrameHashLeftMatchState
+impl core::ops::drop::Drop for cudf::DataFrameHashLeftMatchState
+pub fn cudf::DataFrameHashLeftMatchState::drop(&mut self)
 pub struct cudf::ops::join::DataFrameMixedLeftJoinFinalized
 impl cudf::DataFrameMixedLeftJoinFinalized
 pub fn cudf::DataFrameMixedLeftJoinFinalized::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
@@ -5101,6 +5117,22 @@ pub fn cudf::DataFrameHashJoinPairIndices::len(&self) -> usize
 pub fn cudf::DataFrameHashJoinPairIndices::probe(&self) -> &cudf::DataFrameJoinIndices
 pub fn cudf::DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(usize) -> cudf::core::error::Result<usize>
 pub fn cudf::DataFrameHashJoinPairIndices::reservation_upper_bound_bytes_for_row_bound(usize) -> usize
+pub struct cudf::DataFrameHashLeftMatchFinalized
+impl cudf::DataFrameHashLeftMatchFinalized
+pub fn cudf::DataFrameHashLeftMatchFinalized::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameHashLeftMatchFinalized::materialize_indices(&self) -> cudf::core::error::Result<cudf::DataFrameJoinIndices>
+pub fn cudf::DataFrameHashLeftMatchFinalized::output_size(&self) -> usize
+pub struct cudf::DataFrameHashLeftMatchState
+impl cudf::DataFrameHashLeftMatchState
+pub fn cudf::DataFrameHashLeftMatchState::consume(&mut self, &cudf::DataFrame) -> cudf::core::error::Result<()>
+pub fn cudf::DataFrameHashLeftMatchState::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameHashLeftMatchState::new(&cudf::DataFrame, cudf::DataFrameJoinOptions, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrameHashLeftMatchState::seal(self, bool) -> cudf::core::error::Result<cudf::DataFrameHashLeftMatchFinalized>
+impl core::fmt::Debug for cudf::DataFrameHashLeftMatchState
+pub fn cudf::DataFrameHashLeftMatchState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for cudf::DataFrameHashLeftMatchState
+impl core::ops::drop::Drop for cudf::DataFrameHashLeftMatchState
+pub fn cudf::DataFrameHashLeftMatchState::drop(&mut self)
 pub struct cudf::DataFrameJoinIndices
 impl cudf::DataFrameJoinIndices
 pub fn cudf::DataFrameJoinIndices::device(&self) -> cudf::runtime::device::DeviceId

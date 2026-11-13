@@ -257,7 +257,10 @@ pub use ops::{
     groupby::{
         AggSpec, GroupBy, GroupByAgg, GroupByOptions, PreparedDataFrameGroupBy, PreparedGroupByFacts, ShiftSpec,
     },
-    join::{DataFrameMixedLeftJoinFinalized, DataFrameMixedLeftJoinState, JoinType, MergeOptions},
+    join::{
+        DataFrameHashLeftMatchFinalized, DataFrameHashLeftMatchState, DataFrameMixedLeftJoinFinalized,
+        DataFrameMixedLeftJoinState, JoinType, MergeOptions,
+    },
     reduction::ReduceAgg,
     replace::FillPolicy,
     sorting::SortOptions,

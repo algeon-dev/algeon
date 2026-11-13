@@ -60,6 +60,7 @@ use crate::exec::bounded::compiled::{
 mod cross;
 mod filtered;
 mod keyless;
+mod left_match;
 mod mixed;
 mod one_shot;
 mod partitioned;
@@ -76,11 +77,11 @@ use filtered::{
     release_compiled_filtered_join_probe_state,
 };
 use keyless::execute_compiled_keyless_join_materialize;
-use mixed::{
-    execute_compiled_mixed_join_materialize, execute_compiled_mixed_join_probe_from_stream,
-    execute_compiled_mixed_left_join_materialize, execute_compiled_mixed_left_join_probe_from_frame_stream,
-    release_compiled_mixed_left_join_probe_state,
+use left_match::{
+    LeftMatchFinalized, execute_compiled_left_match_join_materialize,
+    execute_compiled_left_match_join_probe_from_frame_stream, release_compiled_left_match_join_probe_state,
 };
+use mixed::{execute_compiled_mixed_join_materialize, execute_compiled_mixed_join_probe_from_stream};
 use one_shot::{
     OneShotEquiJoinFrameStreamProbeState, execute_compiled_one_shot_equi_join_materialize,
     execute_compiled_one_shot_equi_join_probe_from_frame_stream, execute_compiled_one_shot_equi_join_probe_from_stream,
@@ -151,7 +152,7 @@ impl BoundedCompiledPartitionedJoinBuildState {
 /// Output of the probe task, consumed by the materialize task.
 ///
 /// Three shapes recur across the strategies. A plain variant (`Hash`,
-/// `Filtered`, `Prepared`, `MixedLeftMatched`) holds gather maps or match
+/// `Filtered`, `Prepared`, `LeftMatched`) holds gather maps or match
 /// state over whole inputs and materializes in one call. A `*Streamed` variant
 /// holds output frames already materialized one probe chunk at a time, plus
 /// the build state only so that materialize can release it. A `*LazyStream`
@@ -170,7 +171,7 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
         outputs: Vec<ResidentGpuFrame>,
     },
     Prepared(BoundedCompiledPreparedJoinProbeState),
-    MixedLeftMatched(BoundedCompiledMixedLeftJoinProbeState),
+    LeftMatched(BoundedCompiledLeftMatchJoinProbeState),
     MixedStreamed {
         build: BoundedCompiledPreparedJoinBuildState,
         outputs: Vec<ResidentGpuFrame>,
@@ -202,14 +203,14 @@ pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinBuildState {
     strategy_options: KeyedHashJoinStrategyOptions,
     side: JoinSide,
     input: BoundedJoinSideFrame,
-    /// A semi or anti join building its left side runs the mixed residual
-    /// join whose probe keeps per-left-row match state.
+    /// A semi or anti join building its left side, whose probe folds every
+    /// right chunk into per-left-row match state.
     left_match: bool,
 }
 
 impl BoundedCompiledPreparedJoinBuildState {
-    fn mixed_left_match(&self) -> bool {
-        self.left_match && self.strategy == JoinStrategy::MixedKeyedResidual
+    fn left_match(&self) -> bool {
+        self.left_match && matches!(self.strategy, JoinStrategy::MixedKeyedResidual | JoinStrategy::HashLeftMatch)
     }
 }
 
@@ -220,12 +221,12 @@ pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinProbeState {
     right: BoundedJoinSideFrame,
 }
 
-/// Semi or anti mixed join after every probe chunk has been folded into
-/// cuDF's left-row match state. `finalized` is the complement over the whole
+/// Semi or anti join building its left side after every probe chunk has been
+/// folded into cuDF's left-row match state. `finalized` selects over the whole
 /// left input, which is why this shape cannot stream its output per chunk.
-pub(in crate::exec::bounded) struct BoundedCompiledMixedLeftJoinProbeState {
+pub(in crate::exec::bounded) struct BoundedCompiledLeftMatchJoinProbeState {
     left: BoundedJoinSideFrame,
-    finalized: cudf::DataFrameMixedLeftJoinFinalized,
+    finalized: LeftMatchFinalized,
     probe_rows: u64,
     probe_bytes: u64,
     state_bytes: u64,
@@ -556,7 +557,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
         | JoinStrategy::KeylessConditional { .. }
         | JoinStrategy::KeylessOuterCross
         | JoinStrategy::ProjectedCross
-        | JoinStrategy::MixedKeyedResidual => {
+        | JoinStrategy::MixedKeyedResidual
+        | JoinStrategy::HashLeftMatch => {
             let side = node.spec.build_side;
             let columns = compiled_join_input_columns(node, strategy, side)?;
             let input = prepare_bounded_join_side_input_from_resident_frame(execution, input, &columns, side)?;
@@ -565,7 +567,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
                 strategy_options,
                 side,
                 input,
-                left_match: form == JoinForm::KeyedResidual { left_match: true },
+                left_match: matches!(form, JoinForm::KeyedResidual { left_match: true } | JoinForm::KeyedLeftMatch),
             }))
         },
     }
@@ -573,7 +575,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
 
 /// Runs the probe task over one resident probe frame.
 ///
-/// Partitioned builds and mixed semi/anti builds are forwarded to the frame
+/// Partitioned builds and left-match semi/anti builds are forwarded to the frame
 /// stream path wrapped as a one-frame stream, so each of those strategies has
 /// one probe implementation. On `Err` the build state has been released.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_resident_frame(
@@ -593,8 +595,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
                 .map(BoundedCompiledJoinProbeState::Filtered)
         },
         BoundedCompiledJoinBuildState::Prepared(build) => {
-            if build.mixed_left_match() {
-                return execute_compiled_mixed_left_join_probe_from_frame_stream(
+            if build.left_match() {
+                return execute_compiled_left_match_join_probe_from_frame_stream(
                     execution,
                     node,
                     build,
@@ -650,7 +652,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     let lazy_probe_supported = match &build {
         BoundedCompiledJoinBuildState::Hash(_) => lazy_output && stateless_streaming_probe_supported(node),
         BoundedCompiledJoinBuildState::Prepared(build) => {
-            build.mixed_left_match()
+            build.left_match()
                 || (lazy_output
                     && stateless_streaming_probe_supported(node)
                     && matches!(build.strategy, JoinStrategy::OneShotEqui | JoinStrategy::PartitionedHashEqui)
@@ -756,8 +758,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
     outer: Option<&AggregateLaneDispatch>,
 ) -> Result<BoundedCompiledJoinProbeState> {
     match build {
-        BoundedCompiledJoinBuildState::Prepared(build) if build.mixed_left_match() => {
-            execute_compiled_mixed_left_join_probe_from_frame_stream(execution, node, build, inputs)
+        BoundedCompiledJoinBuildState::Prepared(build) if build.left_match() => {
+            execute_compiled_left_match_join_probe_from_frame_stream(execution, node, build, inputs)
         },
         BoundedCompiledJoinBuildState::Hash(build) if stateless_streaming_probe_supported(node) => {
             // Reusable build with parallel probe chunks: one table built once,
@@ -905,8 +907,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
         BoundedCompiledJoinProbeState::Prepared(probe) => {
             execute_compiled_prepared_join_materialize(execution, node_id, node, probe)
         },
-        BoundedCompiledJoinProbeState::MixedLeftMatched(probe) => {
-            execute_compiled_mixed_left_join_materialize(execution, node_id, node, probe)
+        BoundedCompiledJoinProbeState::LeftMatched(probe) => {
+            execute_compiled_left_match_join_materialize(execution, node_id, node, probe)
         },
         BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
             release_bounded_join_side_frame(build.input);
@@ -1108,8 +1110,8 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
             release_bounded_join_side_frame(left);
             release_bounded_join_side_frame(right);
         },
-        BoundedCompiledJoinProbeState::MixedLeftMatched(probe) => {
-            release_compiled_mixed_left_join_probe_state(probe);
+        BoundedCompiledJoinProbeState::LeftMatched(probe) => {
+            release_compiled_left_match_join_probe_state(probe);
         },
         BoundedCompiledJoinProbeState::MixedStreamed { build, .. } => {
             release_bounded_join_side_frame(build.input);
@@ -1213,7 +1215,7 @@ fn compiled_join_input_columns(node: &JoinNode, strategy: JoinStrategy, side: Jo
                 side,
             ))
         },
-        JoinStrategy::OneShotEqui | JoinStrategy::PartitionedHashEqui => {
+        JoinStrategy::OneShotEqui | JoinStrategy::PartitionedHashEqui | JoinStrategy::HashLeftMatch => {
             let residual_columns = residual_input_columns(node)?;
             let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
             let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();

@@ -40,6 +40,10 @@ pub enum JoinStrategy {
     /// Keyed join whose residual the cuDF mixed join evaluates while matching,
     /// run over the whole build side at once.
     MixedKeyedResidual,
+    /// Keyed semi or anti join without a residual that builds a hash table
+    /// over its left side, marks the left rows each right chunk matches, and
+    /// selects the marked or unmarked rows after the last chunk.
+    HashLeftMatch,
 }
 
 impl JoinStrategy {
@@ -55,6 +59,7 @@ impl JoinStrategy {
             Self::KeylessOuterCross => "keyless_outer_cross",
             Self::ProjectedCross => "projected_cross",
             Self::MixedKeyedResidual => "mixed_keyed_residual",
+            Self::HashLeftMatch => "hash_left_match",
         }
     }
 }

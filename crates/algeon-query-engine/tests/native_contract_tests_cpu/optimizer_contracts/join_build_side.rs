@@ -115,6 +115,55 @@ fn native_optimizer_flips_left_anti_keyed_residual_join_to_small_left_build_side
 }
 
 #[test]
+fn native_optimizer_flips_residual_free_semi_anti_join_to_small_left_build_side() {
+    for join_type in [JoinType::LeftSemi, JoinType::LEFT_ANTI] {
+        let plan = estimated_semi_anti_join_plan(
+            join_type.clone(),
+            None,
+            JoinSide::Right,
+            16 * 1024 * 1024,
+            100_000,
+            256 * 1024 * 1024,
+            10_000_000,
+        );
+
+        let result = optimize_query_plan(
+            plan,
+            &NativeOptimizerOptions::default(),
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap();
+
+        let selection = &result.diagnostics.join_build_side_selection;
+        assert_eq!((selection.considered_count, selection.applied_count), (1, 1), "{join_type}");
+        assert_eq!(selection.candidates[0].selection_basis, Some(JoinBuildSideSelectionBasis::ConservativeBytes));
+        assert_eq!(root_join_build_side(&result.plan), JoinSide::Left, "{join_type}");
+    }
+
+    // `NOT IN` reads the nulls and emptiness of the whole right side, which
+    // only the right-building filtered executor implements.
+    let null_aware = estimated_semi_anti_join_plan(
+        JoinType::LeftAnti { null_aware: true },
+        None,
+        JoinSide::Right,
+        16 * 1024 * 1024,
+        100_000,
+        256 * 1024 * 1024,
+        10_000_000,
+    );
+    let result = optimize_query_plan(
+        null_aware,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+    assert_eq!(result.diagnostics.join_build_side_selection.considered_count, 0);
+    assert_eq!(root_join_build_side(&result.plan), JoinSide::Right);
+}
+
+#[test]
 fn join_build_side_selection_keeps_residual_semi_anti_join_when_sizes_do_not_improve_it() {
     for join_type in [JoinType::LeftSemi, JoinType::LEFT_ANTI] {
         let plan = estimated_semi_anti_residual_join_plan(
@@ -1147,6 +1196,23 @@ fn estimated_semi_anti_residual_join_plan(
     right_bytes: u64,
     right_rows: u64,
 ) -> QueryPlan {
+    let residual = Expr::binary(
+        Expr::input_column(0, "left_payload", "left_payload"),
+        BinaryOp::Gt,
+        Expr::input_column(1, "right_payload", "right_payload"),
+    );
+    estimated_semi_anti_join_plan(join_type, Some(residual), build_side, left_bytes, left_rows, right_bytes, right_rows)
+}
+
+fn estimated_semi_anti_join_plan(
+    join_type: JoinType,
+    residual: Option<Expr>,
+    build_side: JoinSide,
+    left_bytes: u64,
+    left_rows: u64,
+    right_bytes: u64,
+    right_rows: u64,
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(estimated_local_source_with_fields(
         "left_semi_anti_residual",
@@ -1160,29 +1226,18 @@ fn estimated_semi_anti_residual_join_plan(
         right_bytes,
         right_rows,
     ));
-    let join = builder
-        .add_join(
-            left,
-            right,
-            JoinSpec::new(
-                join_type,
-                vec![JoinKey::new(
-                    ColumnRef::input(0, "left_key", "left_key"),
-                    ColumnRef::input(1, "right_key", "right_key"),
-                )],
-            )
-            .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, "left_payload", "left_payload"),
-                BinaryOp::Gt,
-                Expr::input_column(1, "right_payload", "right_payload"),
-            ))
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "left_key", "left_key"), "left_key"),
-                JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
-            ])
-            .with_build_side(build_side),
-            schema(&["left_key", "left_payload"]),
-        )
-        .unwrap();
+    let mut spec = JoinSpec::new(
+        join_type,
+        vec![JoinKey::new(ColumnRef::input(0, "left_key", "left_key"), ColumnRef::input(1, "right_key", "right_key"))],
+    )
+    .with_output_projection(vec![
+        JoinOutputColumn::left(ColumnRef::input(0, "left_key", "left_key"), "left_key"),
+        JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
+    ])
+    .with_build_side(build_side);
+    if let Some(residual) = residual {
+        spec = spec.with_residual_predicate(residual);
+    }
+    let join = builder.add_join(left, right, spec, schema(&["left_key", "left_payload"])).unwrap();
     builder.finish_gpu_resident(join).unwrap()
 }

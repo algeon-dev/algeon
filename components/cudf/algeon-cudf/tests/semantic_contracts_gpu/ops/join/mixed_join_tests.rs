@@ -99,6 +99,63 @@ fn mixed_left_state_nulls_empty_inputs_and_zero_batches_obey_semi_anti_semantics
     }
 }
 
+fn hash_left_match_state_marks_duplicate_and_late_matches_across_streams() {
+    let rt = Runtime::new().unwrap();
+    let probe_rt = Runtime::builder().with_stream(CudaStream::new().unwrap()).build().unwrap();
+    let left = DataFrame::from_series([("key", rt.series(&[1i32, 1, 2, 3, 4]).unwrap())]).unwrap();
+    let ctx = Exec::RETAINED;
+    for anti in [false, true] {
+        let mut state =
+            cudf::DataFrameHashLeftMatchState::new(&left, DataFrameJoinOptions::new().on(["key"]), ctx).unwrap();
+        let retained = state.device_allocated_size_bytes().unwrap();
+        assert!(retained >= left.num_rows(), "the match flags alone take one byte per left row");
+        for keys in [&[1i32, 1, 9][..], &[][..], &[1, 3, 3][..]] {
+            let batch = DataFrame::from_series([("key", probe_rt.series(keys).unwrap())]).unwrap();
+            state.consume(&batch).unwrap();
+            drop(batch);
+            assert_eq!(state.device_allocated_size_bytes().unwrap(), retained, "per-batch indices are not retained");
+        }
+        let finalized = state.seal(anti).unwrap();
+        let expected = if anti { vec![2, 4] } else { vec![0, 1, 3] };
+        assert_eq!(finalized.output_size(), expected.len());
+        let indices = finalized.materialize_indices().unwrap();
+        drop(finalized);
+        assert_eq!(indices.indices().to_vec_strict::<i32>().unwrap(), expected, "indices ascend in left order");
+    }
+}
+
+fn hash_left_match_state_nulls_and_empty_inputs_obey_semi_anti_semantics() {
+    let rt = Runtime::new().unwrap();
+    let ctx = Exec::RETAINED;
+    let left = DataFrame::from_series([("key", rt.series_opt(&[None, Some(1i32), Some(2), None]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("key", rt.series_opt(&[None, Some(2i32)]).unwrap())]).unwrap();
+    for nulls in [NullEquality::Equal, NullEquality::Unequal] {
+        for anti in [false, true] {
+            let options = DataFrameJoinOptions::new().on(["key"]).null_equality(nulls);
+            let mut state = cudf::DataFrameHashLeftMatchState::new(&left, options, ctx).unwrap();
+            state.consume(&right).unwrap();
+            let expected: Vec<i32> = (0..4)
+                .filter(|row| {
+                    let matched = *row == 2 || ((*row == 0 || *row == 3) && nulls == NullEquality::Equal);
+                    matched != anti
+                })
+                .collect();
+            let finalized = state.seal(anti).unwrap();
+            assert_eq!(finalized.materialize_indices().unwrap().indices().to_vec_strict::<i32>().unwrap(), expected);
+        }
+    }
+    let empty = DataFrame::from_series([("key", rt.series(&[] as &[i32]).unwrap())]).unwrap();
+    for anti in [false, true] {
+        let mut state =
+            cudf::DataFrameHashLeftMatchState::new(&empty, DataFrameJoinOptions::new().on(["key"]), ctx).unwrap();
+        state.consume(&right).unwrap();
+        assert!(state.seal(anti).unwrap().materialize_indices().unwrap().is_empty());
+        let unconsumed =
+            cudf::DataFrameHashLeftMatchState::new(&left, DataFrameJoinOptions::new().on(["key"]), ctx).unwrap();
+        assert_eq!(unconsumed.seal(anti).unwrap().output_size(), if anti { 4 } else { 0 });
+    }
+}
+
 fn left_less_than_right() -> AstExpression {
     AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap()
 }
@@ -784,6 +841,14 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "mixed_join_tests::mixed_left_state_nulls_empty_inputs_and_zero_batches_obey_semi_anti_semantics",
         mixed_left_state_nulls_empty_inputs_and_zero_batches_obey_semi_anti_semantics,
+    ),
+    (
+        "mixed_join_tests::hash_left_match_state_marks_duplicate_and_late_matches_across_streams",
+        hash_left_match_state_marks_duplicate_and_late_matches_across_streams,
+    ),
+    (
+        "mixed_join_tests::hash_left_match_state_nulls_and_empty_inputs_obey_semi_anti_semantics",
+        hash_left_match_state_nulls_and_empty_inputs_obey_semi_anti_semantics,
     ),
     (
         "mixed_join_tests::filter_join_indices_rejects_non_int32_index_columns",
