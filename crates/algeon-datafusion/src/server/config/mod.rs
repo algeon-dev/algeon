@@ -15,13 +15,16 @@ use super::{
     auth::{AuthConfig, AuthMode},
     error::{Result, ServerError},
 };
-use crate::server::{
-    backend::{AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuMemoryOwnership},
-    coordinator::QueryCoordinatorConfig,
-    cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
-    cuml_sql::CumlModelStoreConfig,
-    native_exec::{AlgeonNativeExecutionConfig, S3SourceStorageProfile, SourceChunking},
-    planner::AlgeonNativeOptimizerConfig,
+use crate::{
+    server::{
+        backend::{AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuMemoryOwnership},
+        coordinator::QueryCoordinatorConfig,
+        cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
+        cuml_sql::CumlModelStoreConfig,
+        native_exec::{AlgeonNativeExecutionConfig, S3SourceStorageProfile, SourceChunking},
+        planner::AlgeonNativeOptimizerConfig,
+    },
+    session::RECOMMENDED_METADATA_CACHE_LIMIT_BYTES,
 };
 
 mod admission;
@@ -153,6 +156,12 @@ pub struct ServerConfig {
     ///
     /// [`FlightSqlServerBuilder::build`]: crate::server::FlightSqlServerBuilder::build
     pub init_sql: Option<PathBuf>,
+    /// Limit, in bytes of host memory, of the DataFusion file metadata cache
+    /// in the server's session, from `metadata_cache_limit_bytes`. The cache
+    /// is charged for decoded Parquet footers; a footer larger than the limit
+    /// is decoded again on every planning pass. Defaults to
+    /// [`RECOMMENDED_METADATA_CACHE_LIMIT_BYTES`], 1 GiB. Loading rejects zero.
+    pub metadata_cache_limit_bytes: usize,
     /// Iceberg catalogs from the `[[iceberg.catalogs]]` array, in file order.
     /// Loading requires `[s3]` when any entry is present and rejects
     /// duplicate names and the name `datafusion`.
@@ -219,6 +228,11 @@ impl ServerConfig {
                 file.http2_keepalive_timeout_secs.unwrap_or(keepalive_defaults.timeout.as_secs()),
             )?,
         };
+        let metadata_cache_limit_bytes =
+            file.metadata_cache_limit_bytes.unwrap_or(RECOMMENDED_METADATA_CACHE_LIMIT_BYTES);
+        if metadata_cache_limit_bytes == 0 {
+            return Err(sources.invalid("metadata_cache_limit_bytes", "must be greater than zero"));
+        }
         let queue_policy = server_queue_policy(&file.admission, sources)?;
         let (gpu_device_profiles, device_profiles_defaulted) = server_device_profiles(&file.admission)?;
         let observability = server_observability_config(&file.observability, sources)?;
@@ -247,6 +261,7 @@ impl ServerConfig {
             data_root,
             tls,
             init_sql,
+            metadata_cache_limit_bytes,
             iceberg_catalogs,
         };
         config.validate_gpu_device_profiles()?;

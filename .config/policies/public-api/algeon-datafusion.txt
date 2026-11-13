@@ -2041,6 +2041,7 @@ pub algeon_datafusion::server::ServerConfig::gpu_memory_ownership: alloc::vec::V
 pub algeon_datafusion::server::ServerConfig::http2_keepalive: algeon_datafusion::server::Http2Keepalive
 pub algeon_datafusion::server::ServerConfig::iceberg_catalogs: alloc::vec::Vec<algeon_datafusion::server::ServerIcebergCatalogConfig>
 pub algeon_datafusion::server::ServerConfig::init_sql: core::option::Option<std::path::PathBuf>
+pub algeon_datafusion::server::ServerConfig::metadata_cache_limit_bytes: usize
 pub algeon_datafusion::server::ServerConfig::models: core::option::Option<algeon_datafusion::cuml_sql::CumlModelStoreConfig>
 pub algeon_datafusion::server::ServerConfig::native_optimizer_config: algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub algeon_datafusion::server::ServerConfig::observability: algeon_datafusion::server::ServerObservabilityConfig
@@ -2143,6 +2144,7 @@ impl datafusion_session::planner::QueryPlanner for algeon_datafusion::session::A
 pub fn algeon_datafusion::session::AlgeonQueryPlanner::create_physical_plan<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 datafusion_expr::logical_plan::plan::LogicalPlan, &'life2 dyn datafusion_session::session::Session) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub const algeon_datafusion::session::ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str
 pub const algeon_datafusion::session::ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str
+pub const algeon_datafusion::session::RECOMMENDED_METADATA_CACHE_LIMIT_BYTES: usize
 pub trait algeon_datafusion::session::AlgeonSessionStateBuilderExt
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::try_with_cugraph_sql(self, algeon_datafusion::cugraph_sql::CugraphSqlConfig) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::try_with_cuml_sql(self) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
