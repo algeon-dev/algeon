@@ -36,6 +36,16 @@ impl MemoryControlPolicy {
     pub const DEFAULT_MAX_RETRY_ATTEMPTS: usize = 3;
     /// Default minimum retry chunk of one row group.
     pub const DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
+    /// Divisor of the device budget that bounds device state an attempt keeps
+    /// resident while it streams other inputs past it. The other three
+    /// quarters stay for the chunks, intermediates and outputs that stream.
+    pub const RETAINED_STATE_BUDGET_DIVISOR: u64 = 4;
+
+    /// Bytes of a `device_budget_bytes` budget that retained device state may
+    /// occupy: one [`Self::RETAINED_STATE_BUDGET_DIVISOR`]th of it.
+    pub const fn retained_state_share_bytes(device_budget_bytes: u64) -> u64 {
+        device_budget_bytes / Self::RETAINED_STATE_BUDGET_DIVISOR
+    }
 
     /// Rejects a zero in any field; the error names the field in its `field`
     /// fact. Zero is not a "disabled" value here, since each field bounds a

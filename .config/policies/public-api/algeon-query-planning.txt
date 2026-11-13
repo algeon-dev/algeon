@@ -875,6 +875,8 @@ pub const query_planning::execution_contracts::MemoryControlPolicy::DEFAULT_MAX_
 pub const query_planning::execution_contracts::MemoryControlPolicy::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK: usize
 pub const query_planning::execution_contracts::MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES: u64
 pub const query_planning::execution_contracts::MemoryControlPolicy::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: usize
+pub const query_planning::execution_contracts::MemoryControlPolicy::RETAINED_STATE_BUDGET_DIVISOR: u64
+pub const fn query_planning::execution_contracts::MemoryControlPolicy::retained_state_share_bytes(u64) -> u64
 pub fn query_planning::execution_contracts::MemoryControlPolicy::validate(self) -> query_planning::error::Result<()>
 impl core::convert::From<query_planning::execution_contracts::MemoryControlPolicy> for query_planning::chunk::SourceChunkPlanningPolicy
 pub fn query_planning::chunk::SourceChunkPlanningPolicy::from(query_planning::execution_contracts::MemoryControlPolicy) -> Self
@@ -1373,6 +1375,11 @@ pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::Multi
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::NonColumnAggregateArgument
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::NonDecomposableAggregate
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::UnresolvedSchema
+pub enum query_planning::optimizer::StreamFanoutReplayRejectedReason
+pub query_planning::optimizer::StreamFanoutReplayRejectedReason::NotReachableFromSink
+pub query_planning::optimizer::StreamFanoutReplayRejectedReason::ResidualConsumerBelowLimits
+pub query_planning::optimizer::StreamFanoutReplayRejectedReason::ResidualConsumerBudgetUnknown
+pub query_planning::optimizer::StreamFanoutReplayRejectedReason::ResidualConsumerUnestimated
 pub struct query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics
 pub query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics::aggregate_node_id: query_planning::plan::NodeId
 pub query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics::applied: bool
@@ -1722,6 +1729,7 @@ pub fn query_planning::optimizer::SingleDistinctAggregateSplitOptions::default()
 pub struct query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::applied: bool
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::consumer_count: usize
+pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::rejected_reason: core::option::Option<query_planning::optimizer::StreamFanoutReplayRejectedReason>
 pub struct query_planning::optimizer::StreamFanoutReplayDiagnostics
 pub query_planning::optimizer::StreamFanoutReplayDiagnostics::applied_count: usize
 pub query_planning::optimizer::StreamFanoutReplayDiagnostics::candidates: alloc::vec::Vec<query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics>
@@ -1729,6 +1737,7 @@ pub query_planning::optimizer::StreamFanoutReplayDiagnostics::considered_count: 
 impl query_planning::optimizer::StreamFanoutReplayDiagnostics
 pub fn query_planning::optimizer::StreamFanoutReplayDiagnostics::is_empty(&self) -> bool
 pub struct query_planning::optimizer::StreamFanoutReplayOptions
+pub query_planning::optimizer::StreamFanoutReplayOptions::device_budget_bytes: core::option::Option<u64>
 pub query_planning::optimizer::StreamFanoutReplayOptions::enabled: bool
 impl query_planning::optimizer::StreamFanoutReplayOptions
 pub fn query_planning::optimizer::StreamFanoutReplayOptions::disabled() -> Self

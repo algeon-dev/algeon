@@ -226,6 +226,11 @@ impl InvocationAttempt {
         self.state.query_id.as_ref()
     }
 
+    /// Exact device cap the attempt owner requested, if any.
+    pub(crate) fn query_cap_bytes(&self) -> Option<u64> {
+        self.state.query_cap_bytes
+    }
+
     /// The attempt's cancellation token observed by native work of this invocation.
     pub(crate) fn cancellation(&self) -> &AttemptCancellation {
         &self.state.cancellation

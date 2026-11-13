@@ -373,14 +373,23 @@ impl AlgeonGpuBackend {
             .map(|record| record.facts.total_bytes)
             .max()
             .expect("a published backend has a startup record for each validated device");
+        let min_default_query_grant_bytes = core
+            .device_startup_records()
+            .iter()
+            .map(|record| record.resource_profile.default_query_limit_bytes)
+            .min()
+            .expect("a published backend has a startup record for each validated device");
         // Keep this as the unadmitted planning template. Every execution
         // context is materialized from the device selected by the per-device
         // ledger and its immutable grant.
-        let execution_config = validated
-            .optimizer_config
-            .native_execution_config()
-            .clone()
-            .with_query_admission_source(QueryAdmissionSource::new(session.clone(), max_device_total_memory_bytes));
+        let execution_config =
+            validated.optimizer_config.native_execution_config().clone().with_query_admission_source(
+                QueryAdmissionSource::new(
+                    session.clone(),
+                    max_device_total_memory_bytes,
+                    min_default_query_grant_bytes,
+                ),
+            );
         let optimizer_config = validated.optimizer_config.with_native_execution_config(execution_config);
         Ok(AlgeonGpuBackend { core, session, optimizer_config, devices, queue_policy: validated.queue_policy })
     }

@@ -10,14 +10,16 @@ use local_parquet_source_reuse::{
 use query_engine::{
     dimension_pruning::local_dimension_pruning_resolver,
     exec::{admit_query_plan, preflight_query_plan},
-    rapids_backend::rapids_analysis_context,
+    rapids_backend::{rapids_analysis_context, rapids_backend},
 };
 use query_planning::{
+    backend::BackendCapabilities,
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
         DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
     },
     error::QueryErrorCode,
+    execution_contracts::MemoryControlPolicy,
     expr::GroupingSetsSpec,
     mode::StatisticalAggregateExecutionMode,
     optimizer::{
@@ -43,9 +45,10 @@ use query_planning::{
         SharedResidentExtractionDecision, SharedResidentExtractionDiagnostics, SharedResidentExtractionReason,
         SharedResidentPlan, SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions,
         SharedSubplanMaterializationRejectedReason, SingleDistinctAggregateSplitDiagnostics,
-        SingleDistinctAggregateSplitOptions, StreamFanoutReplayDiagnostics, apply_dimension_derived_pruning_with_stats,
-        dimension_key_filter_from_batch, discover_dimension_derived_pruning_requests, local_parquet_source,
-        optimize_query_plan, seed_dimension_derived_reader_predicates,
+        SingleDistinctAggregateSplitOptions, StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions,
+        StreamFanoutReplayRejectedReason, apply_dimension_derived_pruning_with_stats, dimension_key_filter_from_batch,
+        discover_dimension_derived_pruning_requests, local_parquet_source, optimize_query_plan,
+        seed_dimension_derived_reader_predicates,
     },
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
