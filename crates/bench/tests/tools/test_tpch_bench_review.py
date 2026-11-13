@@ -16,7 +16,8 @@ BASE_COLUMNS = [
     "cpu_runtime_started", "native_runtime_started", "runtime_outcome",
     "cpu_failure_code", "runtime_failure_code", "runtime_failure_kind",
     "runtime_failure_operation", "runtime_failure_facts", "parity_status",
-    "cpu_wall_ms", "native_wall_ms", "cpu_wall_ms_samples", "native_wall_ms_samples",
+    "cpu_wall_ms", "native_wall_ms", "cpu_planning_ms", "native_planning_ms",
+    "cpu_execution_ms", "native_execution_ms", "cpu_wall_ms_samples", "native_wall_ms_samples",
     "speedup_vs_cpu", "resident_dataframe_peak_bytes", "allocator_high_water_bytes",
     "max_task_observed_peak_bytes", "max_task_retained_bytes",
     "runtime_operator_class", "retry_count", "retry_resource_exhausted_count",
@@ -39,6 +40,8 @@ DEFAULTS = {
     "planning_outcome": "selected", "post_native_execution_path": "native",
     "runtime_outcome": "succeeded", "parity_status": "matched",
     "cpu_wall_ms": "not_run", "native_wall_ms": "not_run", "speedup_vs_cpu": "not_run",
+    "cpu_planning_ms": "not_run", "native_planning_ms": "not_run",
+    "cpu_execution_ms": "not_run", "native_execution_ms": "not_run",
     "cpu_wall_ms_samples": "not_run", "native_wall_ms_samples": "not_run",
 }
 
@@ -59,10 +62,11 @@ def make_row(**overrides):
     return row
 
 
-def write_tsv(path, rows):
-    lines = ["\t".join(BASE_COLUMNS)]
+def write_tsv(path, rows, boundary="sql_planning_and_collect", columns=BASE_COLUMNS):
+    lines = [f"# tpch_benchmark_wall_time_boundary={boundary}"] if boundary else []
+    lines.append("\t".join(columns))
     for row in rows:
-        lines.append("\t".join(row.get(c, "") for c in BASE_COLUMNS))
+        lines.append("\t".join(row.get(c, "") for c in columns))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -253,6 +257,30 @@ class TpchBenchReviewTest(unittest.TestCase):
         ]
         records, summary = module.summarize({}, rows, 2.0)
         self.assertEqual(records[0]["rt"], "started")
+
+    def test_flagged_detail_splits_gpu_planning_and_execution(self) -> None:
+        module = load_module()
+        rows = [
+            make_row(query_id="q01", parity_status="mismatched", cpu_wall_ms="20", native_wall_ms="5",
+                     speedup_vs_cpu="4", native_planning_ms="1.5", native_execution_ms="3.5"),
+        ]
+        records, _ = module.summarize({}, rows, 2.0)
+        self.assertEqual((records[0]["plan"], records[0]["exec"]), (1.5, 3.5))
+        self.assertIn("plan=1.5ms exec=3.5ms", module.flagged_detail_text(records[0]))
+
+    def test_tsv_without_planning_boundary_or_split_columns_is_rejected(self) -> None:
+        rows = [make_row(query_id="q01", cpu_wall_ms="20", native_wall_ms="5", speedup_vs_cpu="4")]
+        old_columns = [c for c in BASE_COLUMNS if c not in
+                       ("cpu_planning_ms", "native_planning_ms", "cpu_execution_ms", "native_execution_ms")]
+        with tempfile.TemporaryDirectory() as tmp:
+            no_boundary = Path(tmp) / "no_boundary.tsv"
+            write_tsv(no_boundary, rows, boundary=None)
+            no_columns = Path(tmp) / "no_columns.tsv"
+            write_tsv(no_columns, rows, columns=old_columns)
+            for tsv in (no_boundary, no_columns):
+                result = run_tool(tsv, "--pretty", "never")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("tpch_benchmark_wall_time_boundary=sql_planning_and_collect", result.stderr)
 
 
 if __name__ == "__main__":

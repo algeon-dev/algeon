@@ -14,7 +14,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal, Sequence
+from typing import BinaryIO, Iterable, Literal, Sequence
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -836,33 +836,74 @@ def thrift_struct(buf: bytes, pos: int) -> tuple[dict[int, object], int]:
         fields[field_id], pos = thrift_value(buf, pos, kind)
 
 
+def read_footer(handle: BinaryIO) -> dict[int, object]:
+    """Decode the footer's FileMetaData struct; field ids follow parquet.thrift (row_groups=4)."""
+    handle.seek(-8, os.SEEK_END)
+    tail = handle.read(8)
+    if tail[4:] != b"PAR1":
+        raise RuntimeError(f"{handle.name} does not end with the Parquet magic")
+    footer_length = int.from_bytes(tail[:4], "little")
+    handle.seek(-8 - footer_length, os.SEEK_END)
+    footer, _ = thrift_struct(handle.read(footer_length), 0)
+    return footer
+
+
+def offset_index_page_rows(handle: BinaryIO, chunk: dict[int, object], rg_rows: int) -> list[int] | None:
+    """Rows of each data page in a column chunk, or None when the chunk has no OffsetIndex.
+
+    ColumnChunk.offset_index_offset=4 and offset_index_length=5, OffsetIndex.page_locations=1,
+    PageLocation.first_row_index=3.
+    """
+    if 4 not in chunk or 5 not in chunk:
+        return None
+    handle.seek(chunk[4])
+    offset_index, _ = thrift_struct(handle.read(chunk[5]), 0)
+    first_rows = [location[3] for location in offset_index[1]] + [rg_rows]
+    return [end - start for start, end in zip(first_rows, first_rows[1:])]
+
+
+def page_header_rows(handle: BinaryIO, meta: dict[int, object]) -> list[int]:
+    """Rows of each data page in a flat column chunk, read from the page headers.
+
+    ColumnMetaData.total_compressed_size=7, data_page_offset=9 and dictionary_page_offset=11;
+    PageHeader.compressed_page_size=3, data_page_header=5 (num_values=1) and
+    data_page_header_v2=8 (num_rows=3). A dictionary or index page has neither header.
+    """
+    pos = min(offset for offset in (meta.get(9), meta.get(11)) if offset)
+    end = pos + meta[7]
+    rows: list[int] = []
+    while pos < end:
+        read = 1024
+        while True:
+            handle.seek(pos)
+            try:
+                header, header_length = thrift_struct(handle.read(read), 0)
+                break
+            except IndexError:
+                read *= 4
+        if 5 in header:
+            rows.append(header[5][1])
+        elif 8 in header:
+            rows.append(header[8][3])
+        pos += header_length + header[3]
+    return rows
+
+
 def verify_page_row_limit(file: Path, limit: int) -> None:
     """Check from the offset index that every data page holds at most `limit` rows.
 
     pyarrow does not expose the page index, so the footer and each column chunk's
     OffsetIndex are decoded here. Field ids follow parquet.thrift: FileMetaData.row_groups=4,
-    RowGroup.columns=1 and num_rows=3, ColumnChunk.meta_data=3, offset_index_offset=4 and
-    offset_index_length=5, ColumnMetaData.path_in_schema=3, OffsetIndex.page_locations=1,
-    PageLocation.first_row_index=3.
+    RowGroup.columns=1 and num_rows=3, ColumnChunk.meta_data=3, ColumnMetaData.path_in_schema=3.
     """
     with open(file, "rb") as handle:
-        handle.seek(-8, os.SEEK_END)
-        tail = handle.read(8)
-        if tail[4:] != b"PAR1":
-            raise RuntimeError(f"{file} does not end with the Parquet magic")
-        footer_length = int.from_bytes(tail[:4], "little")
-        handle.seek(-8 - footer_length, os.SEEK_END)
-        footer, _ = thrift_struct(handle.read(footer_length), 0)
+        footer = read_footer(handle)
         for rg_index, row_group in enumerate(footer[4]):
-            rg_rows = row_group[3]
             for chunk in row_group[1]:
                 column = ".".join(part.decode() for part in chunk[3][3])
-                if 4 not in chunk or 5 not in chunk:
+                page_rows = offset_index_page_rows(handle, chunk, row_group[3])
+                if page_rows is None:
                     raise RuntimeError(f"{file} row_group={rg_index} column={column} has no offset index")
-                handle.seek(chunk[4])
-                offset_index, _ = thrift_struct(handle.read(chunk[5]), 0)
-                first_rows = [location[3] for location in offset_index[1]] + [rg_rows]
-                page_rows = [end - start for start, end in zip(first_rows, first_rows[1:])]
                 if not page_rows or max(page_rows) > limit or min(page_rows) <= 0:
                     raise RuntimeError(
                         f"{file} row_group={rg_index} column={column} has {len(page_rows)} data pages of "
@@ -894,6 +935,139 @@ def verify_sorted_row_groups(file: Path, metadata: pq.FileMetaData, sort_keys: S
         if previous_max is not None and previous_max > stats.min:
             raise RuntimeError(f"{file} row groups are not monotonic on {key}: {previous_max!r} > {stats.min!r}")
         previous_max = stats.max
+
+
+def distribution(values: Iterable[int]) -> dict[str, int]:
+    """Minimum, lower median and maximum of `values`; the median is an observed value."""
+    ordered = sorted(values)
+    return {"min": ordered[0], "median": ordered[(len(ordered) - 1) // 2], "max": ordered[-1]}
+
+
+def histogram_median_max(histogram: dict[int, int]) -> dict[str, int]:
+    """Lower median and maximum of the values counted in `histogram`."""
+    target = (sum(histogram.values()) - 1) // 2
+    seen = 0
+    for value in sorted(histogram):
+        seen += histogram[value]
+        if seen > target:
+            return {"median": value, "max": max(histogram)}
+    raise ValueError("empty histogram")
+
+
+def non_overlapping_columns(metadata: pq.FileMetaData) -> list[str]:
+    """Columns whose row-group [min, max] ranges are pairwise disjoint apart from shared bounds.
+
+    A column that holds one value in the whole file, or lacks statistics in any row group
+    that has non-null rows, is not listed.
+    """
+    if metadata.num_row_groups < 2:
+        return []
+    names = metadata.schema.to_arrow_schema().names
+    columns = []
+    for index, name in enumerate(names):
+        ranges = []
+        for rg_index in range(metadata.num_row_groups):
+            row_group = metadata.row_group(rg_index)
+            stats = row_group.column(index).statistics
+            if stats is not None and stats.has_min_max:
+                ranges.append((stats.min, stats.max))
+            elif stats is None or stats.null_count != row_group.num_rows:
+                ranges = []
+                break
+        if len(ranges) < 2 or min(low for low, _ in ranges) == max(high for _, high in ranges):
+            continue
+        ranges.sort()
+        if all(previous[1] <= following[0] for previous, following in zip(ranges, ranges[1:])):
+            columns.append(name)
+    return columns
+
+
+def describe_table_file(file: Path) -> dict[str, object]:
+    """Measure one Parquet file from its footer, OffsetIndex and page headers."""
+    metadata = pq.ParquetFile(file).metadata
+    page_rows_histogram: dict[int, int] = {}
+    pages_from_offset_index = pages_from_headers = 0
+    dictionary_chunks = column_chunks = 0
+    codecs: set[str] = set()
+    with open(file, "rb") as handle:
+        footer = read_footer(handle)
+        for rg_index, row_group in enumerate(footer[4]):
+            for col_index, chunk in enumerate(row_group[1]):
+                column_chunks += 1
+                column = metadata.row_group(rg_index).column(col_index)
+                codecs.add(column.compression.upper())
+                dictionary_chunks += column.has_dictionary_page
+                page_rows = offset_index_page_rows(handle, chunk, row_group[3])
+                if page_rows is not None:
+                    pages_from_offset_index += len(page_rows)
+                else:
+                    page_rows = page_header_rows(handle, chunk[3])
+                    pages_from_headers += len(page_rows)
+                if sum(page_rows) != row_group[3]:
+                    raise RuntimeError(f"{file} row_group={rg_index} column={col_index} pages hold {sum(page_rows)} rows, expected {row_group[3]}")
+                for rows in page_rows:
+                    page_rows_histogram[rows] = page_rows_histogram.get(rows, 0) + 1
+    row_groups = [metadata.row_group(index) for index in range(metadata.num_row_groups)]
+    if pages_from_offset_index and pages_from_headers:
+        page_source = "mixed"
+    else:
+        page_source = "offset_index" if pages_from_offset_index else "page_headers"
+    return {
+        "file": file.name,
+        "bytes": file.stat().st_size,
+        "rows": metadata.num_rows,
+        "columns": metadata.num_columns,
+        "createdBy": metadata.created_by,
+        "rowGroups": metadata.num_row_groups,
+        "rowGroupRows": distribution(group.num_rows for group in row_groups),
+        "rowGroupUncompressedBytes": distribution(group.total_byte_size for group in row_groups),
+        "dataPages": pages_from_offset_index + pages_from_headers,
+        "rowsPerPage": histogram_median_max(page_rows_histogram),
+        "pageSource": page_source,
+        "codecs": sorted(codecs),
+        "dictionaryChunks": dictionary_chunks,
+        "columnChunks": column_chunks,
+        "nonOverlappingColumns": non_overlapping_columns(metadata),
+    }
+
+
+def describe_layout(parquet_dir: Path) -> dict[str, object]:
+    """Describe a fixture directory written by `optimize_layout` and check it against its manifest.
+
+    The result carries the manifest text of `_generation.json`, the partitioning derived
+    from the directory contents, and the measurements of each table file. A mismatch
+    between the manifest and the footers (table set, files per table, codec, writer
+    version, page row limit, sort order) raises RuntimeError.
+    """
+    manifest = json.loads((parquet_dir / "_generation.json").read_text())
+    expected_tables = [table["name"] for table in manifest["tables"]]
+    entries = sorted(path for path in parquet_dir.iterdir())
+    files = [path for path in entries if path.is_file() and path.suffix == ".parquet"]
+    directories = [path.name for path in entries if path.is_dir()]
+    if sorted(path.stem for path in files) != sorted(expected_tables) or len(files) != len(set(path.stem for path in files)):
+        raise RuntimeError(f"{parquet_dir} holds {[path.name for path in files]}; the manifest lists one file for each of {expected_tables}")
+    if directories or not str(manifest["layout"]).startswith("single_file_per_table"):
+        raise RuntimeError(f"{parquet_dir} is not one file per table without subdirectories: layout={manifest['layout']} directories={directories}")
+    tables = {path.stem: describe_table_file(path) for path in files}
+    sorted_layout = manifest["layout"].endswith("sorted_row_groups")
+    for table in manifest["tables"]:
+        measured = tables[table["name"]]
+        file = parquet_dir / measured["file"]
+        if measured["codecs"] != [str(manifest["compression"]).upper()]:
+            raise RuntimeError(f"{file} codecs {measured['codecs']} differ from manifest compression {manifest['compression']}")
+        if manifest.get("writer") == "spark":
+            if parquet_java_version(file) != manifest["parquet_java_version"]:
+                raise RuntimeError(f"{file} was written by parquet-java {parquet_java_version(file)}, manifest says {manifest['parquet_java_version']}")
+            limit = manifest["parquet_page_row_count_limit"]
+            if measured["pageSource"] != "offset_index" or measured["rowsPerPage"]["max"] > limit:
+                raise RuntimeError(f"{file} has pages of up to {measured['rowsPerPage']['max']} rows, manifest limit is {limit}")
+        if sorted_layout:
+            verify_sorted_row_groups(file, pq.ParquetFile(file).metadata, table["sort_keys"])
+    return {
+        "generation": manifest,
+        "partitioning": {"kind": "single_file_per_table", "fileCount": len(files), "hiveKeys": []},
+        "tables": tables,
+    }
 
 
 def print_summary(output_dirs: Iterable[Path]) -> None:

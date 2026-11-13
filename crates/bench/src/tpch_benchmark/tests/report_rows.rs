@@ -31,6 +31,10 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
         parity_status: validation::ParityStatus::Matched,
         cpu_wall_ms: Some(20.0),
         native_wall_ms: Some(5.0),
+        cpu_planning_ms: Some(1.0),
+        native_planning_ms: Some(1.0),
+        cpu_execution_ms: Some(19.0),
+        native_execution_ms: Some(4.0),
         cpu_wall_ms_samples: vec![20.0],
         native_wall_ms_samples: vec![5.0],
         speedup_vs_cpu: Some(4.0),
@@ -288,7 +292,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
         "q01\tselected\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
     ));
     assert!(text.contains(
-        "\t20.000\t5.000\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
+        "\t20.000\t5.000\t1.000\t1.000\t19.000\t4.000\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
     ));
     assert!(text.contains("\t65\t66\tnode_id=g0,algorithm=pagerank,runtime_outcome=succeeded,input_boundary=device,output_boundary=device,construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight,directed=true,renumber=true,algorithm_parameters=alpha=0.85,epsilon=0.000001,max_iterations=100,algorithm_metadata=converged=true,iterations=12,input_rows=100,input_columns=3,output_rows=4,output_columns=2,output_device_bytes=320,graph_peak_bytes=2048,elapsed_ns=123000,gpu_resident_input_handoffs=1,host_to_device_uploads=0,device_to_host_materializations=0\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,max_observed_peak_bytes=64,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
@@ -356,9 +360,11 @@ fn benchmark_report_lists_measured_wall_samples_in_run_order() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q03".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let mut cpu = timed_cpu_run("output-fnv1a64:0000000000000003");
-    cpu.samples = vec![Duration::from_millis(40), Duration::from_millis(10), Duration::from_micros(30_500)];
+    cpu.execution_samples = vec![Duration::from_millis(40), Duration::from_millis(10), Duration::from_micros(30_500)];
+    cpu.planning_samples = vec![Duration::from_millis(2); 3];
     let mut native = timed_native_run("output-fnv1a64:0000000000000003");
-    native.samples = vec![Duration::from_millis(9), Duration::from_millis(3), Duration::from_millis(6)];
+    native.execution_samples = vec![Duration::from_millis(9), Duration::from_millis(3), Duration::from_millis(6)];
+    native.planning_samples = vec![Duration::from_millis(1), Duration::from_millis(1), Duration::from_millis(4)];
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),
         config,
@@ -392,10 +398,19 @@ fn benchmark_report_lists_measured_wall_samples_in_run_order() {
     let ok = lines.next().expect("q03 row").split('\t').collect::<Vec<_>>();
     let failed = lines.next().expect("q04 row").split('\t').collect::<Vec<_>>();
 
-    assert_eq!(ok[header_index(&header_fields, "cpu_wall_ms_samples")], "40.000,10.000,30.500");
-    assert_eq!(ok[header_index(&header_fields, "native_wall_ms_samples")], "9.000,3.000,6.000");
-    assert_eq!(ok[header_index(&header_fields, "native_wall_ms")], "6.000");
-    assert_eq!(failed[header_index(&header_fields, "cpu_wall_ms_samples")], "10.000");
+    // Wall samples are planning plus execution per iteration; the scalar columns are medians
+    // (the mean wall time would be 8.000 ms, not 10.000 ms).
+    assert_eq!(ok[header_index(&header_fields, "cpu_wall_ms_samples")], "42.000,12.000,32.500");
+    assert_eq!(ok[header_index(&header_fields, "native_wall_ms_samples")], "10.000,4.000,10.000");
+    assert_eq!(ok[header_index(&header_fields, "cpu_wall_ms")], "32.500");
+    assert_eq!(ok[header_index(&header_fields, "native_wall_ms")], "10.000");
+    assert_eq!(ok[header_index(&header_fields, "cpu_planning_ms")], "2.000");
+    assert_eq!(ok[header_index(&header_fields, "native_planning_ms")], "1.000");
+    assert_eq!(ok[header_index(&header_fields, "cpu_execution_ms")], "30.500");
+    assert_eq!(ok[header_index(&header_fields, "native_execution_ms")], "6.000");
+    assert_eq!(ok[header_index(&header_fields, "speedup_vs_cpu")], "3.250");
+    assert_eq!(failed[header_index(&header_fields, "cpu_wall_ms_samples")], "11.000");
+    assert_eq!(failed[header_index(&header_fields, "native_execution_ms")], "not_run");
     assert_eq!(failed[header_index(&header_fields, "native_wall_ms_samples")], "not_run");
 }
 

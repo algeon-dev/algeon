@@ -8,7 +8,7 @@ use super::{
     execution::{PlannedNativeQuery, TimedNativeQueryRun, TimedQueryRun},
 };
 
-const SAMPLES_HEADER: &str = "sample\tcpu_setup_ms\tcpu_planning_ms\tcpu_execution_ms\tnative_setup_ms\tnative_planning_ms\tnative_execution_ms\tnative_plan_plus_execution_ms\tnative_iteration_wall_ms\n";
+const SAMPLES_HEADER: &str = "sample\tcpu_setup_ms\tcpu_planning_ms\tcpu_execution_ms\tcpu_wall_ms\tnative_setup_ms\tnative_planning_ms\tnative_execution_ms\tnative_wall_ms\tnative_iteration_wall_ms\n";
 
 pub(super) fn write_measured_plan(
     dir: &Path,
@@ -50,23 +50,30 @@ pub(super) fn write_samples(
     native: Option<&TimedNativeQueryRun>,
 ) -> DataFusionResult<()> {
     let mut output = String::from(SAMPLES_HEADER);
-    let sample_count = cpu.map_or(0, |run| run.samples.len()).max(native.map_or(0, |run| run.samples.len()));
+    let sample_count =
+        cpu.map_or(0, |run| run.execution_samples.len()).max(native.map_or(0, |run| run.execution_samples.len()));
+    let cpu_wall = cpu.map(TimedQueryRun::wall_samples);
+    let native_wall = native.map(TimedNativeQueryRun::wall_samples);
     let cell = |samples: Option<&Vec<Duration>>, index: usize| {
-        samples.and_then(|samples| samples.get(index)).map(|duration| format!("{:.3}", milliseconds(*duration)))
+        samples
+            .and_then(|samples| samples.get(index))
+            .map(|duration| format!("{:.3}", milliseconds(*duration)))
+            .unwrap_or_default()
     };
     for index in 0..sample_count {
         let _ = writeln!(
             output,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             index + 1,
-            cell(cpu.map(|run| &run.setup_samples), index).unwrap_or_default(),
-            cell(cpu.map(|run| &run.planning_samples), index).unwrap_or_default(),
-            cell(cpu.map(|run| &run.samples), index).unwrap_or_default(),
-            cell(native.map(|run| &run.setup_samples), index).unwrap_or_default(),
-            cell(native.map(|run| &run.planning_samples), index).unwrap_or_default(),
-            cell(native.map(|run| &run.samples), index).unwrap_or_default(),
-            cell(native.map(|run| &run.plan_plus_execution_samples), index).unwrap_or_default(),
-            cell(native.map(|run| &run.iteration_wall_samples), index).unwrap_or_default(),
+            cell(cpu.map(|run| &run.setup_samples), index),
+            cell(cpu.map(|run| &run.planning_samples), index),
+            cell(cpu.map(|run| &run.execution_samples), index),
+            cell(cpu_wall.as_ref(), index),
+            cell(native.map(|run| &run.setup_samples), index),
+            cell(native.map(|run| &run.planning_samples), index),
+            cell(native.map(|run| &run.execution_samples), index),
+            cell(native_wall.as_ref(), index),
+            cell(native.map(|run| &run.iteration_wall_samples), index),
         );
     }
     fs::write(dir.join(format!("{query_id}.samples.tsv")), output)

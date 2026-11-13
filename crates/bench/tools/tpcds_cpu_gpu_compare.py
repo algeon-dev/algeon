@@ -2,8 +2,8 @@
 """Compare TPC-DS CPU DataFusion vs native GPU from two tpcds_gpu_cpu_bench TSVs.
 
 Each TSV has one row per (engine, query, iteration) with a `warmup` flag. We take
-the mean wall_ms over measured (warmup=false) iterations per query for each engine,
-then derive per-query GPU-vs-CPU speedup, parity of output rows, GPU outcome/path,
+the mean wall_ms (SQL planning plus collect) over measured (warmup=false) iterations
+per query for each engine, then derive per-query GPU-vs-CPU speedup, parity of output rows, GPU outcome/path,
 and a flagged list of queries where GPU loses or fails.
 
 Usage: tpcds_cpu_gpu_compare.py --gpu-tsv gpu.tsv --cpu-tsv cpu.tsv [--slow-threshold 1.0]
