@@ -11,6 +11,7 @@ import TpchSf100Benchmark from '@site/src/components/benchmarks/TpchSf100Benchma
 import TpcdsSf100Benchmark from '@site/src/components/benchmarks/TpcdsSf100Benchmark';
 import ServerLoadBenchmark, {ServerLoadOverloadTable} from '@site/src/components/benchmarks/ServerLoadBenchmark';
 import {tpcdsSf100Benchmark} from '@site/src/data/tpcdsSf100Benchmark';
+import {tpchSf100Benchmark} from '@site/src/data/tpchSf100Benchmark';
 import {serverLoadBenchmark} from '@site/src/data/serverLoadBenchmark';
 import {
   merrecAlgorithmBenchmark,
@@ -287,6 +288,10 @@ path](../../design/data-path.mdx#caches) describes what each layer holds.
 ### TPC-H SF100
 
 All 22 queries ran on the GPU path, and every output matched the CPU path.
+In this run, measured at revision `{tpchSf100Benchmark.environment.sourceRevision.slice(0, 9)}`,
+Q11 used `FRACTION` = 0.0001, the SF1 value, where the specification uses
+0.0001 / SF. At SF100 it returned no rows, so its row and the totals include
+a query that matched only on its empty output.
 
 <TpchSf100Benchmark />
 
@@ -501,9 +506,10 @@ reported no active queries and no remaining memory grants.
   completion. Latency runs from `GetFlightInfo` to the last result batch.
 - Every result was compared with references recorded by the CPU path.
   {serverLoadBenchmark.summary.gpuResultsMatched.toLocaleString('en-US')} GPU
-  results matched, warm-up passes included. Q11 returns no rows at SF100
-  because the DuckDB query text fixes its `FRACTION` at 0.0001 where the
-  specification uses 0.0001 / SF; its check compares only the schema.
+  results matched, warm-up passes included. In this run Q11 used
+  `FRACTION` = 0.0001, the SF1 value, where the specification uses
+  0.0001 / SF. It returned no rows at SF100, so its check compared only the
+  schema.
 - This run is derived from TPC-H and is not a TPC-H Throughput Test. It runs
   no refresh functions, orders each stream from seed
   {serverLoadBenchmark.config.seed} and reports no TPC metric.
