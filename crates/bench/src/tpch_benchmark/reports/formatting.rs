@@ -188,6 +188,13 @@ pub(super) fn optional_f64_text(value: Option<f64>) -> String {
     value.map_or_else(|| "not_run".to_string(), |value| format!("{value:.3}"))
 }
 
+pub(super) fn f64_list_text(values: &[f64]) -> String {
+    if values.is_empty() {
+        return "not_run".to_string();
+    }
+    values.iter().map(|value| format!("{value:.3}")).collect::<Vec<_>>().join(",")
+}
+
 pub(super) fn optional_usize_text(value: Option<usize>) -> String {
     value.map_or_else(|| "not_run".to_string(), |value| value.to_string())
 }

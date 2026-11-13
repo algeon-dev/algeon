@@ -223,6 +223,7 @@ def main() -> None:
             row_group_bytes=args.row_group_bytes,
             compression=args.compression,
             force=args.force,
+            scale=scale,
             engine=args.optimize_engine,
         )
         if not args.no_verify:

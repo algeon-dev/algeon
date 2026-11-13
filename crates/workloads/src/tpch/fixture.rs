@@ -13,6 +13,10 @@ use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties
 
 use super::WorkloadResult;
 
+/// Supplier rows [`write_tiny_tpch_parquet_dataset`] writes, which set the
+/// scale that the `tiny` label declares.
+pub(super) const TINY_SUPPLIER_ROWS: u64 = 3;
+
 pub fn write_tiny_tpch_parquet_dataset(root: &Path) -> WorkloadResult<()> {
     fs::create_dir_all(root)?;
     write_customer(root)?;

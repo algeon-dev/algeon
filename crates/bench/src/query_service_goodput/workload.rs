@@ -12,7 +12,7 @@ use datafusion::{
 };
 use workloads::{
     tpcds::{TPCDS_QUERIES, register_tpcds_tables},
-    tpch::{TPCH_QUERIES, register_tpch_tables},
+    tpch::{TPCH_QUERIES, TpchScaleFactor, register_tpch_tables},
 };
 
 use super::config::{ENV_GRAPH_EDGES, ENV_TPCDS_DIR, ENV_TPCH_DIR, GoodputConfig};
@@ -195,21 +195,29 @@ fn graph_sql(name: &str, seed: i64) -> Option<String> {
 /// Resolves one mix item id into its executable item.
 ///
 /// `graph_seed` is the traversal source discovered from the registered edge
-/// table; it is only consulted by graph items.
-pub(super) fn resolve_item(item_id: &str, graph_seed: i64) -> Result<WorkloadItem, Box<dyn Error>> {
+/// table; it is only consulted by graph items. `tpch_scale` is the scale
+/// factor of the configured TPC-H dataset, which TPC-H items require.
+pub(super) fn resolve_item(
+    item_id: &str,
+    graph_seed: i64,
+    tpch_scale: Option<TpchScaleFactor>,
+) -> Result<WorkloadItem, Box<dyn Error>> {
     let (family_name, name) =
         item_id.split_once('.').ok_or_else(|| format!("mix item {item_id} must be <family>.<name>"))?;
     match family_name {
-        "tpch" => TPCH_QUERIES
-            .iter()
-            .find(|query| query.id == name)
-            .map(|query| WorkloadItem {
+        "tpch" => {
+            let query = TPCH_QUERIES
+                .iter()
+                .find(|query| query.id == name)
+                .ok_or_else(|| format!("unknown TPC-H query {name}"))?;
+            let scale = tpch_scale.ok_or_else(|| format!("{ENV_TPCH_DIR} is required by this mix"))?;
+            Ok(WorkloadItem {
                 id: item_id.to_string(),
                 family: WorkloadFamily::Tpch,
-                sql: query.sql.to_string(),
+                sql: query.sql(scale),
                 work_units: 1,
             })
-            .ok_or_else(|| format!("unknown TPC-H query {name}").into()),
+        },
         "tpcds" => TPCDS_QUERIES
             .iter()
             .find(|query| query.id == name)

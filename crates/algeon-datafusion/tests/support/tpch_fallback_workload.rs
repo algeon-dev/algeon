@@ -9,11 +9,11 @@ pub(crate) async fn tpch_fallback_pressure_workload_items(
     config: SessionConfig,
 ) -> WorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
-    register_tpch_tables(&ctx, root).await?;
+    let scale = register_tpch_tables(&ctx, root).await?;
 
     let mut items = Vec::with_capacity(TPCH_QUERIES.len());
     for query in TPCH_QUERIES {
-        let item = match ctx.sql(query.sql).await {
+        let item = match ctx.sql(&query.sql(scale)).await {
             Ok(df) => match df.create_physical_plan().await {
                 Ok(plan) => NativeFallbackPressureWorkloadItem::new(query.id, plan),
                 Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(

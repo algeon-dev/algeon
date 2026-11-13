@@ -11,6 +11,7 @@ import TpchSf100Benchmark from '@site/src/components/benchmarks/TpchSf100Benchma
 import TpcdsSf100Benchmark from '@site/src/components/benchmarks/TpcdsSf100Benchmark';
 import ServerLoadBenchmark, {ServerLoadOverloadTable} from '@site/src/components/benchmarks/ServerLoadBenchmark';
 import {tpcdsSf100Benchmark} from '@site/src/data/tpcdsSf100Benchmark';
+import {tpchSf100Benchmark} from '@site/src/data/tpchSf100Benchmark';
 import {serverLoadBenchmark} from '@site/src/data/serverLoadBenchmark';
 import {
   merrecAlgorithmBenchmark,
@@ -20,6 +21,21 @@ import {
   medianAfterWarmups,
 } from '@site/src/data/merrecAlgorithmBenchmark';
 
+export const relationalRevision = (() => {
+  const revisions = [...new Set([
+    tpchSf100Benchmark.environment.sourceRevision,
+    tpcdsSf100Benchmark.environment.sourceRevision,
+    serverLoadBenchmark.environment.sourceRevision,
+  ])];
+  if (revisions.length !== 1) {
+    throw new Error(`TPC-H, TPC-DS and server load data record different sourceRevision values: ${revisions.join(', ')}`);
+  }
+  return revisions[0].slice(0, 9);
+})();
+export const relationalDates = [...new Set([
+  tpchSf100Benchmark.environment.measuredAtUtcDate,
+  tpcdsSf100Benchmark.environment.measuredAtUtcDate,
+])].join(' and ');
 export const gpuSeries = (active) =>
   serverLoadBenchmark.series.find((s) => s.executionMode === 'native_required' && s.maxActiveAttempts === active);
 export const cpuSeries = serverLoadBenchmark.series.find((s) => s.executionMode === 'functions_only');
@@ -30,6 +46,9 @@ export const overloadQueueFullMs = 1000 * Math.min(
   ...serverLoadBenchmark.overload.levels
     .map((level) => level.rejectionP50Seconds.admissionQueueFull?.median)
     .filter((seconds) => seconds != null),
+);
+export const overloadQueueWaitRejected = serverLoadBenchmark.overload.levels.some(
+  (level) => level.rejectionP50Seconds.queueWaitElapsed != null,
 );
 export const gib = (bytes) => (bytes / 1024 ** 3).toFixed(1);
 export const merrecSeconds = (seconds) => `${seconds.toFixed(2)} s`;
@@ -167,6 +186,9 @@ pays process start-up costs.
 <details>
 <summary>Measurement details and reproduction</summary>
 
+The GPU runs were measured on
+{merrecAlgorithmBenchmark.environment.gpuMeasuredDates.join(' and ')} at revision
+<code>{merrecAlgorithmBenchmark.environment.sourceRevision.slice(0, 9)}</code>.
 The GPU server runs a release build for
 <code>{merrecAlgorithmBenchmark.environment.cpuTarget}</code> on driver
 {merrecAlgorithmBenchmark.environment.gpuDriver} and CUDA
@@ -262,10 +284,13 @@ PageRank call.
 
 The TPC-H and TPC-DS suites at scale factor 100, CPU path against GPU path,
 one warm-up and one measured iteration per query, on an AWS EC2 **g7e.8xlarge**.
+Both suites were measured on {relationalDates} at revision
+<code>{relationalRevision}</code>, the build of the server load runs below.
 These runs are derived from the TPC-H and TPC-DS benchmarks. They are not
 audited TPC results and are not comparable to published TPC results. TPC-H
 and TPC-DS are trademarks of the Transaction Processing Performance Council.
-The query text is the DuckDB rendering of the TPC specifications (MIT).
+The query text is the DuckDB rendering of the TPC specifications (MIT), with
+Q11's `FRACTION` substituted as the specification defines it, 0.0001 / SF.
 
 - CPU: Intel Xeon Platinum 8559C, 32 vCPU.
 - Memory: 256 GiB.
@@ -279,14 +304,26 @@ Both paths read the Parquet files from the OS page cache. Nothing was flushed
 between runs, and no cold-storage run was measured. The GPU keeps no data
 between queries (`cache_cap_bytes = 0`), so each measured iteration reads the
 column pages again, copies them to the device and decodes them. The TPC-DS
-CPU run reuses one DataFusion session for all 99 queries, and its Parquet
-footer cache can keep footers across the warm-up and the measured iteration;
-the GPU path reads footers again on each plan. [Caches along the
+CPU and GPU runs each reuse one DataFusion session for all 99 queries, so
+planning on either path can find a file's footer in the session's metadata
+cache from the warm-up; the GPU path's cuDF reader still parses the footer of
+each file it reads once per query. [Caches along the
 path](../../design/data-path.mdx#caches) describes what each layer holds.
 
 ### TPC-H SF100
 
 All 22 queries ran on the GPU path, and every output matched the CPU path.
+The benchmark compares the measured CPU and GPU outputs of each query value
+by value, with the ordering rules of the TPC-DS check below.
+Floating-point columns accept an absolute and relative error of
+<code>{String(tpchSf100Benchmark.config.parity.floatToleranceAbsolute)}</code>;
+every other column must match exactly.
+
+The TPC-H files come from
+[`fixture/tpc-h/generate.py`](https://github.com/algeon-dev/algeon/blob/main/fixture/tpc-h/generate.py):
+DuckDB sorts each table by its pruning keys, `l_shipdate` first for
+`lineitem`, and Spark writes one Parquet file per table with parquet-java's
+default row group and page sizes. The TPC-DS files below are written by DuckDB.
 
 <TpchSf100Benchmark />
 
@@ -347,8 +384,9 @@ Each figure is one iteration on one machine.
 <details>
 <summary>TPC-DS reproduction and parity verification</summary>
 
-Both paths use release builds with `target-cpu=x86-64-v3` and the same 24
-Parquet files, totalling 41,372,641,702 bytes and 959,037,905 rows. No caches
+Both paths use release builds with `target-cpu=x86-64-v3` and the same
+{tpcdsSf100Benchmark.dataset.fileCount} Parquet files, totalling
+{tpcdsSf100Benchmark.dataset.totalBytes.toLocaleString('en-US')} bytes and 959,037,905 rows. No caches
 were flushed. Each query's warm-up precedes its measured execution. `wall_ms`
 measures execution through result collection, including reads and GPU result
 transfer. Successful-query SQL and physical planning time are excluded.
@@ -475,8 +513,11 @@ Completed throughput held between
 second from 1.0× to 2.0× offered load. The server rejected the excess with
 `service_overloaded`. With all {serverLoadBenchmark.config.maxQueuedAttempts} queue positions
 occupied, a new query was rejected after a median of {Math.round(overloadQueueFullMs)} ms.
-A queued query that waited longer than `max_queue_wait_ms` ({serverLoadBenchmark.config.maxQueueWaitMs / 1000} s)
-was rejected at that point. At 1.5× load and above, admitted queries waited in the queue
+{overloadQueueWaitRejected
+  ? <>A queued query that waited longer than <code>max_queue_wait_ms</code> ({serverLoadBenchmark.config.maxQueueWaitMs / 1000} s)
+was rejected at that point.</>
+  : <>No queued query reached <code>max_queue_wait_ms</code> ({serverLoadBenchmark.config.maxQueueWaitMs / 1000} s) in these runs.</>}
+At 1.5× load and above, admitted queries waited in the queue
 before execution, and p95 completion latency reached
 {Math.max(...overloadSaturated.filter((level) => level.factor >= 1.5).map((level) => level.completedP95Seconds.median)).toFixed(1)} s.
 Every admitted query result matched the CPU reference output. After each run, the server
@@ -489,9 +530,12 @@ reported no active queries and no remaining memory grants.
   client to {serverLoadBenchmark.environment.clientCpuThreads} vCPUs and the
   server to the other {serverLoadBenchmark.environment.serverCpuThreads}. The
   Parquet files were fully resident in the page cache before each run.
-- The server runs a release build configured by
+- The runs were measured on {serverLoadBenchmark.environment.measuredDate} at
+  revision <code>{serverLoadBenchmark.environment.sourceRevision.slice(0, 9)}</code>.
+  The server runs a release build configured by
   [`tpch-sf100-server.toml`](https://github.com/algeon-dev/algeon/blob/main/crates/tools/fixtures/stress/tpch-sf100-server.toml),
-  which sets only `native_required` and the table registrations. A=1 and A=3
+  which sets only `native_required` and the table registrations. The run's
+  copy registers the Spark-written files of the TPC-H SF100 run. A=1 and A=3
   add one `[[admission.device_profiles]]` entry. The CPU path ran with
   `datafusion.execution.target_partitions = 32` and
   `datafusion.execution.batch_size = 32768`.
@@ -501,14 +545,15 @@ reported no active queries and no remaining memory grants.
   completion. Latency runs from `GetFlightInfo` to the last result batch.
 - Every result was compared with references recorded by the CPU path.
   {serverLoadBenchmark.summary.gpuResultsMatched.toLocaleString('en-US')} GPU
-  results matched, warm-up passes included. Q11 returns no rows at SF100
-  because the DuckDB query text fixes its `FRACTION` at 0.0001 where the
-  specification uses 0.0001 / SF; its check compares only the schema.
+  results matched, warm-up passes included.
 - This run is derived from TPC-H and is not a TPC-H Throughput Test. It runs
   no refresh functions, orders each stream from seed
   {serverLoadBenchmark.config.seed} and reports no TPC metric.
 - The [stress runbook](https://github.com/algeon-dev/algeon/blob/main/crates/tools/fixtures/stress/RUNBOOK.md#tpc-h-sf100-streams)
   documents the server, reference, streams and overload commands for
   `algeon_tools flight-sql-stress`.
+- [`scripts/dev/server_load_driver.py`](https://github.com/algeon-dev/algeon/blob/main/scripts/dev/server_load_driver.py)
+  ran this matrix; its module docstring lists the prerequisites and the
+  commands that turn a run directory into this page's data.
 
 </details>

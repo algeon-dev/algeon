@@ -1,5 +1,8 @@
 use super::*;
-use crate::{report_workload::RelationalExecutionSelection, tpch_benchmark::reports::NATIVE_TPCH_BENCHMARK_TSV_HEADER};
+use crate::{
+    report_workload::RelationalExecutionSelection,
+    tpch_benchmark::{config::DEFAULT_PARITY_FLOAT_TOLERANCE, reports::NATIVE_TPCH_BENCHMARK_TSV_HEADER},
+};
 
 #[test]
 fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resource_metrics() {
@@ -28,6 +31,8 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
         parity_status: validation::ParityStatus::Matched,
         cpu_wall_ms: Some(20.0),
         native_wall_ms: Some(5.0),
+        cpu_wall_ms_samples: vec![20.0],
+        native_wall_ms_samples: vec![5.0],
         speedup_vs_cpu: Some(4.0),
         cpu_output_batches: Some(1),
         native_output_batches: Some(1),
@@ -283,7 +288,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
         "q01\tselected\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
     ));
     assert!(text.contains(
-        "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
+        "\t20.000\t5.000\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
     ));
     assert!(text.contains("\t65\t66\tnode_id=g0,algorithm=pagerank,runtime_outcome=succeeded,input_boundary=device,output_boundary=device,construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight,directed=true,renumber=true,algorithm_parameters=alpha=0.85,epsilon=0.000001,max_iterations=100,algorithm_metadata=converged=true,iterations=12,input_rows=100,input_columns=3,output_rows=4,output_columns=2,output_device_bytes=320,graph_peak_bytes=2048,elapsed_ns=123000,gpu_resident_input_handoffs=1,host_to_device_uploads=0,device_to_host_materializations=0\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,max_observed_peak_bytes=64,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
@@ -347,6 +352,54 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
 }
 
 #[test]
+fn benchmark_report_lists_measured_wall_samples_in_run_order() {
+    let config =
+        NativeTpchBenchmarkConfig { query_ids: vec!["q03".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let mut cpu = timed_cpu_run("output-fnv1a64:0000000000000003");
+    cpu.samples = vec![Duration::from_millis(40), Duration::from_millis(10), Duration::from_micros(30_500)];
+    let mut native = timed_native_run("output-fnv1a64:0000000000000003");
+    native.samples = vec![Duration::from_millis(9), Duration::from_millis(3), Duration::from_millis(6)];
+    let report = NativeTpchBenchmarkReport {
+        metadata: benchmark_metadata(),
+        config,
+        devices: Vec::new(),
+        rows: vec![
+            NativeTpchBenchmarkRow::accepted(
+                "q03",
+                accepted_planning_row("q03"),
+                Ok(cpu),
+                Ok(native),
+                DEFAULT_PARITY_FLOAT_TOLERANCE,
+            ),
+            NativeTpchBenchmarkRow::accepted(
+                "q04",
+                accepted_planning_row("q04"),
+                Ok(timed_cpu_run("output-fnv1a64:0000000000000004")),
+                Err(execution::NativeRunFailure {
+                    message: "native failed".to_string(),
+                    details: Box::default(),
+                    runtime_started: true,
+                }),
+                DEFAULT_PARITY_FLOAT_TOLERANCE,
+            ),
+        ],
+    };
+
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header_fields =
+        lines.next().expect("benchmark report should contain a TSV header").split('\t').collect::<Vec<_>>();
+    let ok = lines.next().expect("q03 row").split('\t').collect::<Vec<_>>();
+    let failed = lines.next().expect("q04 row").split('\t').collect::<Vec<_>>();
+
+    assert_eq!(ok[header_index(&header_fields, "cpu_wall_ms_samples")], "40.000,10.000,30.500");
+    assert_eq!(ok[header_index(&header_fields, "native_wall_ms_samples")], "9.000,3.000,6.000");
+    assert_eq!(ok[header_index(&header_fields, "native_wall_ms")], "6.000");
+    assert_eq!(failed[header_index(&header_fields, "cpu_wall_ms_samples")], "10.000");
+    assert_eq!(failed[header_index(&header_fields, "native_wall_ms_samples")], "not_run");
+}
+
+#[test]
 fn benchmark_report_partitioned_join_count_sums_runtime_executions_but_status_counts_sites() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q07".to_string()], ..NativeTpchBenchmarkConfig::default() };
@@ -373,6 +426,7 @@ fn benchmark_report_partitioned_join_count_sums_runtime_executions_but_status_co
             accepted_planning_row("q07"),
             Ok(timed_cpu_run("output-fnv1a64:0000000000000007")),
             Ok(native),
+            DEFAULT_PARITY_FLOAT_TOLERANCE,
         )],
     };
 
@@ -403,6 +457,7 @@ fn benchmark_report_accepted_join_rows_emit_compiled_graphs_without_decision_row
             planning,
             Ok(timed_cpu_run("output-fnv1a64:0000000000000015")),
             Ok(timed_native_run("output-fnv1a64:0000000000000015")),
+            DEFAULT_PARITY_FLOAT_TOLERANCE,
         )],
     };
 
