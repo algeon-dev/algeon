@@ -120,7 +120,11 @@ fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_rese
 
 #[test]
 fn bounded_native_query_keeps_partitioned_strategy_for_streamed_multi_join_probe() {
-    let runtime = backend_runtime();
+    let context = backend_context_with_grant_and_planning_policy(
+        8 * 1024 * 1024 * 1024,
+        planning_policy_with_large_build_rows(3),
+    );
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-partitioned-streamed-multi-join");
     let left_path = dir.join("lineitem.parquet");
     let orders_path = dir.join("orders.parquet");
@@ -137,8 +141,8 @@ fn bounded_native_query_keeps_partitioned_strategy_for_streamed_multi_join_probe
         Field::new("region", DataType::Utf8, false),
     ]));
 
-    let mut region_source = join_right_source(&region_path, &region_schema, &["order_id", "region"]);
-    region_source.files[0].row_group_rows = Some(vec![100_000_000]);
+    // The three-row builds are large under the policy's build-row threshold.
+    let region_source = join_right_source(&region_path, &region_schema, &["order_id", "region"]);
 
     let mut builder = QueryPlanBuilder::new();
     let lineitem =
@@ -173,7 +177,6 @@ fn bounded_native_query_keeps_partitioned_strategy_for_streamed_multi_join_probe
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(second_join).unwrap();
-    let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

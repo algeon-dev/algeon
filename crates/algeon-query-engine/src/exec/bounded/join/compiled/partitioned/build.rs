@@ -1,12 +1,13 @@
 //! Partition-wise consumption of a join build input while it streams in.
 //!
-//! The strategy owner (the compiled executor) decides, as build chunks arrive, whether the build
+//! The strategy owner (the compiled executor) decides after each build chunk whether the build
 //! side is large enough to partition. Until it commits, chunks stay whole. A later decision can
 //! therefore still choose any keyed strategy, and the chunks are concatenated into one frame if it
 //! never commits. After a commitment every held chunk and every later chunk is hash-partitioned
-//! once and its non-empty partition ranges are copied out. `finish` concatenates each partition's
-//! slices into one frame, which gives a `Split` build side without ever concatenating the whole
-//! side.
+//! once and its non-empty partition ranges are copied out. The held chunks stay resident until the
+//! last of them is partitioned, and a commitment holds them twice until then. `finish`
+//! concatenates each partition's slices into one frame, which gives a `Split` build side without
+//! ever concatenating the whole side.
 
 use super::{
     BoundedCompiledPartitionedJoinBuildState, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream,
@@ -52,7 +53,7 @@ pub(in crate::exec::bounded) enum BoundedJoinBuildStreamOutcome {
 
 type PartitionedJoinBuildSettle<'a> = &'a mut dyn FnMut(
     &mut BoundedExecutionAttempt<'_>,
-    Option<BoundedJoinBuildStreamObservation>,
+    BoundedJoinBuildStreamObservation,
 ) -> Result<Option<PartitionedJoinBuildCommitment>>;
 
 /// Sizes a commitment from the build bytes consumed so far and the probe size estimate, where an
@@ -78,15 +79,14 @@ pub(in crate::exec::bounded) fn partitioned_join_build_commitment(
 ///
 /// Chunks are projected to the join input columns as they arrive when the node
 /// is keyed-hash capable (`keyed_hash_inputs`), so every keyed strategy can
-/// still be selected afterwards. `settle` is asked before the first chunk and
-/// after every accumulated chunk; once it commits, accumulated and later
-/// chunks are hash-partitioned into per-partition slices and the result is a
-/// split build side. Without a commitment the chunks are concatenated into one
-/// frame for the existing strategy selection.
+/// still be selected afterwards. `settle` is asked after every accumulated
+/// chunk; once it commits, accumulated and later chunks are hash-partitioned
+/// into per-partition slices and the result is a split build side. Without a
+/// commitment the chunks are concatenated into one frame for the existing
+/// strategy selection.
 ///
-/// A leaf stream with no chunks returns `Materialized` with the leaf's empty frame, even when
-/// `settle` committed before any chunk. On an error the pending chunks are released and any
-/// partition slices drop with the accumulator.
+/// A leaf stream with no chunks returns `Materialized` with the leaf's empty frame. On an error
+/// the pending chunks are released and any partition slices drop with the accumulator.
 /// A chunk that fails inside the consumer leaves the accumulator as it was before that chunk,
 /// so the leaf stream can re-read it in smaller pieces.
 pub(in crate::exec::bounded) fn consume_bounded_join_build_input_stream(
@@ -104,11 +104,6 @@ pub(in crate::exec::bounded) fn consume_bounded_join_build_input_stream(
         None
     };
     let mut accumulator = JoinBuildAccumulator::Pending { frames: Vec::new(), rows: 0, bytes: 0 };
-    if columns.is_some()
-        && let Some(commitment) = settle(execution, None)?
-    {
-        accumulator.commit(execution, node_id, node, commitment, None)?;
-    }
     let stream_result = {
         let mut consume = |input: ResidentGpuFrame, execution: &mut BoundedExecutionAttempt<'_>| {
             let prepared = match columns.as_deref() {
@@ -141,8 +136,8 @@ pub(in crate::exec::bounded) fn consume_bounded_join_build_input_stream(
                     return partitioned.push(execution, node_id, node, prepared);
                 },
             };
-            match settle(execution, Some(observation))? {
-                Some(commitment) => accumulator.commit(execution, node_id, node, commitment, Some(prepared)),
+            match settle(execution, observation)? {
+                Some(commitment) => accumulator.commit(execution, node_id, node, commitment, prepared),
                 None => {
                     accumulator.push_pending(prepared);
                     Ok(())
@@ -216,7 +211,7 @@ impl JoinBuildAccumulator {
         node_id: NodeId,
         node: &JoinNode,
         commitment: PartitionedJoinBuildCommitment,
-        current: Option<BoundedJoinSideFrame>,
+        current: BoundedJoinSideFrame,
     ) -> Result<()> {
         let Self::Pending { frames, .. } = self else {
             unreachable!("only a pending build accumulator commits to partitions")
@@ -227,9 +222,7 @@ impl JoinBuildAccumulator {
             let shared = BoundedJoinSideFrame { frame: frame.frame.clone(), rows: frame.rows, bytes: frame.bytes };
             partitioned.push(execution, node_id, node, shared)?;
         }
-        if let Some(current) = current {
-            partitioned.push(execution, node_id, node, current)?;
-        }
+        partitioned.push(execution, node_id, node, current)?;
         let pending = std::mem::take(frames);
         *self = Self::Partitioned(Box::new(partitioned));
         for frame in pending.into_iter().rev() {

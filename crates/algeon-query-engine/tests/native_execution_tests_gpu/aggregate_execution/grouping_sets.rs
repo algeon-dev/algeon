@@ -117,7 +117,19 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
     let dir = unique_temp_dir("query-engine-bounded-compiled-rollup-avg-typed-null-partials");
     let inventory_path = dir.join("inventory.parquet");
     let item_path = dir.join("item.parquet");
-    let context = backend_context();
+    // One row group per read gives the partitioned join several probe pieces,
+    // and each piece reaches the aggregate as one frame.
+    // The three-row item build is large under the policy's build-row threshold.
+    let context = backend_context_with_memory_control_and_planning_policy(
+        MemoryControlPolicy {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        },
+        planning_policy_with_large_build_rows(3),
+    );
     let inventory_schema = write_inventory_rollup_parquet(&inventory_path);
     let item_schema = write_item_rollup_parquet(&item_path);
     let join_schema = Arc::new(Schema::new(vec![
@@ -142,7 +154,7 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
         vec!["item_sk".to_string(), "quantity_on_hand".to_string()],
     )
     .with_column_roles(vec!["item_sk".to_string()], vec!["quantity_on_hand".to_string()]);
-    let mut item_source = LocalParquetSource::from_files(
+    let item_source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&item_path).with_file_size_bytes(fs::metadata(&item_path).unwrap().len())],
         item_schema,
         vec![
@@ -153,7 +165,6 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
             "category".to_string(),
         ],
     );
-    item_source.files[0].row_group_rows = Some(vec![100_000_000]);
 
     let mut builder = QueryPlanBuilder::new();
     let inventory = builder.add_source(SourceNode::LocalParquet(inventory_source));
@@ -371,7 +382,7 @@ fn write_inventory_rollup_parquet(path: &Path) -> Arc<Schema> {
         ],
     )
     .unwrap();
-    write_single_batch_parquet(path, Arc::clone(&schema), batch);
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 4);
     schema
 }
 

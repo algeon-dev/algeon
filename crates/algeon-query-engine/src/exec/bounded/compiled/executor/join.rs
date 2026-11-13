@@ -140,7 +140,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let options = self.policy.keyed_hash_join;
         let keyed_hash_inputs = task_join_plan(task, node_id)?.form() == JoinForm::KeyedEqui;
         let mut settle = |execution: &mut BoundedExecutionAttempt<'_>,
-                          observation: Option<BoundedJoinBuildStreamObservation>| {
+                          observation: BoundedJoinBuildStreamObservation| {
             settle_partitioned_join_build(plan, options, task, node_id, estimate, execution, observation)
         };
         let outcome = consume_bounded_join_build_input_stream(

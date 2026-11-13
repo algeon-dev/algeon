@@ -179,13 +179,13 @@ pub struct NativeDataFusionExecutionMetrics {
     pub source_read_runtime_rows: Vec<NativeSourceReadRuntimeMetricRow>,
     /// Stable nested background lakehouse cache-fill events observed before metrics collection.
     pub lakehouse_cache_fill_event_snapshot_rows: Vec<NativeLakehouseCacheFillEventMetricRow>,
-    /// Count of reusable cuDF hash-join artifacts built.
+    /// Count of cuDF hash-join tables built, including each partition table of a partitioned hash join.
     pub hash_join_build_count: usize,
     /// Count of reusable cuDF filtered-join artifacts built.
     pub filtered_join_build_count: usize,
     /// Count of one-shot keyed equality joins executed.
     pub one_shot_join_count: usize,
-    /// Unique device bytes retained by reusable hash-join build artifacts.
+    /// Unique device bytes retained by reusable hash-join build artifacts and kept partition hash tables.
     pub hash_join_hash_table_bytes: usize,
     /// Unique device bytes retained by reusable filtered-join build artifacts.
     pub filtered_join_hash_table_bytes: usize,
