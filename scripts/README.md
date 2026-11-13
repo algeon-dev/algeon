@@ -29,6 +29,16 @@ timing boundaries live in the [MerRec scale benchmark guide](../fixture/demo/mer
 Its focused checks are `python -m unittest discover -s scripts/dev/tests -p test_merrec_benchmark.py`
 in the provisioned NumPy/PyArrow environment.
 
+`dev/server_load_driver.py` runs the server load benchmark behind the website's
+server-load numbers: a CPU reference pass, the closed-loop streams matrix and
+the open-loop overload rates against release binaries it stages under
+`--out-dir`. It needs the GPU and takes `/tmp/cudf-gpu.lock` per server
+lifetime. Its module docstring lists the prerequisites, the full-matrix
+commands and the `website/scripts/generate_server_load_benchmark_ts.py`
+invocation that turns the run directory into `serverLoadBenchmark.ts`.
+`dev/server_load_analyze.py` summarizes the same run directory into
+`tables.md` and `results.json`.
+
 `ci/release_archives.py --output /tmp/algeon-release` packages the allowlist
 owned by `ci/check_workspace_publication.py` with the adapter's release
 features. It checks normalized dependency versions, docs.rs metadata and
