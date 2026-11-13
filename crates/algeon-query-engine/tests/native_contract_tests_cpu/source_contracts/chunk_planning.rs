@@ -39,6 +39,13 @@ fn source_task_memory_model_derives_chunk_target_from_live_budget_slots() {
     assert_eq!(aggregate.max_source_chunk_bytes, Some(285));
     assert_eq!(aggregate.max_row_groups_per_chunk, 512);
 
+    // Two chunks of one aggregate running at once on execution lanes keep both
+    // chunks' regions live, which halves the target.
+    let lane_aggregate_model = SourceTaskMemoryModel::aggregate_pipeline(true).with_concurrent_chunks(2);
+    assert_eq!(lane_aggregate_model.live_slot_count(), 14);
+    let lane_aggregate = SourceChunkPlanningPolicy::for_source_task(memory_policy, lane_aggregate_model);
+    assert_eq!(lane_aggregate.max_source_chunk_bytes, Some(142));
+
     let join_model = SourceTaskMemoryModel::join_leaf_stream(true);
     assert_eq!(join_model.source_read_slots(), 1);
     assert_eq!(join_model.source_adjacent_operator_slots(), 1);

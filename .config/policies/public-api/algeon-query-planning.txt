@@ -486,6 +486,7 @@ pub const fn query_planning::chunk::SourceTaskMemoryModel::source_adjacent_opera
 pub const fn query_planning::chunk::SourceTaskMemoryModel::source_read_preflight_slack_slots(self) -> u64
 pub const fn query_planning::chunk::SourceTaskMemoryModel::source_read_slots(self) -> u64
 pub const fn query_planning::chunk::SourceTaskMemoryModel::unary_chain_frame() -> Self
+pub const fn query_planning::chunk::SourceTaskMemoryModel::with_concurrent_chunks(self, usize) -> Self
 pub const query_planning::chunk::PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
 pub fn query_planning::chunk::annotate_source_chunk_batching_reasons(&mut [query_planning::chunk::SourceChunk], core::option::Option<&'static str>, core::option::Option<u64>)
 pub fn query_planning::chunk::plan_source_chunk_batches(&[query_planning::chunk::SourceChunk], core::option::Option<u64>) -> alloc::vec::Vec<query_planning::chunk::SourceChunkBatch>

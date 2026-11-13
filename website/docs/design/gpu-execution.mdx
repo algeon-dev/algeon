@@ -42,7 +42,10 @@ Related terms distinguish lane scopes:
 
 Cross-stream dependencies use completion fences such as CUDA events. Buffer
 ownership lasts through final consumption, and all lanes allocate within
-[one query memory cap](./admission.mdx). Within composed island executions,
+[one query memory cap](./admission.mdx). An aggregate's source chunks on
+separate lanes are live at the same time, so its chunk target divides the
+grant by the regions one chunk keeps live times the run's lane width; two
+lanes halve the target a serial run plans. Within composed island executions,
 shared execution scopes coordinate multi-reader lifecycles, retaining resident
 handles until the final reader completes.
 

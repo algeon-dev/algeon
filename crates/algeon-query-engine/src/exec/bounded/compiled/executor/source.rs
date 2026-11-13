@@ -7,7 +7,10 @@ use query_planning::{
 
 use super::{CompiledGpuResource, CompiledGpuTaskExecutor};
 use crate::exec::bounded::{
-    compiled::helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
+    compiled::{
+        helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
+        lanes::AggregateLaneDispatch,
+    },
     execute_bounded_gpu_resident_source, execute_bounded_literal_batch_source, execute_bounded_local_parquet_source,
     materialize_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
@@ -81,6 +84,9 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         };
         let shared = self.resource_sharing(output) != ResourceSharing::SingleConsume;
+        // An aggregate consuming this stream may run one chunk on each of the run's lanes at once,
+        // so the chunk target counts the regions of all of them.
+        let aggregate_lane_width = self.aggregate_dispatch.as_ref().map_or(1, AggregateLaneDispatch::width);
         let context = self.execution.context();
         let metrics = self.execution.metrics();
         let (stream, join_leaf_adjacent_stages) = match read.output {
@@ -116,6 +122,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     node_id,
                     adjacent_stages,
                     chunk_hints,
+                    aggregate_lane_width,
                     metrics,
                 )?,
                 None,
@@ -127,6 +134,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     node_id,
                     adjacent_stages,
                     chunk_hints,
+                    aggregate_lane_width,
                     metrics,
                 )?,
                 None,
