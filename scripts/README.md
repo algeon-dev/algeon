@@ -29,15 +29,25 @@ timing boundaries live in the [MerRec scale benchmark guide](../fixture/demo/mer
 Its focused checks are `python -m unittest discover -s scripts/dev/tests -p test_merrec_benchmark.py`
 in the provisioned NumPy/PyArrow environment.
 
-`dev/server_load_driver.py` runs the server load benchmark behind the website's
-server-load numbers: a CPU reference pass, the closed-loop streams matrix and
-the open-loop overload rates against release binaries it stages under
-`--out-dir`. It needs the GPU and takes `/tmp/cudf-gpu.lock` per server
-lifetime. Its module docstring lists the prerequisites, the full-matrix
-commands and the `website/scripts/generate_server_load_benchmark_ts.py`
-invocation that turns the run directory into `serverLoadBenchmark.ts`.
-`dev/server_load_analyze.py` summarizes the same run directory into
-`tables.md` and `results.json`.
+`dev/server_load_driver.py` runs the server load benchmark: a CPU reference
+pass, the closed-loop streams matrix and the open-loop overload rates against
+release binaries it stages under `--out-dir`. It needs the GPU and takes
+`/tmp/cudf-gpu.lock` per server lifetime. Its module docstring lists the
+prerequisites and the full-matrix commands. `dev/server_load_analyze.py`
+summarizes the same run directory into `tables.md` and `results.json`.
+`dev/page_cache.py` holds the page-cache residency, eviction and memory
+counters that this driver and the relational driver share.
+
+`dev/relational_benchmarks_driver.py` produces every number of the website's
+relational benchmarks page from one build: TPC-H at SF100 (sorted and dbgen
+order) and SF500, TPC-DS at SF100, and the server load matrix. Its stages
+(`build`, `tpch ID`, `tpcds`, `server-load`, `check`, `website`, `run-all`)
+write DONE or STOP into `target/relational-benchmarks/RUN`, and the `website`
+stage runs the three generators under `website/scripts/` only when the release
+gate in its module docstring passes. The driver does not take
+`/tmp/cudf-gpu.lock`; `bench_one.sh` and `server_load_driver.py` take it for
+each GPU process. Its focused check is
+`python3 -m unittest discover -s scripts/dev/tests -p test_relational_benchmarks_driver.py`.
 
 `ci/release_archives.py --output /tmp/algeon-release` packages the allowlist
 owned by `ci/check_workspace_publication.py` with the adapter's release

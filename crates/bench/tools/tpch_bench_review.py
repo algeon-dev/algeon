@@ -4,11 +4,13 @@
 Reads the TSV emitted by `native_tpch_benchmark`, classifies every row into
 exactly one outcome class (planning_rejected, cpu_failed,
 runtime_failed:<code>, matched, mismatched, or not_run), and prints:
-  - per-query CPU/GPU wall (mean of measured iterations), the first measured
-    iteration and the median of iterations 2..N when the TSV carries the
-    cpu_wall_ms_samples / native_wall_ms_samples columns, speedup, parity, final disposition, dominant
-    runtime class and the GPU time breakdown that explains where the wall
-    went;
+  - per-query CPU/GPU wall (median of measured iterations, SQL planning plus
+    collect, session setup excluded), the first measured iteration and the
+    median of iterations 2..N from the cpu_wall_ms_samples /
+    native_wall_ms_samples columns, speedup, parity, final disposition,
+    dominant runtime class and the GPU time breakdown, including the GPU
+    planning and execution split from native_planning_ms and
+    native_execution_ms;
   - a coverage block: how many queries fall into each outcome bucket, and
     which query IDs;
   - totals computed ONLY over the "paired" set -- rows classified `matched`
@@ -58,6 +60,10 @@ WIDE_WIDTHS = [5, 14, 9, 9, 9, 9, 9, 9, 9, 7, 16, 9, 9, 8, 8, 8, 12, 12, 5, 8]
 WIDE_TABLE_WIDTH = sum(WIDE_WIDTHS) + 2 * (len(WIDE_WIDTHS) - 1)
 
 
+WALL_TIME_BOUNDARY = "sql_planning_and_collect"
+SPLIT_TIME_COLUMNS = ["cpu_planning_ms", "native_planning_ms", "cpu_execution_ms", "native_execution_ms"]
+
+
 def load(tsv):
     meta = {}
     hdr = None
@@ -75,6 +81,12 @@ def load(tsv):
             hdr = cells
             continue
         rows.append(dict(zip(hdr, cells)))
+    boundary = meta.get("tpch_benchmark_wall_time_boundary")
+    missing = [col for col in SPLIT_TIME_COLUMNS if col not in (hdr or [])]
+    if boundary != WALL_TIME_BOUNDARY or missing:
+        sys.exit(f"{tsv}: expected tpch_benchmark_wall_time_boundary={WALL_TIME_BOUNDARY} and columns "
+                 f"{','.join(SPLIT_TIME_COLUMNS)}; found boundary={boundary} missing={','.join(missing) or 'none'}. "
+                 "Rerun the benchmark with the current build.")
     return meta, hdr, rows
 
 
@@ -344,6 +356,8 @@ def summarize(meta, rows, slow_threshold):
             "disposition": disposition,
             "parity": r.get("parity_status", "?"),
             "rt": rt_label(r),
+            "plan": f(r.get("native_planning_ms")),
+            "exec": f(r.get("native_execution_ms")),
             "src": f(r.get("source_read_time_ms")),
             "op": f(r.get("operator_time_ms")),
             "fmerge": f(r.get("final_merge_time_ms")),
@@ -397,7 +411,8 @@ def summarize(meta, rows, slow_threshold):
 
 
 def timing_breakdown_text(rec):
-    return (f"src={c_ms(rec['src'])} op={c_ms(rec['op'])} fmerge={c_ms(rec['fmerge'])} "
+    return (f"plan={c_ms(rec['plan'])} exec={c_ms(rec['exec'])} "
+            f"src={c_ms(rec['src'])} op={c_ms(rec['op'])} fmerge={c_ms(rec['fmerge'])} "
             f"fsort={c_ms(rec['fsort'])} mat={c_ms(rec['matzn'])}")
 
 

@@ -1098,6 +1098,52 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "has no offset index"):
                 layout_module.verify_page_row_limit(file, 20_000)
 
+    def test_describe_layout_measures_footers_and_rejects_a_manifest_mismatch(self) -> None:
+        layout_module = load_script_module("tpc_parquet_layout_describe", TPC_PARQUET_LAYOUT)
+        manifest = {
+            "layout": "single_file_per_table_sorted_row_groups",
+            "writer": "pyarrow",
+            "compression": "SNAPPY",
+            "tables": [{"name": "t", "sort_keys": ["id"]}],
+        }
+        with tempfile.TemporaryDirectory(prefix="algeon_describe_layout.") as tmp:
+            out_dir = Path(tmp)
+
+            def write(*, page_index: bool) -> None:
+                pq.write_table(
+                    pa.table({"id": pa.array(range(100), pa.int64()), "s": [f"v{i % 5}" for i in range(100)]}),
+                    out_dir / "t.parquet",
+                    row_group_size=50,
+                    max_rows_per_page=20,
+                    use_dictionary=["s"],
+                    compression="snappy",
+                    write_page_index=page_index,
+                )
+
+            (out_dir / "_generation.json").write_text(json.dumps(manifest))
+            write(page_index=True)
+            table = layout_module.describe_layout(out_dir)["tables"]["t"]
+            self.assertEqual(table["rowGroups"], 2)
+            self.assertEqual(table["rowGroupRows"], {"min": 50, "median": 50, "max": 50})
+            self.assertEqual((table["dataPages"], table["pageSource"]), (12, "offset_index"))
+            self.assertEqual(table["rowsPerPage"], {"median": 20, "max": 20})
+            self.assertEqual((table["dictionaryChunks"], table["columnChunks"]), (2, 4))
+            self.assertEqual(table["nonOverlappingColumns"], ["id"])
+
+            write(page_index=False)
+            described = layout_module.describe_layout(out_dir)
+            self.assertEqual(described["partitioning"], {"kind": "single_file_per_table", "fileCount": 1, "hiveKeys": []})
+            self.assertEqual((described["tables"]["t"]["dataPages"], described["tables"]["t"]["pageSource"]), (12, "page_headers"))
+
+            for changed in ({"compression": "ZSTD"}, {"writer": "spark", "parquet_java_version": "1.15.2"}):
+                (out_dir / "_generation.json").write_text(json.dumps({**manifest, **changed}))
+                with self.assertRaises(RuntimeError):
+                    layout_module.describe_layout(out_dir)
+            (out_dir / "_generation.json").write_text(json.dumps(manifest))
+            pq.write_table(pa.table({"id": [1]}), out_dir / "extra.parquet")
+            with self.assertRaisesRegex(RuntimeError, "the manifest lists one file for each of"):
+                layout_module.describe_layout(out_dir)
+
     def test_verify_layout_rejects_files_past_the_row_group_limit(self) -> None:
         layout_module = load_script_module("tpc_parquet_layout_row_groups", TPC_PARQUET_LAYOUT)
         with tempfile.TemporaryDirectory(prefix="algeon_row_groups.") as tmp:

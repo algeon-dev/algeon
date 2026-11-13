@@ -22,6 +22,7 @@ fixture/
     generate.py                      # TPC-DS generator
     data/sf<N>/parquet/              # local, gitignored benchmark data
   tpc/parquet_layout.py              # shared TPC layout/verification logic
+  tpc/describe_layout.py             # measures a fixture directory's Parquet layout into layout.json
   clickbench/data/                   # local, gitignored ClickBench layouts
   demo/                              # demo datasets; see demo/README.md
     citation_network/                # DBLP / AMiner V12 -> cuGraph edge and paper tables

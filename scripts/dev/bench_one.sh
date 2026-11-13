@@ -362,7 +362,7 @@ review_command() {
         printf ' %q\n' "${TSV_OUT}"
     else
         printf '  # compact key columns of this run:\n'
-        printf '  grep -v %s %s | cut -f1-6,9,11-13 | column -t\n' "'^#'" "${TSV_OUT}"
+        printf '  grep -v %s %s | cut -f1-8,11,13-15 | column -t\n' "'^#'" "${TSV_OUT}"
         printf '  # CPU-vs-GPU compare needs a second engine TSV:\n'
         printf '  python3 %q --gpu-tsv <gpu.tsv> --cpu-tsv <cpu.tsv>\n' \
             "${REPO_ROOT}/crates/bench/tools/tpcds_cpu_gpu_compare.py"
@@ -429,9 +429,9 @@ if [[ "${NO_REVIEW}" -eq 0 ]]; then
         echo "--- compact summary (key columns) ---"
         grep '^#' "${TSV_OUT}" || true
         if command -v column > /dev/null 2>&1; then
-            grep -v '^#' "${TSV_OUT}" | cut -f1-6,9,11-13 | column -t -s $'\t'
+            grep -v '^#' "${TSV_OUT}" | cut -f1-8,11,13-15 | column -t -s $'\t'
         else
-            grep -v '^#' "${TSV_OUT}" | cut -f1-6,9,11-13
+            grep -v '^#' "${TSV_OUT}" | cut -f1-8,11,13-15
         fi
         echo ""
         echo "For a CPU-vs-GPU comparison, re-run with --engine cpu_datafusion, then:"

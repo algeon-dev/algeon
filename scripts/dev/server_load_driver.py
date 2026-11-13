@@ -33,17 +33,10 @@ one that exists without it. `run-all` is `configs`, `env`, `warm`, `reference`,
 `matrix` and `overload-all` in order.
 
 Website data
-  Write RUN/website-environment.json with the keys named by ENVIRONMENT_KEYS in
-  website/scripts/generate_server_load_benchmark_ts.py, then from the
-  repository root:
-    D=target/server-load/RUN
-    python3 website/scripts/generate_server_load_benchmark_ts.py \\
-      --profile $D/configs/gpu-a1.toml --profile $D/configs/gpu-a2.toml \\
-      --profile $D/configs/gpu-a3.toml --profile $D/configs/cpu.toml \\
-      --streams-root $D/streams --overload-root $D/overload \\
-      --reference $D/reference/run \\
-      --environment $D/website-environment.json \\
-      --out website/src/data/serverLoadBenchmark.ts
+  scripts/dev/relational_benchmarks_driver.py runs this driver in its `server-load`
+  stage and builds website-environment.json and the generator call in its `website`
+  stage, so the server-load numbers share one build and one environment file with the
+  TPC-H and TPC-DS numbers. Run this driver by itself only for experiments.
 
 Output layout under --out-dir
   bin/                  staged algeon_server, algeon_tools and bin/lib shim libraries
@@ -57,8 +50,10 @@ Every option except the subcommand also reads an environment variable
 (SERVER_LOAD_OUT, SERVER_LOAD_DATA, SERVER_LOAD_RELEASE_DIR,
 SERVER_LOAD_SERVER_CPUS, SERVER_LOAD_CLIENT_CPUS).
 """
-import argparse, ctypes, datetime, fcntl, hashlib, json, mmap, os, re, shutil, signal, subprocess, time
+import argparse, datetime, fcntl, hashlib, json, os, re, shutil, signal, subprocess, time
 from pathlib import Path
+
+import page_cache
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / 'crates/tools/fixtures/stress'
@@ -196,45 +191,15 @@ def rate_profile(name, cfg, rate):
 
 # ---------------------------------------------------------------- page cache
 
-def residency():
-    libc = ctypes.CDLL('libc.so.6', use_errno=True)
-    libc.mmap.restype = ctypes.c_void_p
-    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
-    libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
-    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-    page = mmap.PAGESIZE; result = {}
-    for f in sorted(DATA.glob('*.parquet')):
-        size = f.stat().st_size; fd = os.open(f, os.O_RDONLY)
-        addr = libc.mmap(None, size, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
-        pages = (size + page - 1) // page; vec = (ctypes.c_ubyte * pages)()
-        rc = libc.mincore(ctypes.c_void_p(addr), size, vec)
-        res = bytes(b & 1 for b in bytes(vec)).count(1) if rc == 0 else None
-        libc.munmap(ctypes.c_void_p(addr), size); os.close(fd)
-        result[f.name] = {'bytes': size, 'resident_pages': res, 'pages': pages,
-                          'resident_fraction': res / pages if res is not None else None}
-    total_b = sum(v['bytes'] for v in result.values())
-    total_res = sum((v['resident_fraction'] or 0) * v['bytes'] for v in result.values())
-    return {'files': result, 'total_bytes': total_b, 'resident_fraction_by_bytes': total_res / total_b}
-
-
-def meminfo():
-    out = {}
-    for line in Path('/proc/meminfo').read_text().splitlines():
-        k, v = line.split(':', 1)
-        if k in ('MemTotal', 'MemFree', 'MemAvailable', 'Cached', 'Buffers'):
-            out[k] = v.strip()
-    return out
-
-
 def warm(dest):
-    before = {'meminfo': meminfo(), 'residency': residency()}
+    before = {'meminfo': page_cache.meminfo(), 'residency': page_cache.residency(DATA)}
     t = time.perf_counter()
     for f in sorted(DATA.glob('*.parquet')):
         with open(f, 'rb') as fh:
             while fh.read(16 << 20):
                 pass
     elapsed = time.perf_counter() - t
-    after = {'meminfo': meminfo(), 'residency': residency()}
+    after = {'meminfo': page_cache.meminfo(), 'residency': page_cache.residency(DATA)}
     rec = {'utc': now(), 'warm_seconds': elapsed, 'before': before, 'after': after}
     Path(dest).write_text(json.dumps(rec, indent=1))
     log(f'warmed page cache in {elapsed:.1f}s: {before["residency"]["resident_fraction_by_bytes"]:.4f} -> '
@@ -243,8 +208,8 @@ def warm(dest):
 
 
 def ensure_warm(run_dir):
-    r = residency()
-    rec = {'utc': now(), 'meminfo': meminfo(), 'resident_fraction_by_bytes': r['resident_fraction_by_bytes'],
+    r = page_cache.residency(DATA)
+    rec = {'utc': now(), 'meminfo': page_cache.meminfo(), 'resident_fraction_by_bytes': r['resident_fraction_by_bytes'],
            'min_file_fraction': min(v['resident_fraction'] for v in r['files'].values())}
     if rec['min_file_fraction'] < 0.999:
         rec['rewarm'] = warm(run_dir / 'page-cache-rewarm.json')['after']['residency']['resident_fraction_by_bytes']

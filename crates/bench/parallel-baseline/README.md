@@ -72,21 +72,28 @@ than 5% unexplained control regression threshold remains in force.
 
 ## Timing semantics
 
-`native_tpch_benchmark` reports native execution wall time,
+`native_tpch_benchmark` reports native wall time,
 capability/compiled-graph coverage, source-read and operator elapsed, D2H
 materialization count/bytes, and output fingerprints. Its
 `allocator_high_water_bytes` may be absent; `max_task_observed_peak_bytes` is
 a per-task observation and cannot substitute for the attempt domain peak.
-The benchmark replans before each measured execution, so its stable
-`native_wall_ms` excludes physical planning. The TSV also carries
-`cpu_wall_ms_samples` and `native_wall_ms_samples`, the measured iterations in run
-order, comma-separated. Set
+The benchmark replans before each measured execution. The TSV's
+`native_wall_ms` is the median over measured iterations of SQL planning plus
+execution, with session setup outside the timer; `native_planning_ms` and
+`native_execution_ms` are the medians of the two parts, and `cpu_*` columns
+carry the same split for the CPU baseline. The TSV also carries
+`cpu_wall_ms_samples` and `native_wall_ms_samples`, the per-iteration
+planning-plus-execution values in run order, comma-separated. The timings
+recorded in this document were taken before that boundary and are
+execution-only means; they correspond to `native_execution_ms`, not to
+`native_wall_ms`. Set
 `ALGEON_TPCH_BENCH_ARTIFACT_DIR` to retain the first measured execution's
 physical plan and sealed runtime observation, plus ten per-iteration setup (session and
 table registration), planning (SQL to physical plan), execution,
-planning-plus-execution, and full benchmark-iteration wall samples. The
-planning-plus-execution field excludes setup and ends before output fingerprint work; the
-iteration-wall field ends after fingerprinting. Neither includes an external
+`cpu_wall_ms` and `native_wall_ms` (planning plus execution), and full
+benchmark-iteration wall samples. The wall fields exclude setup and end before
+output fingerprint work; the iteration-wall field ends after fingerprinting.
+Neither includes an external
 client/network boundary. All six retained planning rows report zero host
 DataFusion boundaries, so host child staging is absent on these native paths.
 Operator/source duration metrics are host-side elapsed observations and may
@@ -96,9 +103,9 @@ sink timer, not a GPU D2H copy interval. The timing boundaries are:
 
 | Boundary | Evidence here | Limit |
 | --- | --- | --- |
-| Session setup | Per-iteration `native_setup_ms` sidecar | Session construction and table registration; excluded from `native_wall_ms` |
-| Physical planning | Per-iteration `native_planning_ms` sidecar | SQL to physical plan; excluded from `native_wall_ms` |
-| Native execution wall | TPCH `native_execution_ms` sidecar and stable TSV | Includes host orchestration and output materialization; not GPU busy time |
+| Session setup | Per-iteration `native_setup_ms` sidecar | Session construction and table registration; outside `native_wall_ms` |
+| Physical planning | Per-iteration `native_planning_ms` sidecar | SQL to physical plan; first part of `native_wall_ms` |
+| Native execution wall | TPCH `native_execution_ms` sidecar and stable TSV | `collect` only. Includes host orchestration and output materialization; not GPU busy time |
 | GPU kernel/copy activity | Q01/Q17 Nsight kernel and direction-tagged copy intervals | Profiled runs only; interval unions are not query wall time |
 | Host child staging | Six retained plans have zero host DataFusion boundaries | No nonzero staging sample in this workload |
 | D2H | Stable TSV counts/bytes, host sink timer, and profiled CUPTI D2H intervals | No isolated elapsed host D2H stage for all ten samples |

@@ -31,7 +31,8 @@ fn benchmark_report_header_and_not_selected_rows_are_stable() {
     assert!(text.contains(&format!("{NATIVE_TPCH_BENCHMARK_TSV_HEADER}\n")));
     assert!(text.contains("# tpch_dataset_scale_factor=sf1\n"));
     assert!(text.contains("# tpch_benchmark_query_ids=q02\n"));
-    assert!(text.contains("# tpch_benchmark_wall_time_fields=per_measured_iteration_mean\n"));
+    assert!(text.contains("# tpch_benchmark_wall_time_fields=per_measured_iteration_median\n"));
+    assert!(text.contains("# tpch_benchmark_wall_time_boundary=sql_planning_and_collect\n"));
     assert!(text.contains("# tpch_benchmark_native_counter_fields=measured_iteration_totals\n"));
     assert!(text.contains("# tpch_benchmark_native_peak_memory_fields=max_across_measured_iterations\n"));
     assert!(text.contains("# tpch_benchmark_native_timing_fields=per_measured_iteration_mean\n"));

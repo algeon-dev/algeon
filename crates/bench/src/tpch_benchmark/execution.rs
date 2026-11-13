@@ -46,12 +46,24 @@ pub(super) struct QueryOutput {
 
 #[derive(Debug, Clone)]
 pub(super) struct TimedQueryRun {
-    pub(super) samples: Vec<Duration>,
+    /// `collect` only, per measured iteration.
+    pub(super) execution_samples: Vec<Duration>,
     /// Session construction through table registration, per measured iteration.
     pub(super) setup_samples: Vec<Duration>,
     /// `ctx.sql` through the physical plan, per measured iteration.
     pub(super) planning_samples: Vec<Duration>,
     pub(super) final_measurement: QueryMeasurement,
+}
+
+impl TimedQueryRun {
+    /// Planning plus execution per measured iteration, excluding setup.
+    pub(super) fn wall_samples(&self) -> Vec<Duration> {
+        sum_samples(&self.planning_samples, &self.execution_samples)
+    }
+}
+
+fn sum_samples(planning: &[Duration], execution: &[Duration]) -> Vec<Duration> {
+    planning.iter().zip(execution).map(|(planning, execution)| *planning + *execution).collect()
 }
 
 #[derive(Clone)]
@@ -97,17 +109,24 @@ impl FailureDetails {
 
 #[derive(Debug, Clone)]
 pub(super) struct TimedNativeQueryRun {
-    pub(super) samples: Vec<Duration>,
+    /// `collect` only, per measured iteration.
+    pub(super) execution_samples: Vec<Duration>,
     /// Session construction through table registration, per measured iteration.
     pub(super) setup_samples: Vec<Duration>,
     /// `ctx.sql` through native physical planning, per measured iteration.
     pub(super) planning_samples: Vec<Duration>,
-    /// Planning plus execution, excluding setup.
-    pub(super) plan_plus_execution_samples: Vec<Duration>,
+    /// Whole bench iteration including setup and output measurement.
     pub(super) iteration_wall_samples: Vec<Duration>,
     pub(super) final_measurement: QueryMeasurement,
     pub(super) metrics: NativeDataFusionExecutionMetrics,
     pub(super) timing_metrics: NativeTpchTimingMetrics,
+}
+
+impl TimedNativeQueryRun {
+    /// Planning plus execution per measured iteration, excluding setup.
+    pub(super) fn wall_samples(&self) -> Vec<Duration> {
+        sum_samples(&self.planning_samples, &self.execution_samples)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -325,7 +344,7 @@ pub(super) async fn run_cpu_query_iterations(
         let _ = collect_cpu_plan_once(planned).await?;
     }
 
-    let mut samples = Vec::with_capacity(config.iterations);
+    let mut execution_samples = Vec::with_capacity(config.iterations);
     let mut setup_samples = Vec::with_capacity(config.iterations);
     let mut planning_samples = Vec::with_capacity(config.iterations);
     let mut final_measurement = None;
@@ -337,11 +356,11 @@ pub(super) async fn run_cpu_query_iterations(
         let row_ordering = planned.row_ordering.clone();
         let started = Instant::now();
         let batches = collect_cpu_plan_once(planned).await?;
-        samples.push(started.elapsed());
+        execution_samples.push(started.elapsed());
         final_measurement = Some(measure_output(schema, row_ordering, batches).map_err(cpu_started)?);
     }
     Ok(TimedQueryRun {
-        samples,
+        execution_samples,
         setup_samples,
         planning_samples,
         final_measurement: final_measurement.expect("validated benchmark config requires iterations"),
@@ -372,10 +391,9 @@ pub(super) async fn run_native_query_iterations(
         }
     }
 
-    let mut samples = Vec::with_capacity(config.iterations);
+    let mut execution_samples = Vec::with_capacity(config.iterations);
     let mut setup_samples = Vec::with_capacity(config.iterations);
     let mut planning_samples = Vec::with_capacity(config.iterations);
-    let mut plan_plus_execution_samples = Vec::with_capacity(config.iterations);
     let mut iteration_wall_samples = Vec::with_capacity(config.iterations);
     let mut final_measurement = None;
     let mut measured_metrics = Vec::with_capacity(config.iterations);
@@ -400,9 +418,7 @@ pub(super) async fn run_native_query_iterations(
             collect_native_plan_once(Arc::clone(&planned.plan), resources, observation_capture.as_ref())
                 .await
                 .map_err(native_started)?;
-        let execution = started.elapsed();
-        samples.push(execution);
-        plan_plus_execution_samples.push(planned.planning + execution);
+        execution_samples.push(started.elapsed());
         final_measurement =
             Some(measure_output(schema, planned.row_ordering.clone(), batches).map_err(native_started)?);
         iteration_wall_samples.push(iteration_started.elapsed());
@@ -416,10 +432,9 @@ pub(super) async fn run_native_query_iterations(
     let metrics = aggregate_native_execution_metrics(&measured_metrics);
     let timing_metrics = NativeTpchTimingMetrics::mean_from_metrics(&measured_metrics);
     Ok(TimedNativeQueryRun {
-        samples,
+        execution_samples,
         setup_samples,
         planning_samples,
-        plan_plus_execution_samples,
         iteration_wall_samples,
         final_measurement: final_measurement.expect("validated benchmark config requires iterations"),
         metrics,

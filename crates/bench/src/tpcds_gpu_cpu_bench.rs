@@ -135,7 +135,10 @@ struct BenchConfig {
 }
 
 struct IterOutcome {
-    wall: Option<Duration>,
+    /// `SessionContext::sql` through physical planning; empty when no query ran.
+    planning: Option<Duration>,
+    /// `collect` only; empty when planning failed or the query did not run.
+    execution: Option<Duration>,
     outcome: &'static str,
     planning_outcome: String,
     output_batches: Option<usize>,
@@ -148,6 +151,13 @@ struct IterOutcome {
     failure: Option<String>,
 }
 
+impl IterOutcome {
+    /// Planning plus execution, the boundary DataFusion's dfbench times.
+    fn wall(&self) -> Option<Duration> {
+        self.planning.map(|planning| planning + self.execution.unwrap_or_default())
+    }
+}
+
 async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
     let ctx = &runtime.execution_ctx;
     let native_rule_installed = runtime.native_rule_installed;
@@ -156,7 +166,8 @@ async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
         Ok(df) => df,
         Err(err) => {
             return IterOutcome {
-                wall: Some(started_plan.elapsed()),
+                planning: Some(started_plan.elapsed()),
+                execution: None,
                 outcome: "sql_planning_failed",
                 planning_outcome: String::from("sql_to_logical_plan_failed"),
                 output_batches: None,
@@ -176,11 +187,13 @@ async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
     } else {
         df.create_physical_plan().await.map(|plan| (plan, None))
     };
+    let planning = started_plan.elapsed();
     let (plan, diagnostics) = match planned {
         Ok(planned) => planned,
         Err(err) => {
             return IterOutcome {
-                wall: Some(started_plan.elapsed()),
+                planning: Some(planning),
+                execution: None,
                 outcome: "physical_planning_failed",
                 planning_outcome: String::from("physical_planning_failed"),
                 output_batches: None,
@@ -198,7 +211,8 @@ async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
     let native_runtime_started = plan_contains_native_runtime(plan.as_ref());
     if native_rule_installed && !native_runtime_started {
         return IterOutcome {
-            wall: None,
+            planning: None,
+            execution: None,
             outcome: "native_rejected_not_run",
             planning_outcome,
             output_batches: None,
@@ -215,7 +229,7 @@ async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
     let task_ctx = Arc::new(TaskContext::default());
     let started = Instant::now();
     let collected = collect(Arc::clone(&plan), task_ctx).await;
-    let wall = started.elapsed();
+    let execution = started.elapsed();
 
     match collected {
         Ok(batches) => {
@@ -226,7 +240,8 @@ async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
             let native_metrics = native_metrics_from_metrics(Some(&metrics));
             let timing_metrics = NativeTimingMetrics::from_metrics(Some(&metrics));
             IterOutcome {
-                wall: Some(wall),
+                planning: Some(planning),
+                execution: Some(execution),
                 outcome: "succeeded",
                 planning_outcome,
                 output_batches: Some(output_batches),
@@ -240,7 +255,8 @@ async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
             }
         },
         Err(err) => IterOutcome {
-            wall: Some(wall),
+            planning: Some(planning),
+            execution: Some(execution),
             outcome: "execution_failed",
             planning_outcome,
             output_batches: None,
