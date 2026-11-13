@@ -169,7 +169,7 @@ async fn flight_sql_get_tables_with_include_schema_emits_arrow_schema() {
             let index = batch.schema().index_of("table_schema").ok()?;
             let bytes =
                 batch.column(index).as_any().downcast_ref::<BinaryArray>().expect("table_schema column must be Binary");
-            (0..bytes.len()).map(|i| try_schema_from_ipc_buffer(bytes.value(i)).unwrap()).next()
+            (0..bytes.len()).map(|i| convert::try_schema_from_ipc_buffer(bytes.value(i)).unwrap()).next()
         })
         .collect();
     assert_eq!(schemas.len(), 1, "expected exactly one table_schema row");

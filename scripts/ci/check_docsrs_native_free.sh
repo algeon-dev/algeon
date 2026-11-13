@@ -84,7 +84,11 @@ try:
             if message.get("reason") != "build-script-executed" or message.get("package_id") not in sys_packages:
                 continue
             package = sys_packages[message["package_id"]]
-            build_output = Path(message["out_dir"]).parent / "output"
+            # Cargo 1.100 keeps a build script's stdout in run/stdout beside out/;
+            # earlier Cargo writes it to output beside out/.
+            unit_dir = Path(message["out_dir"]).parent
+            build_output = next((path for path in (unit_dir / "run" / "stdout", unit_dir / "output") if path.is_file()),
+                                unit_dir / "run" / "stdout")
             directives = [line for line in build_output.read_text().splitlines()
                           if line.startswith(("cargo:rustc-link-", "cargo::rustc-link-"))]
             if message["linked_libs"] or message["linked_paths"] or directives:

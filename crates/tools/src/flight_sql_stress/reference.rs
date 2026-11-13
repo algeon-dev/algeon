@@ -19,7 +19,7 @@ use algeon_datafusion::native_report::bench_support::{
 };
 #[cfg(any(test, feature = "flight-sql-stress-check"))]
 use arrow::ipc::reader::FileReader;
-use arrow::{array::RecordBatch, datatypes::SchemaRef, ipc::writer::FileWriter};
+use arrow::{array::RecordBatch, datatypes::SchemaRef, ipc::writer};
 
 #[cfg(feature = "flight-sql-stress-check")]
 use super::CheckOutcome;
@@ -45,12 +45,12 @@ pub(super) fn reference_path(dir: &Path, statement: &str) -> PathBuf {
 
 pub(super) fn encode_reference(capture: &ResultCapture) -> Result<Vec<u8>, String> {
     let error = |_| "cannot encode the result as Arrow IPC".to_string();
-    let mut writer = FileWriter::try_new(Vec::new(), &capture.schema).map_err(error)?;
+    let mut file_writer = writer::FileWriter::try_new(Vec::new(), &capture.schema).map_err(error)?;
     for batch in &capture.batches {
-        writer.write(batch).map_err(error)?;
+        file_writer.write(batch).map_err(error)?;
     }
-    writer.finish().map_err(error)?;
-    writer.into_inner().map_err(error)
+    file_writer.finish().map_err(error)?;
+    file_writer.into_inner().map_err(error)
 }
 
 #[cfg(any(test, feature = "flight-sql-stress-check"))]

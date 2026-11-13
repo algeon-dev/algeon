@@ -1,6 +1,6 @@
 use std::{ops::ControlFlow, time::Instant};
 
-use arrow::error::ArrowError;
+use arrow::{error::ArrowError, ipc::writer};
 use arrow_flight::error::FlightError;
 use datafusion::{
     common::Result as DataFusionResult,
@@ -14,8 +14,8 @@ use prost::bytes::Bytes;
 
 use super::{
     CORRELATION_ID_METADATA_KEY, CancellationToken, CapturedError, Code, CoordinatorExecutionTerminal, DataFusionError,
-    DdlStatement, Error, ErrorCode, FailedStatement, IpcMessage, IpcWriteOptions, LogicalPlan, MetadataValue,
-    QUERY_ID_METADATA_KEY, Schema, SchemaAsIpc, Statement, StatementTicketKind, Status, adapter_error_to_status,
+    DdlStatement, Error, ErrorCode, FailedStatement, IpcMessage, LogicalPlan, MetadataValue, QUERY_ID_METADATA_KEY,
+    Schema, SchemaAsIpc, Statement, StatementTicketKind, Status, adapter_error_to_status,
     datafusion_error_to_captured_error, datafusion_error_to_status_for_operation,
 };
 use crate::{
@@ -251,7 +251,7 @@ pub(super) fn arrow_error_to_status_for_operation(
 /// `parameter_schema`. Returns the `prost::bytes::Bytes` payload ready to drop
 /// into the proto message.
 pub(super) fn schema_to_ipc_bytes(schema: &Schema) -> std::result::Result<Bytes, ArrowError> {
-    let options = IpcWriteOptions::default();
+    let options = writer::IpcWriteOptions::default();
     let IpcMessage(bytes) = IpcMessage::try_from(SchemaAsIpc::new(schema, &options))?;
     Ok(bytes)
 }

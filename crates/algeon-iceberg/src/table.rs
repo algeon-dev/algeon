@@ -21,7 +21,6 @@ use datafusion::{
     execution::{cache::cache_manager::FileMetadataCache, object_store::ObjectStoreUrl},
     logical_expr::{Expr, TableProviderFilterPushDown},
     object_store::{ObjectMeta, ObjectStore, ObjectStoreExt, path::Path as ObjectPath},
-    parquet::arrow::parquet_to_arrow_schema,
     physical_plan::{ExecutionPlan, empty::EmptyExec},
 };
 use futures::{StreamExt, TryStreamExt, stream};
@@ -31,6 +30,7 @@ use iceberg::{
     spec::{DataFileFormat, NameMapping, SchemaRef as IcebergSchemaRef},
     table::Table,
 };
+use parquet::arrow::parquet_to_arrow_schema;
 
 use crate::{
     binding::{FileBinding, column_with_stored_type_mismatch, identity_partition_sources},

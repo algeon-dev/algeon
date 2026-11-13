@@ -334,7 +334,7 @@ pub(super) fn bind_predicate_gpu_inputs(
                 error,
             )
         })?;
-        inputs.insert(input_name.clone(), handle);
+        inputs.insert(input_name, handle);
     }
     Ok(())
 }

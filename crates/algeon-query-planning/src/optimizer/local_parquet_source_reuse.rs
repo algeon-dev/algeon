@@ -273,7 +273,7 @@ fn discover_source_reuse_candidates(
         let applied = rejected_reason.is_none();
         diagnostics.candidates.push(LocalParquetSourceReuseCandidateDiagnostics {
             rule_name: LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME,
-            source_node_ids: source_node_ids.clone(),
+            source_node_ids,
             reuse_count: variants.len(),
             stable_file_ids,
             superset_read_columns: superset_read_columns.iter().map(|column| column.name.clone()).collect(),

@@ -1154,8 +1154,7 @@ pub(crate) mod tests {
                 .expect("bounded consumer completion installs an admission ticket");
             let evidence = completed_ticket
                 .attempt_capability_evidence()
-                .expect("bounded consumer completion retains the composed evidence")
-                .clone();
+                .expect("bounded consumer completion retains the composed evidence");
             let handle = backend
                 .backend()
                 .session_capability()

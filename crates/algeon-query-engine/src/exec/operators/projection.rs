@@ -412,7 +412,6 @@ fn try_execute_column_only_projection(
         mappings.push((source_name, output_name));
     }
     for order_column in datafusion_order_columns(&frame) {
-        let order_column = order_column.to_string();
         if mappings.iter().any(|(_, output)| output == &order_column) {
             return Ok(None);
         }

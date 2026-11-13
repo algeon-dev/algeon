@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
 use arrow::datatypes::DataType;
-use datafusion::{execution::object_store::ObjectStoreUrl, parquet::schema::types::SchemaDescriptor};
-use parquet::file::metadata::{ColumnChunkMetaData, RowGroupMetaData};
+use datafusion::execution::object_store::ObjectStoreUrl;
+use parquet::{
+    file::metadata::{ColumnChunkMetaData, RowGroupMetaData},
+    schema::types::SchemaDescriptor,
+};
 use query_planning::parquet_stats::{integer_statistics_range, leaf_column_chunk, leaf_column_statistics};
 
 use super::{

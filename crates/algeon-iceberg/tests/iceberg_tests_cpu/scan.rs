@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
+use arrow::datatypes::DataType;
 use datafusion::{
-    arrow::datatypes::DataType,
     catalog::TableProvider,
     common::stats::Precision,
     datasource::{

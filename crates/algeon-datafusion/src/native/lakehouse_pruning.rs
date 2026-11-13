@@ -746,7 +746,7 @@ mod tests {
         record_batch::RecordBatch,
     };
     use datafusion::{
-        object_store::memory::InMemory,
+        object_store::memory,
         parquet::{
             arrow::ArrowWriter,
             data_type::FixedLenByteArray,
@@ -1023,7 +1023,7 @@ mod tests {
         let bytes = fs::read(&path).expect("test parquet file bytes should be readable");
         let file_size = bytes.len() as u64;
 
-        let store = Arc::new(InMemory::new());
+        let store = Arc::new(memory::InMemory::new());
         let object_path = ObjectStorePath::parse("warehouse/test.parquet").expect("valid path");
         store.put(&object_path, bytes.clone().into()).await.expect("put should succeed");
 
@@ -1046,7 +1046,7 @@ mod tests {
 
     #[tokio::test]
     async fn object_store_parquet_reader_maps_errors_to_parquet_external() {
-        let store = Arc::new(InMemory::new());
+        let store = Arc::new(memory::InMemory::new());
         let missing_path = ObjectStorePath::parse("warehouse/missing.parquet").expect("valid path");
         let mut reader = ObjectStoreParquetReader::new(store, missing_path, 100);
 

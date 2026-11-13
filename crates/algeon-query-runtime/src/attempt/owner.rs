@@ -2091,9 +2091,8 @@ mod abandonment_race_tests {
         for _ in 0..64 {
             let queue = Arc::new(AttemptCompletionQueue::new(4).expect("queue"));
             let begin = begin(Some(Arc::clone(&queue)));
-            let factory = begin.completion.clone();
+            let cloner_factory = begin.completion.clone();
             let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
-            let cloner_factory = factory.clone();
             let cloner = std::thread::spawn(move || {
                 go_rx.recv().expect("go");
                 cloner_factory.completion()

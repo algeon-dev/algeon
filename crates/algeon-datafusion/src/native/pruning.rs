@@ -186,7 +186,7 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
             index
         } else {
             coverages.push(FileCoverage {
-                location: location.clone(),
+                location,
                 size: file.object_meta.size,
                 partition_values: &file.partition_values,
                 representative: file,

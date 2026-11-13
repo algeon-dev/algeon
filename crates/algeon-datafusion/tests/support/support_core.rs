@@ -17,12 +17,12 @@ use arrow::{
 };
 use datafusion::{
     common::{DataFusionError, ScalarValue},
-    parquet::arrow::ArrowWriter,
     physical_expr::expressions::{LikeExpr, col, lit},
     physical_plan::{ExecutionPlan, filter::FilterExec},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use futures::executor::block_on;
+use parquet::arrow::ArrowWriter;
 
 pub(super) fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {
     batch.column(index).as_any().downcast_ref::<Int32Array>().unwrap()

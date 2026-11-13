@@ -170,7 +170,7 @@ pub(super) fn verify_bundle(
                     failures.push(format!("{} source or binary identity differs", path.display()));
                 }
             } else {
-                common_identity = Some(identity.clone());
+                common_identity = Some(identity);
             }
             let fixtures = artifact.pointer("/execution/fixtures").cloned().unwrap_or(Value::Null);
             if let Some(expected) = &cell_fixtures {
