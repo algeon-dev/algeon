@@ -113,6 +113,90 @@ fn bounded_native_query_emits_rollup_grand_total_row_for_runtime_filtered_empty_
 }
 
 #[test]
+fn rollup_grand_total_aggregates_read_grouping_key_input_values() {
+    // AVG keeps the plan off the prefix-rollup shortcut, so the grand total runs its own
+    // groupby. Its output key is NULL, but SUM, COUNT and MAX of the key read the input rows.
+    let context = backend_context();
+    let input_schema =
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true), Field::new("y", DataType::Float64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(1), Some(1), Some(2), None])) as _,
+            Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0])) as _,
+        ],
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int32, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("s", DataType::Int64, true),
+        Field::new("c", DataType::Int64, false),
+        Field::new("mx", DataType::Int32, true),
+        Field::new("m", DataType::Float64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), vec![batch])));
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("a")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::Sum, Expr::column("a"), "s"),
+                    AggregateExpr::new(AggregateFunction::Count, Expr::column("a"), "c"),
+                    AggregateExpr::new(AggregateFunction::Max, Expr::column("a"), "mx"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("y"), "m"),
+                ],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "__grouping_id")),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            aggregate,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("__grouping_id"), false, false),
+                SortExpr::new(Expr::column("a"), false, false),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let grouping_ids = batch.column(1).as_any().downcast_ref::<UInt32Array>().unwrap();
+    let rows = (0..batch.num_rows())
+        .map(|row| {
+            let value = |array: &Int32Array| (!array.is_null(row)).then(|| array.value(row));
+            let sum = int64_array(batch, 2);
+            (
+                value(int32_array(batch, 0)),
+                grouping_ids.value(row),
+                (!sum.is_null(row)).then(|| sum.value(row)),
+                int64_array(batch, 3).value(row),
+                value(int32_array(batch, 4)),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![
+            (Some(1), 0, Some(2), 2, Some(1)),
+            (Some(2), 0, Some(2), 1, Some(2)),
+            (None, 0, None, 0, None),
+            (None, 1, Some(4), 3, Some(2)),
+        ],
+        "rows are (a, grouping id, SUM(a), COUNT(a), MAX(a))"
+    );
+}
+
+#[test]
 fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials() {
     let dir = unique_temp_dir("query-engine-bounded-compiled-rollup-avg-typed-null-partials");
     let inventory_path = dir.join("inventory.parquet");

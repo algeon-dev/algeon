@@ -4,12 +4,20 @@
 //! Resolvers fold the rows they read through [`I64ExprRangeAccumulator`] and
 //! `DimensionKeyAccumulator`, so the in-crate local pass and the adapter's
 //! object-store pass derive the same range from the same rows. The scalar
-//! evaluator decides which rows contribute keys; a row it accepts that the
-//! executor would reject could prune a row group the join still needs, so it
-//! returns `None` for every expression form, type, or operator it does not
-//! implement, and callers treat `None` as "no facts" and skip the candidate.
-//! A null predicate result rejects the row, and `AND`/`OR` treat a null operand
-//! as false.
+//! evaluator decides which rows contribute keys and values. A row it rejects
+//! that the executor accepts drops a key or narrows a range, which prunes a
+//! row group the join still needs or filters rows the join matches, so every
+//! value it computes must equal the executor's. It returns `None` for every
+//! expression form, type, or operator whose result it does not reproduce, and
+//! callers treat `None` as "no facts" and skip the candidate.
+//!
+//! `AND`, `OR` and `NOT` follow SQL three-valued logic, and only the final
+//! predicate result maps NULL to a rejected row. Integers keep the Arrow
+//! type they were read or cast as. `+`, `-` and `*` take operands of one
+//! signedness and wrap at the wider operand's width, as native integer
+//! arithmetic does. Mixed signedness returns `None`.
+
+use std::cmp::Ordering;
 
 use super::{
     AggregateNode, Array, BinaryOp, BooleanArray, DataType, Date32Array, DimensionKeyFilter, Expr, Float32Array,
@@ -220,7 +228,7 @@ fn observe_i64_expr_range_batch(
         }
         let value = match eval_scalar(expr, batch, row)? {
             Scalar::Null => continue,
-            value => scalar_to_i64(value)?,
+            value => scalar_to_i64(&value)?,
         };
         *range = Some(match *range {
             Some(existing) => KeyRange { min: existing.min.min(value), max: existing.max.max(value) },
@@ -233,11 +241,108 @@ fn observe_i64_expr_range_batch(
 #[derive(Debug, Clone, PartialEq)]
 enum Scalar {
     Boolean(bool),
-    Int64(i64),
-    UInt64(u64),
+    /// An integer and the type of the column, literal or cast that produced
+    /// it. `i128` holds every supported integer type exactly.
+    Integer {
+        value: i128,
+        data_type: IntegerType,
+    },
     Float64(f64),
     String(String),
     Null,
+}
+
+/// The Arrow type of a [`Scalar::Integer`]. Dates are day or millisecond
+/// counts; they compare as integers and take no arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntegerType {
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    Date32,
+    Date64,
+}
+
+impl IntegerType {
+    fn from_data_type(data_type: &DataType) -> Option<Self> {
+        match data_type {
+            DataType::Int8 => Some(Self::Int8),
+            DataType::Int16 => Some(Self::Int16),
+            DataType::Int32 => Some(Self::Int32),
+            DataType::Int64 => Some(Self::Int64),
+            DataType::UInt8 => Some(Self::UInt8),
+            DataType::UInt16 => Some(Self::UInt16),
+            DataType::UInt32 => Some(Self::UInt32),
+            DataType::UInt64 => Some(Self::UInt64),
+            DataType::Date32 => Some(Self::Date32),
+            DataType::Date64 => Some(Self::Date64),
+            _ => None,
+        }
+    }
+
+    fn contains(self, value: i128) -> bool {
+        match self {
+            Self::Int8 => i8::try_from(value).is_ok(),
+            Self::Int16 => i16::try_from(value).is_ok(),
+            Self::Int32 | Self::Date32 => i32::try_from(value).is_ok(),
+            Self::Int64 | Self::Date64 => i64::try_from(value).is_ok(),
+            Self::UInt8 => u8::try_from(value).is_ok(),
+            Self::UInt16 => u16::try_from(value).is_ok(),
+            Self::UInt32 => u32::try_from(value).is_ok(),
+            Self::UInt64 => u64::try_from(value).is_ok(),
+        }
+    }
+
+    /// Signedness and width rank of an arithmetic integer type; `None` for
+    /// dates.
+    fn arithmetic_rank(self) -> Option<(bool, u8)> {
+        match self {
+            Self::Int8 => Some((true, 0)),
+            Self::Int16 => Some((true, 1)),
+            Self::Int32 => Some((true, 2)),
+            Self::Int64 => Some((true, 3)),
+            Self::UInt8 => Some((false, 0)),
+            Self::UInt16 => Some((false, 1)),
+            Self::UInt32 => Some((false, 2)),
+            Self::UInt64 => Some((false, 3)),
+            Self::Date32 | Self::Date64 => None,
+        }
+    }
+
+    /// Result type of integer `+`, `-` or `*` over `self` and `other`: the
+    /// wider type when both have the same signedness, as the backend infers.
+    /// `None` for mixed signedness, whose kernel computes in a type other than
+    /// the inferred one, and for dates.
+    fn arithmetic_result(self, other: Self) -> Option<Self> {
+        let (signed, rank) = self.arithmetic_rank()?;
+        let (other_signed, other_rank) = other.arithmetic_rank()?;
+        (signed == other_signed).then_some(if rank >= other_rank { self } else { other })
+    }
+
+    /// Reduces `value` modulo the type's width into its range, the result of
+    /// wrapping arithmetic in this type. `None` for dates.
+    fn wrap(self, value: i128) -> Option<i128> {
+        match self {
+            Self::Int8 => Some(i128::from(value as i8)),
+            Self::Int16 => Some(i128::from(value as i16)),
+            Self::Int32 => Some(i128::from(value as i32)),
+            Self::Int64 => Some(i128::from(value as i64)),
+            Self::UInt8 => Some(i128::from(value as u8)),
+            Self::UInt16 => Some(i128::from(value as u16)),
+            Self::UInt32 => Some(i128::from(value as u32)),
+            Self::UInt64 => Some(i128::from(value as u64)),
+            Self::Date32 | Self::Date64 => None,
+        }
+    }
+}
+
+fn integer(value: impl Into<i128>, data_type: IntegerType) -> Scalar {
+    Scalar::Integer { value: value.into(), data_type }
 }
 
 /// Evaluates a predicate for one row; a null result rejects the row.
@@ -255,8 +360,8 @@ fn eval_scalar(expr: &Expr, batch: &RecordBatch, row: usize) -> Option<Scalar> {
         Expr::Literal(value) => literal_scalar(value),
         Expr::Alias { expr, .. } => eval_scalar(expr, batch, row),
         Expr::Cast { expr, target_type } => cast_scalar(eval_scalar(expr, batch, row)?, target_type),
-        Expr::Binary { left, op, right, .. } => {
-            eval_binary(eval_scalar(left, batch, row)?, *op, eval_scalar(right, batch, row)?)
+        Expr::Binary { left, op, right, output_type } => {
+            eval_binary(eval_scalar(left, batch, row)?, *op, eval_scalar(right, batch, row)?, output_type.as_ref())
         },
         Expr::Not(inner) => match eval_scalar(inner, batch, row)? {
             Scalar::Boolean(value) => Some(Scalar::Boolean(!value)),
@@ -270,6 +375,8 @@ fn eval_scalar(expr: &Expr, batch: &RecordBatch, row: usize) -> Option<Scalar> {
             if matches!(value, Scalar::Null) {
                 return Some(Scalar::Null);
             }
+            // Runnable plans hold only non-null literals in the list, and
+            // `scalar_eq` returns `None` for a NULL item.
             let mut matched = false;
             for item in list {
                 if scalar_eq(&value, &eval_scalar(item, batch, row)?)? {
@@ -317,11 +424,17 @@ fn array_scalar(array: &dyn Array, row: usize) -> Option<Scalar> {
     }
     match array.data_type() {
         DataType::Boolean => Some(Scalar::Boolean(array.as_any().downcast_ref::<BooleanArray>()?.value(row))),
-        DataType::Int32 => Some(Scalar::Int64(i64::from(array.as_any().downcast_ref::<Int32Array>()?.value(row)))),
-        DataType::Date32 => Some(Scalar::Int64(i64::from(array.as_any().downcast_ref::<Date32Array>()?.value(row)))),
-        DataType::Int64 => Some(Scalar::Int64(array.as_any().downcast_ref::<Int64Array>()?.value(row))),
-        DataType::UInt32 => Some(Scalar::UInt64(u64::from(array.as_any().downcast_ref::<UInt32Array>()?.value(row)))),
-        DataType::UInt64 => Some(Scalar::UInt64(array.as_any().downcast_ref::<UInt64Array>()?.value(row))),
+        DataType::Int32 => Some(integer(array.as_any().downcast_ref::<Int32Array>()?.value(row), IntegerType::Int32)),
+        DataType::Date32 => {
+            Some(integer(array.as_any().downcast_ref::<Date32Array>()?.value(row), IntegerType::Date32))
+        },
+        DataType::Int64 => Some(integer(array.as_any().downcast_ref::<Int64Array>()?.value(row), IntegerType::Int64)),
+        DataType::UInt32 => {
+            Some(integer(array.as_any().downcast_ref::<UInt32Array>()?.value(row), IntegerType::UInt32))
+        },
+        DataType::UInt64 => {
+            Some(integer(array.as_any().downcast_ref::<UInt64Array>()?.value(row), IntegerType::UInt64))
+        },
         DataType::Float32 => {
             Some(Scalar::Float64(f64::from(array.as_any().downcast_ref::<Float32Array>()?.value(row))))
         },
@@ -354,15 +467,16 @@ pub(super) fn array_i64_value(array: &dyn Array, row: usize) -> Option<Option<i6
 fn literal_scalar(value: &LiteralValue) -> Option<Scalar> {
     match value {
         LiteralValue::Boolean(value) => Some(Scalar::Boolean(*value)),
-        LiteralValue::Int8(value) => Some(Scalar::Int64(i64::from(*value))),
-        LiteralValue::Int16(value) => Some(Scalar::Int64(i64::from(*value))),
-        LiteralValue::Int32(value) | LiteralValue::Date32(value) => Some(Scalar::Int64(i64::from(*value))),
-        LiteralValue::Date64(value) => Some(Scalar::Int64(*value)),
-        LiteralValue::Int64(value) => Some(Scalar::Int64(*value)),
-        LiteralValue::UInt8(value) => Some(Scalar::UInt64(u64::from(*value))),
-        LiteralValue::UInt16(value) => Some(Scalar::UInt64(u64::from(*value))),
-        LiteralValue::UInt32(value) => Some(Scalar::UInt64(u64::from(*value))),
-        LiteralValue::UInt64(value) => Some(Scalar::UInt64(*value)),
+        LiteralValue::Int8(value) => Some(integer(*value, IntegerType::Int8)),
+        LiteralValue::Int16(value) => Some(integer(*value, IntegerType::Int16)),
+        LiteralValue::Int32(value) => Some(integer(*value, IntegerType::Int32)),
+        LiteralValue::Date32(value) => Some(integer(*value, IntegerType::Date32)),
+        LiteralValue::Date64(value) => Some(integer(*value, IntegerType::Date64)),
+        LiteralValue::Int64(value) => Some(integer(*value, IntegerType::Int64)),
+        LiteralValue::UInt8(value) => Some(integer(*value, IntegerType::UInt8)),
+        LiteralValue::UInt16(value) => Some(integer(*value, IntegerType::UInt16)),
+        LiteralValue::UInt32(value) => Some(integer(*value, IntegerType::UInt32)),
+        LiteralValue::UInt64(value) => Some(integer(*value, IntegerType::UInt64)),
         LiteralValue::Float32(value) => Some(Scalar::Float64(f64::from(*value))),
         LiteralValue::Float64(value) => Some(Scalar::Float64(*value)),
         LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => Some(Scalar::String(value.clone())),
@@ -376,14 +490,29 @@ fn literal_scalar(value: &LiteralValue) -> Option<Scalar> {
     }
 }
 
+/// Casts that keep the value exact. An integer target takes only values in
+/// its range and floats with no fractional part, because the executor fails
+/// or truncates on the others.
 fn cast_scalar(value: Scalar, target_type: &DataType) -> Option<Scalar> {
     if matches!(value, Scalar::Null) {
         return Some(Scalar::Null);
     }
+    if let Some(data_type) = IntegerType::from_data_type(target_type) {
+        let value = match value {
+            Scalar::Integer { value, .. } => value,
+            Scalar::Float64(value) => exact_i128_from_f64(value)?,
+            Scalar::Boolean(_) | Scalar::String(_) | Scalar::Null => return None,
+        };
+        return data_type.contains(value).then_some(Scalar::Integer { value, data_type });
+    }
     match target_type {
-        DataType::Int32 | DataType::Int64 | DataType::Date32 => scalar_to_i64(value).map(Scalar::Int64),
-        DataType::UInt32 | DataType::UInt64 => scalar_to_u64(value).map(Scalar::UInt64),
-        DataType::Float32 | DataType::Float64 => scalar_to_f64(value).map(Scalar::Float64),
+        DataType::Float64 => scalar_to_f64(&value).map(Scalar::Float64),
+        // An integer rounds to f32 once; going through f64 would round twice.
+        DataType::Float32 => match value {
+            Scalar::Integer { value, .. } => Some(Scalar::Float64(f64::from(value as f32))),
+            Scalar::Float64(value) => Some(Scalar::Float64(f64::from(value as f32))),
+            Scalar::Boolean(_) | Scalar::String(_) | Scalar::Null => None,
+        },
         DataType::Boolean => match value {
             Scalar::Boolean(value) => Some(Scalar::Boolean(value)),
             _ => None,
@@ -396,7 +525,7 @@ fn cast_scalar(value: Scalar, target_type: &DataType) -> Option<Scalar> {
     }
 }
 
-fn eval_binary(left: Scalar, op: BinaryOp, right: Scalar) -> Option<Scalar> {
+fn eval_binary(left: Scalar, op: BinaryOp, right: Scalar, output_type: Option<&DataType>) -> Option<Scalar> {
     if matches!(op, BinaryOp::And | BinaryOp::Or) {
         return eval_boolean_binary(left, op, right);
     }
@@ -406,13 +535,13 @@ fn eval_binary(left: Scalar, op: BinaryOp, right: Scalar) -> Option<Scalar> {
     match op {
         BinaryOp::Eq => scalar_eq(&left, &right).map(Scalar::Boolean),
         BinaryOp::NotEq => scalar_eq(&left, &right).map(|value| Scalar::Boolean(!value)),
-        BinaryOp::Lt => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering < 0)),
-        BinaryOp::LtEq => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering <= 0)),
-        BinaryOp::Gt => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering > 0)),
-        BinaryOp::GtEq => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering >= 0)),
-        BinaryOp::Add => eval_checked_i64_binary(left, right, i64::checked_add).map(Scalar::Int64),
-        BinaryOp::Subtract => eval_checked_i64_binary(left, right, i64::checked_sub).map(Scalar::Int64),
-        BinaryOp::Multiply => eval_checked_i64_binary(left, right, i64::checked_mul).map(Scalar::Int64),
+        BinaryOp::Lt => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering.is_lt())),
+        BinaryOp::LtEq => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering.is_le())),
+        BinaryOp::Gt => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering.is_gt())),
+        BinaryOp::GtEq => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering.is_ge())),
+        BinaryOp::Add => eval_wrapping_integer_binary(left, right, output_type, i128::wrapping_add),
+        BinaryOp::Subtract => eval_wrapping_integer_binary(left, right, output_type, i128::wrapping_sub),
+        BinaryOp::Multiply => eval_wrapping_integer_binary(left, right, output_type, i128::wrapping_mul),
         BinaryOp::Divide
         | BinaryOp::Modulo
         | BinaryOp::BitwiseAnd
@@ -425,84 +554,98 @@ fn eval_binary(left: Scalar, op: BinaryOp, right: Scalar) -> Option<Scalar> {
     }
 }
 
-fn eval_checked_i64_binary(left: Scalar, right: Scalar, op: fn(i64, i64) -> Option<i64>) -> Option<i64> {
-    op(scalar_to_i64(left)?, scalar_to_i64(right)?)
+/// Integer `+`, `-` or `*`, wrapped at the width of the result type. The
+/// kernel computes in at least that width before narrowing, so the low bits
+/// are the exact result's. `i128` wrapping keeps the low 128 bits, which
+/// reduces to the same value at 64 bits or less.
+fn eval_wrapping_integer_binary(
+    left: Scalar,
+    right: Scalar,
+    output_type: Option<&DataType>,
+    op: fn(i128, i128) -> i128,
+) -> Option<Scalar> {
+    let (
+        Scalar::Integer { value: left, data_type: left_type },
+        Scalar::Integer { value: right, data_type: right_type },
+    ) = (left, right)
+    else {
+        return None;
+    };
+    let data_type = left_type.arithmetic_result(right_type)?;
+    if output_type.is_some_and(|output_type| IntegerType::from_data_type(output_type) != Some(data_type)) {
+        return None;
+    }
+    let value = data_type.wrap(op(left, right))?;
+    Some(Scalar::Integer { value, data_type })
 }
 
+/// SQL `AND`/`OR`: a NULL operand yields NULL unless the other operand
+/// decides the result (`FALSE AND NULL` is FALSE, `TRUE OR NULL` is TRUE).
 fn eval_boolean_binary(left: Scalar, op: BinaryOp, right: Scalar) -> Option<Scalar> {
-    let left = match left {
-        Scalar::Boolean(value) => value,
-        Scalar::Null => false,
-        _ => return None,
-    };
-    let right = match right {
-        Scalar::Boolean(value) => value,
-        Scalar::Null => false,
-        _ => return None,
-    };
-    match op {
-        BinaryOp::And => Some(Scalar::Boolean(left && right)),
-        BinaryOp::Or => Some(Scalar::Boolean(left || right)),
+    let sql_boolean = |value: Scalar| match value {
+        Scalar::Boolean(value) => Some(Some(value)),
+        Scalar::Null => Some(None),
         _ => None,
-    }
+    };
+    let (left, right) = (sql_boolean(left)?, sql_boolean(right)?);
+    let result = match op {
+        BinaryOp::And => match (left, right) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        },
+        BinaryOp::Or => match (left, right) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        },
+        _ => return None,
+    };
+    Some(result.map_or(Scalar::Null, Scalar::Boolean))
 }
 
+/// Equality of two non-null scalars; `None` when either is NULL.
 fn scalar_eq(left: &Scalar, right: &Scalar) -> Option<bool> {
-    if matches!((left, right), (Scalar::Null, _) | (_, Scalar::Null)) {
-        return Some(false);
-    }
     if let (Scalar::String(left), Scalar::String(right)) = (left, right) {
         return Some(left == right);
     }
-    Some(scalar_cmp(left, right)? == 0)
+    Some(scalar_cmp(left, right)?.is_eq())
 }
 
-fn scalar_cmp(left: &Scalar, right: &Scalar) -> Option<i8> {
-    if let (Some(left), Some(right)) = (scalar_to_i64(left.clone()), scalar_to_i64(right.clone())) {
-        return Some(left.cmp(&right) as i8);
+/// Order of two non-null numeric scalars. Integers compare exactly; an
+/// integer against a float compares as `f64`, the type the comparison
+/// coerces to. `None` for NaN, NULL and non-numeric operands.
+fn scalar_cmp(left: &Scalar, right: &Scalar) -> Option<Ordering> {
+    if let (Scalar::Integer { value: left, .. }, Scalar::Integer { value: right, .. }) = (left, right) {
+        return Some(left.cmp(right));
     }
-    let left = scalar_to_f64(left.clone())?;
-    let right = scalar_to_f64(right.clone())?;
-    left.partial_cmp(&right).map(|ordering| match ordering {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
-    })
+    scalar_to_f64(left)?.partial_cmp(&scalar_to_f64(right)?)
 }
 
-fn scalar_to_i64(value: Scalar) -> Option<i64> {
+fn scalar_to_i64(value: &Scalar) -> Option<i64> {
     match value {
-        Scalar::Int64(value) => Some(value),
-        Scalar::UInt64(value) => i64::try_from(value).ok(),
-        Scalar::Float64(value) => exact_i64_from_f64(value),
+        Scalar::Integer { value, .. } => i64::try_from(*value).ok(),
+        Scalar::Float64(value) => exact_i128_from_f64(*value).and_then(|value| i64::try_from(value).ok()),
         Scalar::Boolean(_) | Scalar::String(_) | Scalar::Null => None,
     }
 }
 
 /// Converts only when the float is an integer that round-trips. A rounded
 /// conversion could place a key one step inside or outside a row-group range.
-fn exact_i64_from_f64(value: f64) -> Option<i64> {
-    if !value.is_finite() || value.fract() != 0.0 || value < i64::MIN as f64 || value >= 9_223_372_036_854_775_808.0 {
+fn exact_i128_from_f64(value: f64) -> Option<i128> {
+    // 2^64; every integer type this evaluator holds lies below it.
+    const LIMIT: f64 = 18_446_744_073_709_551_616.0;
+    if !value.is_finite() || value.fract() != 0.0 || value.abs() >= LIMIT {
         return None;
     }
-    let converted = value as i64;
+    let converted = value as i128;
     ((converted as f64) == value).then_some(converted)
 }
 
-fn scalar_to_u64(value: Scalar) -> Option<u64> {
+fn scalar_to_f64(value: &Scalar) -> Option<f64> {
     match value {
-        Scalar::Int64(value) => u64::try_from(value).ok(),
-        Scalar::UInt64(value) => Some(value),
-        Scalar::Float64(value) if value.fract() == 0.0 && value >= 0.0 => Some(value as u64),
-        Scalar::Boolean(_) | Scalar::Float64(_) | Scalar::String(_) | Scalar::Null => None,
-    }
-}
-
-fn scalar_to_f64(value: Scalar) -> Option<f64> {
-    match value {
-        Scalar::Int64(value) => Some(value as f64),
-        Scalar::UInt64(value) => Some(value as f64),
-        Scalar::Float64(value) => Some(value),
+        Scalar::Integer { value, .. } => Some(*value as f64),
+        Scalar::Float64(value) => Some(*value),
         Scalar::Boolean(_) | Scalar::String(_) | Scalar::Null => None,
     }
 }
@@ -585,4 +728,85 @@ fn like_tokens(pattern: &str, escape: Option<char>) -> Option<Vec<LikeToken>> {
         }
     }
     Some(tokens)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        array::{ArrayRef, BooleanArray, Int32Array, UInt32Array, UInt64Array},
+        datatypes::{Field, Schema},
+        record_batch::RecordBatch,
+    };
+
+    use super::{BinaryOp, Expr, LiteralValue, eval_bool, eval_scalar};
+
+    fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
+        let schema = Schema::new(
+            columns.iter().map(|(name, array)| Field::new(*name, array.data_type().clone(), true)).collect::<Vec<_>>(),
+        );
+        RecordBatch::try_new(Arc::new(schema), columns.into_iter().map(|(_, array)| array).collect()).unwrap()
+    }
+
+    fn binary(left: Expr, op: BinaryOp, right: Expr) -> Expr {
+        Expr::binary(left, op, right)
+    }
+
+    #[test]
+    fn integer_arithmetic_wraps_at_the_operand_type_width() {
+        let batch = batch(vec![
+            ("u1", Arc::new(UInt32Array::from(vec![3])) as ArrayRef),
+            ("u2", Arc::new(UInt32Array::from(vec![5])) as ArrayRef),
+            ("i", Arc::new(Int32Array::from(vec![i32::MAX])) as ArrayRef),
+        ]);
+        // 3 - 5 in UInt32 is 4294967294, so the row passes `> 10`.
+        let unsigned = binary(
+            binary(Expr::column("u1"), BinaryOp::Subtract, Expr::column("u2")),
+            BinaryOp::Gt,
+            Expr::literal(LiteralValue::UInt32(10)),
+        );
+        assert_eq!(eval_bool(&unsigned, &batch, 0), Some(true));
+        let signed = binary(
+            binary(Expr::column("i"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(1))),
+            BinaryOp::Lt,
+            Expr::literal(LiteralValue::Int32(0)),
+        );
+        assert_eq!(eval_bool(&signed, &batch, 0), Some(true));
+        // Int32 + Int64 is Int64 arithmetic, so it does not wrap at 32 bits.
+        let widened = binary(
+            binary(Expr::column("i"), BinaryOp::Add, Expr::literal(LiteralValue::Int64(1))),
+            BinaryOp::Gt,
+            Expr::literal(LiteralValue::Int64(0)),
+        );
+        assert_eq!(eval_bool(&widened, &batch, 0), Some(true));
+        // The kernel computes UInt32 - Int32 in a type other than the inferred Int64.
+        let mixed_sign = binary(Expr::column("u1"), BinaryOp::Subtract, Expr::column("i"));
+        assert_eq!(eval_scalar(&mixed_sign, &batch, 0), None);
+    }
+
+    #[test]
+    fn boolean_operators_keep_null_below_the_predicate_root() {
+        let batch = batch(vec![
+            ("p", Arc::new(BooleanArray::from(vec![None, Some(false)])) as ArrayRef),
+            ("q", Arc::new(BooleanArray::from(vec![Some(true), None])) as ArrayRef),
+        ]);
+        let and_is_null = Expr::IsNull(Box::new(binary(Expr::column("p"), BinaryOp::And, Expr::column("q"))));
+        let or_is_null = Expr::IsNull(Box::new(binary(Expr::column("p"), BinaryOp::Or, Expr::column("q"))));
+        // NULL AND TRUE is NULL; FALSE AND NULL is FALSE.
+        assert_eq!(eval_bool(&and_is_null, &batch, 0), Some(true));
+        assert_eq!(eval_bool(&and_is_null, &batch, 1), Some(false));
+        // NULL OR TRUE is TRUE; FALSE OR NULL is NULL.
+        assert_eq!(eval_bool(&or_is_null, &batch, 0), Some(false));
+        assert_eq!(eval_bool(&or_is_null, &batch, 1), Some(true));
+        let not_and = Expr::logical_not(binary(Expr::column("p"), BinaryOp::And, Expr::column("q")));
+        assert_eq!(eval_bool(&not_and, &batch, 0), Some(false), "NOT NULL rejects the row");
+    }
+
+    #[test]
+    fn uint64_values_above_i64_max_compare_exactly() {
+        let batch = batch(vec![("x", Arc::new(UInt64Array::from(vec![u64::MAX])) as ArrayRef)]);
+        let predicate = binary(Expr::column("x"), BinaryOp::Gt, Expr::literal(LiteralValue::UInt64(u64::MAX - 1)));
+        assert_eq!(eval_bool(&predicate, &batch, 0), Some(true));
+    }
 }
