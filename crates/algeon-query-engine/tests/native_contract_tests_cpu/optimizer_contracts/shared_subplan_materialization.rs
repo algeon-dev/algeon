@@ -1084,6 +1084,71 @@ fn native_optimizer_combines_grouped_join_branches_with_predicate_on_preserved_i
     }
 }
 
+#[test]
+fn native_optimizer_rejects_grouped_materialization_whose_widened_sources_pair_rows_that_can_fail() {
+    // Members read `wa[ak = 1] JOIN wb[bk = 1]` and `wa[ak = 2] JOIN wb[bk = 2]`.
+    // The shared aggregate reads `wa[ak IN (1, 2)] JOIN wb[bk IN (1, 2)]`, which
+    // also pairs `ak = 1` with `bk = 2`, rows on which `x / y` is evaluated by
+    // no member.
+    let materialize = |measure: BinaryOp, widened_right: bool| {
+        let plan = repeated_grouped_measure_over_filtered_join_plan(measure, widened_right);
+        let options = NativeOptimizerOptions {
+            shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+            ..NativeOptimizerOptions::disabled()
+        };
+        let result = optimize_query_plan(
+            plan,
+            &options,
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap();
+        let aggregates = result.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Aggregate(_))).count();
+        let [candidate] = result.diagnostics.shared_subplan_materialization.candidates.as_slice() else {
+            panic!("one grouped family: {:?}", result.diagnostics.shared_subplan_materialization);
+        };
+        (candidate.applied, candidate.rejected_reason, aggregates)
+    };
+
+    assert_eq!(
+        materialize(BinaryOp::Divide, true),
+        (false, Some(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail), 2)
+    );
+    assert_eq!(materialize(BinaryOp::Multiply, true), (true, None, 1), "a product cannot fail on the added pairs");
+    assert_eq!(
+        materialize(BinaryOp::Divide, false),
+        (true, None, 1),
+        "with one widened source every pair the shared aggregate reads is one some member reads"
+    );
+}
+
+#[test]
+fn native_optimizer_rejects_scalar_materialization_whose_widened_sources_pair_rows_that_can_fail() {
+    // The shared scalar aggregate reads the union of each widened source's
+    // selections and evaluates the filter's `x / y` on all of their pairs,
+    // including bucket 1 sales at hour 9, which no member reads.
+    let materialize = |measure: BinaryOp, widened_sales: bool| {
+        let result = optimize_query_plan(
+            repeated_scalar_measure_over_filtered_join_plan(measure, widened_sales),
+            &NativeOptimizerOptions::default(),
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap();
+        let [candidate] = result.diagnostics.shared_subplan_materialization.candidates.as_slice() else {
+            panic!("one scalar family: {:?}", result.diagnostics.shared_subplan_materialization);
+        };
+        (candidate.applied, candidate.rejected_reason)
+    };
+
+    assert_eq!(
+        materialize(BinaryOp::Divide, true),
+        (false, Some(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail))
+    );
+    assert_eq!(materialize(BinaryOp::Multiply, true), (true, None), "a product cannot fail on the added pairs");
+    assert_eq!(materialize(BinaryOp::Divide, false), (true, None), "one widened source adds no pair");
+}
+
 fn native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurrences() {
     let plan = repeated_grouped_aggregate_self_join_duplicate_source_plan();
     let options = NativeOptimizerOptions {
@@ -2107,6 +2172,146 @@ fn repeated_grouped_sum_over_join_with_side_predicate_plan(join_type: JoinType, 
         );
     }
     let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
+}
+
+/// Two members `SELECT ak, bk, SUM(x <measure> y) FROM wa JOIN wb ON j GROUP BY
+/// ak, bk`, with reader predicates `ak = value` on `wa` and, when
+/// `widened_right`, `bk = value` on `wb`; otherwise both read `bk = 1`.
+fn repeated_grouped_measure_over_filtered_join_plan(measure: BinaryOp, widened_right: bool) -> QueryPlan {
+    let join_schema = schema(&["ak", "bk", "x", "y"]);
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("ak", DataType::Int32, false),
+        Field::new("bk", DataType::Int32, false),
+        Field::new("v", DataType::Int64, true),
+    ]));
+    let equals = |column: &str, value| {
+        Expr::binary(Expr::column(column), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(value)))
+    };
+    let mut builder = QueryPlanBuilder::new();
+    let mut aggregates = Vec::new();
+    for value in 1..=2 {
+        let left = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
+            "join_wa_input",
+            "join_wa_input",
+            &["j", "ak", "x"],
+            512 * 1024 * 1024,
+            10_000_000,
+            equals("ak", value),
+        ));
+        let right = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
+            "join_wb_input",
+            "join_wb_input",
+            &["j", "bk", "y"],
+            512 * 1024 * 1024,
+            10_000_000,
+            equals("bk", if widened_right { value } else { 1 }),
+        ));
+        let joined = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "j", "j"), ColumnRef::input(1, "j", "j"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "ak", "ak"), "ak"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "bk", "bk"), "bk"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "x", "x"), "x"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "y", "y"), "y"),
+                ]),
+                Arc::clone(&join_schema),
+            )
+            .unwrap();
+        aggregates.push(
+            builder
+                .add_aggregate(
+                    joined,
+                    AggregateSpec::new(
+                        vec![Expr::column("ak"), Expr::column("bk")],
+                        vec![AggregateExpr::new(
+                            AggregateFunction::Sum,
+                            Expr::binary(Expr::column("x"), measure, Expr::column("y")),
+                            "v",
+                        )],
+                    ),
+                    Arc::clone(&aggregate_schema),
+                )
+                .unwrap(),
+        );
+    }
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
+}
+
+/// Two members `SELECT COUNT(*) FROM store_sales JOIN time_dim ... WHERE x
+/// <measure> y > 0`, one per hour of the day, with the sales scan reading
+/// bucket 1 and 2 when `widened_sales` and bucket 1 in both members otherwise.
+fn repeated_scalar_measure_over_filtered_join_plan(measure: BinaryOp, widened_sales: bool) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let joined_schema = schema(&["x", "y"]);
+    let count_schema = Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)]));
+    let mut counts = Vec::new();
+    for (bucket, hour) in [(1, 8), (2, 9)] {
+        let bucket = if widened_sales { bucket } else { 1 };
+        let fact = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
+            "store_sales",
+            "store_sales",
+            &["ss_sold_time_sk", "bucket", "x", "y"],
+            512 * 1024 * 1024,
+            10_000_000,
+            Expr::binary(Expr::column("bucket"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(bucket))),
+        ));
+        let time = builder.add_source(estimated_time_source_with_hour_predicate(hour));
+        let time_key = builder
+            .add_projection(
+                time,
+                vec![ProjectionOutput::new(Expr::column("t_time_sk"), Field::new("t_time_sk", DataType::Int32, false))],
+            )
+            .unwrap();
+        let joined = builder
+            .add_join(
+                fact,
+                time_key,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(
+                        ColumnRef::input(0, "ss_sold_time_sk", "ss_sold_time_sk"),
+                        ColumnRef::input(1, "t_time_sk", "t_time_sk"),
+                    )],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "x", "x"), "x"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "y", "y"), "y"),
+                ])
+                .with_build_side(JoinSide::Right),
+                Arc::clone(&joined_schema),
+            )
+            .unwrap();
+        let measured = builder
+            .add_filter(
+                joined,
+                Expr::binary(
+                    Expr::binary(Expr::column("x"), measure, Expr::column("y")),
+                    BinaryOp::Gt,
+                    Expr::literal(LiteralValue::Int32(0)),
+                ),
+            )
+            .unwrap();
+        let count = builder
+            .add_aggregate(
+                measured,
+                AggregateSpec::new(
+                    Vec::new(),
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "count")],
+                ),
+                Arc::clone(&count_schema),
+            )
+            .unwrap();
+        counts.push(count);
+    }
+    let union = builder.add_union(counts, count_schema).unwrap();
     builder.finish_gpu_resident(union).unwrap()
 }
 

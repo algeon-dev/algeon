@@ -370,6 +370,62 @@ fn join_filter_reassociation_declines_out_of_range_float_scalar_bounds() {
     fs::remove_dir_all(dir).expect("temporary test directory should be removable");
 }
 
+#[test]
+fn join_filter_reassociation_pushes_no_residual_term_that_can_fail_below_the_join() {
+    let dir = unique_contract_temp_dir("join-filter-fallible-residual");
+    let bound_path = dir.join("bound.parquet");
+    let bound_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false), Field::new("b", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&bound_schema),
+        vec![Arc::new(Int64Array::from(vec![1, 3, 4])) as ArrayRef, Arc::new(Int64Array::from(vec![100; 3]))],
+    )
+    .expect("test batch should be valid");
+    write_record_batch_parquet(&bound_path, Arc::clone(&bound_schema), &batch, 8);
+    let probe = |name: &str| Expr::input_column(0, name, name);
+    let to_int = |expr| Expr::cast(expr, DataType::Int32);
+    // A value of `f` that no INT represents can sit on a probe row that matches
+    // no key. A filter below the join evaluates its conjuncts on that row; the
+    // residual evaluates them on matched pairs only.
+    let residual = all_of(vec![
+        Expr::binary(Expr::cast(to_int(probe("f")), DataType::Int64), BinaryOp::Lt, Expr::input_column(1, "b", "b")),
+        Expr::binary(to_int(probe("f")), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
+        Expr::binary(probe("f"), BinaryOp::Lt, Expr::literal(LiteralValue::Float64(1000.0))),
+        Expr::binary(probe("i"), BinaryOp::Lt, Expr::input_column(1, "b", "b")),
+    ]);
+
+    let result = optimize_query_plan(
+        fallible_residual_join_plan(&bound_path, bound_schema, residual),
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    let pushed = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Filter(filter) => Some(&filter.predicate),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let below = |column: &str, bound| Expr::binary(Expr::column(column), BinaryOp::Lt, Expr::literal(bound));
+    assert_eq!(
+        pushed,
+        [&Expr::binary(below("f", LiteralValue::Float64(1000.0)), BinaryOp::And, below("i", LiteralValue::Int64(100)))],
+        "only the conjuncts that cannot fail reach the probe input:\n{}",
+        result.plan
+    );
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("the join stays the root:\n{}", result.plan);
+    };
+    assert!(join.spec.residual_predicate.is_some(), "the residual still evaluates every conjunct on matched pairs");
+
+    fs::remove_dir_all(dir).expect("temporary test directory should be removable");
+}
+
 fn inner_join_filter_over_projected_inner_join_plan() -> QueryPlan {
     let (builder, filtered) = inner_join_filter_over_projected_inner_join_builder(None, None);
     builder.finish_gpu_resident(filtered).unwrap()
@@ -895,6 +951,47 @@ fn out_of_range_float_scalar_range_residual_plan(scalar_path: &Path, scalar_sche
                 ))
                 .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value")]),
             schema(&["value"]),
+        )
+        .unwrap();
+    builder.finish_gpu_resident(join).unwrap()
+}
+
+fn all_of(mut conjuncts: Vec<Expr>) -> Expr {
+    let first = conjuncts.remove(0);
+    conjuncts.into_iter().fold(first, |left, right| Expr::binary(left, BinaryOp::And, right))
+}
+
+/// A resident `probe(k, f, i)` joined on `k` with `bound(k, b)`, a Parquet
+/// file whose footer bounds `b`, under `residual`.
+fn fallible_residual_join_plan(bound_path: &Path, bound_schema: Arc<Schema>, residual: Expr) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let probe_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("f", DataType::Float64, false),
+        Field::new("i", DataType::Int64, false),
+    ]));
+    let probe = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("probe", probe_schema)));
+    let bound = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(bound_path)
+                .with_row_group_rows(vec![3])
+                .with_projected_row_group_bytes(vec![1024], vec![1024]),
+        ],
+        bound_schema,
+        vec!["k".to_string(), "b".to_string()],
+    )));
+    let join = builder
+        .add_join(
+            probe,
+            bound,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_build_side(JoinSide::Right)
+            .with_residual_predicate(residual)
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")]),
+            Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)])),
         )
         .unwrap();
     builder.finish_gpu_resident(join).unwrap()

@@ -255,10 +255,14 @@ fn join_residual_keeps_operations_that_can_fail_out_of_pre_join_columns() {
     assert!(Arc::ptr_eq(&sites[0].expr, &right_cast), "only the cast that always fits moves before the join");
 
     // The cuDF AST casts to BIGINT UNSIGNED without the range check, so a
-    // negative `n` would not fail. Nothing else in this residual runs it as
-    // the checked filter.
+    // negative `n` would not fail there. The cast runs in the checked filter
+    // over matched pairs, as a cast the AST has no target for does, and a
+    // join that keeps unmatched rows reports it.
     let unsigned = binary(to_unsigned("n"), Operator::Eq, to_unsigned("r"), &schema).unwrap();
-    let rejection = validate(Arc::clone(&unsigned)).unwrap_err();
+    assert_eq!(validate(Arc::clone(&unsigned)).unwrap(), (true, 0));
+    let filter = join_residual_filter(Arc::clone(&unsigned), &schema);
+    let left_join = Some((&NativeJoinType::Left, NativeJoinSide::Right));
+    let rejection = validate_join_residual(&filter, &left_schema, &right_schema, left_join).unwrap_err();
     assert_eq!(rejection.capability(), ExpressionCapability::CastPair);
     assert_eq!(
         rejection.subject(),
@@ -276,6 +280,43 @@ fn join_residual_keeps_operations_that_can_fail_out_of_pre_join_columns() {
     assert!(
         validate(beside_narrowing).unwrap().0,
         "the checked filter of the narrowing cast also checks the unsigned cast"
+    );
+}
+
+#[test]
+fn join_residual_cast_to_an_ast_target_that_can_fail_evaluates_after_matching() {
+    // `CAST(f AS BIGINT) < b`: the AST casts Float64 to Int64 without the
+    // range check, which only the filter over matched pairs applies.
+    let left_schema = Arc::new(Schema::new(vec![Field::new("f", DataType::Float64, true)]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("b", DataType::Int64, true)]));
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("f", DataType::Float64, true), Field::new("b", DataType::Int64, true)]));
+    let residual = binary(
+        Arc::new(CastExpr::new(col("f", &schema).unwrap(), DataType::Int64, None)),
+        Operator::Lt,
+        col("b", &schema).unwrap(),
+        &schema,
+    )
+    .unwrap();
+    let filter = JoinFilter::new(
+        residual,
+        vec![
+            ColumnIndex { index: 0, side: DataFusionJoinSide::Left },
+            ColumnIndex { index: 0, side: DataFusionJoinSide::Right },
+        ],
+        Arc::clone(&schema),
+    );
+
+    let validated = validate_join_residual(&filter, &left_schema, &right_schema, KEYED_INNER_JOIN).unwrap();
+    assert!(validated.evaluates_after_matching());
+    assert!(validated.materializations().is_empty(), "the cast stays in the residual");
+
+    let left_join = Some((&NativeJoinType::Left, NativeJoinSide::Right));
+    let rejection = validate_join_residual(&filter, &left_schema, &right_schema, left_join).unwrap_err();
+    assert_eq!(rejection.capability(), ExpressionCapability::CastPair);
+    assert_eq!(
+        rejection.subject(),
+        &ExpressionRejectionSubject::Cast { source: DataType::Float64, target: DataType::Int64 }
     );
 }
 
@@ -946,9 +987,15 @@ fn join_residual_ast_rejects_integer_division_and_casts_it_cannot_evaluate_or_ch
         binary(elapsed, Operator::Gt, lit(ScalarValue::DurationMillisecond(Some(5))), &filter_schema).unwrap();
     assert_eq!(validate(elapsed_bound).unwrap_err().capability(), ExpressionCapability::JoinResidualShape);
 
+    // The AST casts to BIGINT UNSIGNED without the range check, so an inner
+    // join filters its matched pairs with the cast and a left join, which
+    // keeps its unmatched rows, leaves it on DataFusion.
     let failing_cast =
         binary(cast("l", DataType::UInt64), Operator::Eq, cast("r", DataType::UInt64), &filter_schema).unwrap();
-    assert_eq!(validate(failing_cast).unwrap_err().capability(), ExpressionCapability::CastPair);
+    validate(Arc::clone(&failing_cast)).expect("the inner join checks the cast on matched pairs");
+    let left_join = Some((&NativeJoinType::Left, NativeJoinSide::Right));
+    let rejection = validate_join_residual(&filter(failing_cast), &left_schema, &right_schema, left_join).unwrap_err();
+    assert_eq!(rejection.capability(), ExpressionCapability::CastPair);
 
     let safe_cast =
         binary(cast("l", DataType::Int64), Operator::Eq, col("r", &filter_schema).unwrap(), &filter_schema).unwrap();
