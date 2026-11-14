@@ -1,12 +1,12 @@
 //! Dimension-derived fact row-group pruning.
 //!
-//! The rule matches an inner single-key equi join without residual or build
-//! artifact, where one side's key traces to a filtered local Parquet dimension
-//! source and the other side's key traces to a local Parquet fact source. In the
-//! rewrite, the dimension predicate is evaluated over the dimension rows the
-//! resolver reads, the surviving keys form a [`DimensionKeyFilter`], and fact row
-//! groups whose key statistics overlap no run are dropped from the fact source's
-//! selection. Row groups without statistics are kept, and a selection is never
+//! The rule matches an inner single-key equi join whose NULL keys do not match,
+//! without residual or build artifact, where one side's key traces to a
+//! filtered local Parquet dimension source and the other side's key traces to
+//! a local Parquet fact source. In the rewrite, the dimension predicate is
+//! evaluated over the dimension rows the resolver reads, the surviving keys
+//! form a [`DimensionKeyFilter`], and fact row groups whose key statistics
+//! overlap no run are dropped from the fact source's selection. Row groups without statistics are kept, and a selection is never
 //! emptied or widened.
 //!
 //! The rewrite preserves semantics because an inner equi join keeps a fact row
@@ -48,8 +48,8 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
     plan::{
-        AggregateNode, JoinNode, JoinSide, JoinType, NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan,
-        RewrittenNodes,
+        AggregateNode, JoinNode, JoinNullEquality, JoinSide, JoinType, NodeId, PlanNode, ProjectionNode, QueryNode,
+        QueryPlan, RewrittenNodes,
     },
     source::{LocalParquetSource, SourceColumnRef, SourceNode},
 };
@@ -500,10 +500,14 @@ pub fn discover_dimension_derived_pruning_requests(plan: &QueryPlan) -> Vec<Dime
 
 /// The join shape whose output rows the derived key range provably bounds. An
 /// outer join keeps unmatched fact rows, so only inner joins qualify; the range
-/// describes one key column, so only single-key joins do. A join with a build
-/// artifact shares its build input beyond this join and is left alone.
+/// describes one key column, so only single-key joins do. The key filter
+/// carries no NULL and footer key ranges exclude NULLs, so a join whose NULL
+/// keys match (`IS NOT DISTINCT FROM`) would lose fact rows with a NULL key. A
+/// join with a build artifact shares its build input beyond this join and is
+/// left alone.
 fn join_shape_supported(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
+        && join.spec.null_equality == JoinNullEquality::NullsDoNotMatch
         && join.spec.keys.len() == 1
         && join.spec.residual_predicate.is_none()
         && !join.spec.output_projection.is_empty()

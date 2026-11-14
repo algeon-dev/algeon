@@ -229,15 +229,7 @@ pub(in crate::exec) fn execute_aggregate(
         return execute_global_aggregate(context, &spec, GpuDataFrame::new(frame), output_schema, metrics);
     }
     if spec.grouping_sets.is_some() {
-        return execute_grouping_sets_aggregate(
-            context,
-            &spec,
-            &prepared_input_schema,
-            GpuDataFrame::new(frame),
-            output_schema,
-            None,
-            metrics,
-        );
+        return execute_grouping_sets_aggregate(context, &spec, GpuDataFrame::new(frame), output_schema, None, metrics);
     }
 
     // Lowering AVG through libcudf's groupby `MEAN` (`GroupByAgg::Mean`) keeps
@@ -523,7 +515,6 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
         return execute_grouping_sets_aggregate(
             context,
             &spec,
-            &prepared_input_schema,
             GpuDataFrame::new(frame),
             output_schema,
             Some(token),
@@ -969,7 +960,6 @@ fn execute_partial_aggregate_with_budget_single_pass(
         return execute_grouping_sets_partial_aggregate_with_budget(
             context,
             &spec,
-            &prepared_input_schema,
             aggregate_output_schema,
             GpuDataFrame::new(frame),
             token,

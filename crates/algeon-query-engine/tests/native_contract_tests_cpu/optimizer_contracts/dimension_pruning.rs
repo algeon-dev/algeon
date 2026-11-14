@@ -1236,6 +1236,77 @@ fn dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_when_prun
     fs::remove_dir_all(dir).expect("temporary dimension pruning directory should be removable");
 }
 
+#[test]
+fn dimension_derived_row_group_pruning_keeps_null_key_row_groups_when_null_keys_match() {
+    // The fact row groups are {5, 5} and {100, NULL}; the dimension keys that pass the
+    // predicate are 5 and NULL. The derived filter holds only 5 and the second row group's
+    // statistics are [100, 100], so pruning it would drop the NULL row that
+    // `IS NOT DISTINCT FROM` matches. The same plan with NULLs that do not match prunes it.
+    let dir = unique_contract_temp_dir("dimension-pruning-null-equality");
+    let fact_path = dir.join("fact.parquet");
+    let dim_path = dir.join("dim.parquet");
+    let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true)]));
+    let write = |path: &Path, values: Vec<Option<i64>>, row_group_rows| {
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(values))])
+            .expect("test record batch should be valid");
+        write_record_batch_parquet(path, Arc::clone(&schema), &batch, row_group_rows);
+    };
+    write(&fact_path, vec![Some(5), Some(5), Some(100), None], 2);
+    write(&dim_path, vec![Some(5), None, Some(7)], 3);
+
+    let pruned_row_groups = |null_equality| {
+        let mut builder = QueryPlanBuilder::new();
+        let dim = builder.add_source(SourceNode::LocalParquet(
+            LocalParquetSource::from_files(
+                vec![LocalParquetFile::new(&dim_path)],
+                Arc::clone(&schema),
+                vec!["x".to_string()],
+            )
+            .with_reader_predicate(Expr::binary(
+                Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5))),
+                BinaryOp::Or,
+                Expr::IsNull(Box::new(Expr::column("x"))),
+            )),
+        ));
+        let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&fact_path)],
+            Arc::clone(&schema),
+            vec!["x".to_string()],
+        )));
+        let join = builder
+            .add_join(
+                dim,
+                fact,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "x", "x"), ColumnRef::input(1, "x", "x"))],
+                )
+                .with_null_equality(null_equality)
+                .with_output_projection(vec![JoinOutputColumn::right(ColumnRef::input(1, "x", "x"), "x")]),
+                Arc::clone(&schema),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(join).unwrap();
+        let options = NativeOptimizerOptions {
+            dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
+            ..NativeOptimizerOptions::disabled()
+        };
+        let result = optimize_query_plan(
+            plan,
+            &options,
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap();
+        local_parquet_source(&result.plan, fact).unwrap().files[0].row_groups.clone()
+    };
+
+    assert_eq!(pruned_row_groups(JoinNullEquality::NullsMatch), None);
+    assert_eq!(pruned_row_groups(JoinNullEquality::NullsDoNotMatch), Some(vec![0]));
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning directory should be removable");
+}
+
 fn test_dynamic_filter_route(source_node_id: NodeId) -> DynamicFilterRoute {
     DynamicFilterRoute::new(
         DynamicFilterId::new(0),

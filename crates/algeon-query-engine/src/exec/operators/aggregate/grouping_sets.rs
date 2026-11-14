@@ -12,8 +12,8 @@
 //! grand-total set, so the single-stage path synthesizes its identity row (COUNT 0, other
 //! aggregates NULL). The partial stage does not, so an empty chunk stays empty and still
 //! concatenates with other partials. A set with no active key does not run a keyless groupby;
-//! it groups by constant columns (NULL-filled keys and the grouping id) with
-//! `include_null_keys`, which gives one group for non-empty input.
+//! it groups by the constant grouping id, which gives one group for non-empty input. Its key
+//! columns keep their input values, since aggregate arguments read the same columns.
 
 use std::time::Instant;
 
@@ -40,7 +40,6 @@ use super::{
 pub(super) fn execute_grouping_sets_aggregate(
     context: &ExecutionContext,
     spec: &AggregateSpec,
-    input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
     token: Option<&ExecutionBudgetToken>,
@@ -64,7 +63,6 @@ pub(super) fn execute_grouping_sets_aggregate(
     let mut output = execute_grouping_sets_groupby(
         context,
         spec,
-        input_schema,
         output_schema,
         frame,
         &aggregate,
@@ -104,7 +102,6 @@ pub(super) fn execute_grouping_sets_aggregate(
 pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     context: &ExecutionContext,
     spec: &AggregateSpec,
-    input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
@@ -128,7 +125,6 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     let mut output = execute_grouping_sets_groupby(
         context,
         spec,
-        input_schema,
         aggregate_output_schema,
         frame,
         &aggregate,
@@ -159,7 +155,6 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
 fn execute_grouping_sets_groupby(
     context: &ExecutionContext,
     spec: &AggregateSpec,
-    input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
@@ -180,7 +175,6 @@ fn execute_grouping_sets_groupby(
     {
         return execute_prefix_rollup_grouping_sets_groupby(
             context,
-            input_schema,
             output_schema,
             frame,
             aggregate,
@@ -206,7 +200,6 @@ fn execute_grouping_sets_groupby(
         }
         let output = execute_single_grouping_set_groupby(
             context,
-            input_schema,
             output_schema,
             frame.clone(),
             aggregate,
@@ -239,7 +232,6 @@ fn execute_grouping_sets_groupby(
 )]
 fn execute_prefix_rollup_grouping_sets_groupby(
     context: &ExecutionContext,
-    input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
@@ -257,7 +249,6 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     let full_group = prefix_rollup_group(key_count, key_count);
     let full_output = execute_single_grouping_set_groupby(
         context,
-        input_schema,
         output_schema,
         frame,
         aggregate,
@@ -369,17 +360,17 @@ fn execute_prefix_rollup_grouping_sets_groupby(
 
 /// Aggregates `frame` for one grouping set `group`, where `true` marks a NULLed key.
 ///
-/// With active keys the groupby runs on those keys only, and `complete_grouping_set_output`
-/// adds the omitted keys as NULLs and the grouping id afterward. The grand-total set has no
-/// active key, so `prepare_grouping_set_frame` overwrites every key with a typed NULL literal
-/// and adds the constant grouping id, and the groupby runs on those constant columns.
+/// The groupby runs on the keys the set keeps, and `complete_grouping_set_output` adds the
+/// omitted keys as NULLs and the grouping id afterward. The grand-total set keeps no key, so it
+/// groups by the constant grouping id added to `frame`. Key columns keep their input values in
+/// every set, because an aggregate argument can read a grouping key: the grand total of
+/// `SUM(a) ... ROLLUP(a)` sums every `a`, although its output `a` is NULL.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
 )]
 fn execute_single_grouping_set_groupby(
     context: &ExecutionContext,
-    input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
@@ -406,42 +397,21 @@ fn execute_single_grouping_set_groupby(
         );
     }
 
-    let grouping_set_aggregate = aggregate_for_grouping_set(aggregate, group);
-    if grouping_set_aggregate.key_columns.is_empty() {
-        let working = prepare_grouping_set_frame(
+    let grouping_set_aggregate = aggregate_for_grouping_set(aggregate, group, grouping_id_alias);
+    let frame = if grouping_set_keeps_no_key(group) {
+        with_grouping_id_column(
             context,
-            input_schema,
             output_schema,
             frame,
-            aggregate,
             grouping_id_alias,
-            group,
+            grouping_id_value(group),
             token,
             metrics,
             operation,
-        )?;
-        return match token {
-            Some(token) => {
-                let overrides = token.exec();
-                execute_groupby_aggregate_with_budget_observed(
-                    Some(context),
-                    overrides,
-                    working,
-                    aggregate,
-                    token,
-                    metrics,
-                    operation,
-                    "failed to execute bounded native grouping-sets aggregate",
-                )
-            },
-            None => {
-                let exec_runtime = context.runtime()?;
-                let overrides = exec_runtime.exec();
-                execute_groupby_aggregate(overrides, working, aggregate, operation)
-            },
-        };
-    }
-
+        )?
+    } else {
+        frame
+    };
     let grouped = match token {
         Some(token) => {
             let overrides = token.exec();
@@ -477,7 +447,12 @@ fn execute_single_grouping_set_groupby(
 
 /// True for a set that NULLs every key.
 fn is_grand_total_grouping_set(group: &[bool]) -> bool {
-    !group.is_empty() && group.iter().all(|is_null| *is_null)
+    !group.is_empty() && grouping_set_keeps_no_key(group)
+}
+
+/// True when `group` keeps no key, so its groupby needs the grouping id as a key.
+fn grouping_set_keeps_no_key(group: &[bool]) -> bool {
+    group.iter().all(|is_null| *is_null)
 }
 
 /// One-row identity result of the grand-total set over empty input: NULL keys, the grouping id,
@@ -752,8 +727,13 @@ fn empty_grouping_set_literal_series(
 }
 
 /// Restricts `aggregate` to the keys `group` keeps. The grouping id key, the last lowered key, is
-/// dropped because `complete_grouping_set_output` adds it as a literal.
-fn aggregate_for_grouping_set(aggregate: &LoweredAggregate, group: &[bool]) -> LoweredAggregate {
+/// dropped because `complete_grouping_set_output` adds it as a literal, except for a set that
+/// keeps no key: cuDF has no keyless groupby, so that set groups by the grouping id alone.
+fn aggregate_for_grouping_set(
+    aggregate: &LoweredAggregate,
+    group: &[bool],
+    grouping_id_alias: &str,
+) -> LoweredAggregate {
     let mut key_columns = Vec::with_capacity(group.len());
     let mut output_key_names = Vec::with_capacity(group.len());
     for (index, is_null) in group.iter().enumerate() {
@@ -761,6 +741,10 @@ fn aggregate_for_grouping_set(aggregate: &LoweredAggregate, group: &[bool]) -> L
             key_columns.push(aggregate.key_columns[index].clone());
             output_key_names.push(aggregate.output_key_names[index].clone());
         }
+    }
+    if grouping_set_keeps_no_key(group) {
+        key_columns.push(grouping_id_alias.to_string());
+        output_key_names.push(grouping_id_alias.to_string());
     }
     let aggregate_output_names =
         aggregate.output_names.iter().skip(aggregate.output_key_names.len()).cloned().collect::<Vec<_>>();
@@ -845,8 +829,8 @@ fn complete_grouping_set_output(
     }
 }
 
-/// Sets the constant grouping-id column of the grand-total prefix-rollup level, which then
-/// serves as that level's only groupby key.
+/// Sets the constant grouping-id column of a set that keeps no key, which then serves as that
+/// set's only groupby key.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -982,82 +966,6 @@ fn aggregate_for_prefix_rollup_level(
         aggregate.output_names.iter().skip(aggregate.output_key_names.len()).cloned().collect::<Vec<_>>();
     let output_names = output_key_names.iter().cloned().chain(aggregate_output_names).collect();
     LoweredAggregate { key_columns, output_key_names, aggregations: aggregate.aggregations.clone(), output_names }
-}
-
-/// Replaces the NULLed key columns of `frame` with typed NULL literals and adds the constant
-/// grouping-id column. Used for the grand-total set, where every key is NULLed.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
-)]
-fn prepare_grouping_set_frame(
-    context: &ExecutionContext,
-    input_schema: &ArrowSchemaRef,
-    output_schema: &ArrowSchemaRef,
-    frame: DataFrame,
-    aggregate: &LoweredAggregate,
-    grouping_id_alias: &str,
-    group: &[bool],
-    token: Option<&ExecutionBudgetToken>,
-    metrics: &ExecutionMetrics,
-    operation: &'static str,
-) -> Result<DataFrame> {
-    let mut expressions = Vec::<(String, cudf::Expr)>::new();
-    for (key_column, is_null) in aggregate.key_columns.iter().take(group.len()).zip(group) {
-        if *is_null {
-            let field = input_schema.field_with_name(key_column.as_str()).map_err(|error| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    operation,
-                    "grouping-set key column is missing from aggregate input schema",
-                )
-                .with_fact("column", key_column.as_str())
-                .with_fact("arrow_error", error.to_string())
-            })?;
-            let dtype = cudf_dtype_from_arrow_type(field.data_type()).map_err(|error| {
-                cudf_unsupported_type_error(
-                    operation,
-                    "grouping-set null key column type is not supported by native execution",
-                    error,
-                )
-                .with_fact("column", key_column.as_str())
-                .with_fact("data_type", format!("{:?}", field.data_type()))
-            })?;
-            expressions.push((key_column.clone(), lit_null(dtype)));
-        }
-    }
-
-    let grouping_id_field = output_schema.field_with_name(grouping_id_alias).map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            operation,
-            "grouping-id column is missing from grouping-sets output schema",
-        )
-        .with_fact("grouping_id_alias", grouping_id_alias)
-        .with_fact("arrow_error", error.to_string())
-    })?;
-    let grouping_id = grouping_id_value(group);
-    expressions.push((
-        grouping_id_alias.to_string(),
-        grouping_id_literal_expr(grouping_id_field.data_type(), grouping_id, operation)?,
-    ));
-
-    match token {
-        Some(token) => token
-            .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(expressions))
-            .map_err(|error| {
-                cudf_query_error(operation, "failed to prepare bounded grouping-set aggregate columns", error)
-            })
-            .map(|outcome| budgeted_value(outcome, metrics, operation)),
-        None => {
-            let exec_runtime = context.runtime()?;
-            let overrides = exec_runtime.exec();
-            frame
-                .on(overrides)
-                .with_columns(expressions)
-                .map_err(|error| cudf_query_error(operation, "failed to prepare grouping-set aggregate columns", error))
-        },
-    }
 }
 
 /// Packs a mask into the grouping id: key `i` of `n` sets bit `n - 1 - i` when it is NULLed.
