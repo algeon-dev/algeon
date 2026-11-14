@@ -860,6 +860,52 @@ async fn native_runtime_case_branches_fail_the_query_like_cpu_when_an_active_row
     fs::remove_dir_all(dir).unwrap();
 }
 
+async fn native_runtime_aggregate_filters_limit_where_arguments_are_checked() {
+    // Row 2 has a zero divisor and rows 2, 5 and 6 a `big` outside the Int32 range, beside rows the same filter
+    // keeps. Without GROUP BY, DataFusion evaluates an aggregate argument only on the rows its filter keeps.
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-aggregate-filters");
+    let path = dir.join("input.parquet");
+    write_case_branch_input_parquet(&path);
+
+    for (name, sql) in [
+        ("divisor-guarded-by-filter", "SELECT SUM(num / den) FILTER (WHERE den <> 0) AS s FROM bench"),
+        (
+            "narrowing-cast-guarded-by-filter",
+            "SELECT SUM(CAST(big AS INT)) FILTER (WHERE big BETWEEN -2147483648 AND 2147483647) AS s FROM bench",
+        ),
+        (
+            "case-in-a-filtered-argument",
+            "SELECT SUM(CASE WHEN ok THEN num / den ELSE 0 END) FILTER (WHERE den <> 0) AS s FROM bench",
+        ),
+    ] {
+        assert_native_matches_cpu(&path, name, sql).await;
+    }
+
+    // With GROUP BY, DataFusion evaluates the argument on every row and fails on row 2. Native evaluation applies
+    // the filter as it does without GROUP BY, which the CPU side spells as a CASE.
+    let grouped = "SELECT ok, SUM(num / den) FILTER (WHERE den <> 0) AS s, COUNT(*) AS n FROM bench \
+                   GROUP BY ok ORDER BY ok";
+    let cpu_plan = sql_plan(&path, SessionConfig::new(), grouped).await;
+    collect(cpu_plan, Arc::new(TaskContext::default())).await.expect_err("DataFusion divides on every grouped row");
+    assert_native_matches_cpu_of(
+        &path,
+        "grouped-divisor-guarded-by-filter",
+        grouped,
+        "SELECT ok, SUM(CASE WHEN den <> 0 THEN num / den END) FILTER (WHERE den <> 0) AS s, COUNT(*) AS n \
+         FROM bench GROUP BY ok ORDER BY ok",
+    )
+    .await;
+
+    for (name, sql) in [
+        ("kept-zero-divisor", "SELECT SUM(num / den) FILTER (WHERE row_id <= 2) AS s FROM bench"),
+        ("kept-cast-out-of-range", "SELECT SUM(CAST(big AS INT)) FILTER (WHERE row_id >= 5) AS s FROM bench"),
+    ] {
+        assert_native_fails_like_cpu(&path, name, sql).await;
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn write_decimal_cast_input_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("row_id", DataType::Int32, false),
@@ -1348,6 +1394,13 @@ fn scalar_expressions_cases_4() {
                 .build()
                 .expect("case runtime")
                 .block_on(native_runtime_logical_operators_skip_the_right_operand_on_rows_the_left_operand_decides())
+        }),
+        ("native_runtime_aggregate_filters_limit_where_arguments_are_checked", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(native_runtime_aggregate_filters_limit_where_arguments_are_checked())
         }),
     ]);
 }

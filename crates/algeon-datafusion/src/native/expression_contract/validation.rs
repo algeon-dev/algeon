@@ -345,7 +345,7 @@ pub(in crate::native) fn is_checked_temporal_arithmetic(binary: &BinaryExpr, inp
 
 /// Whether `binary` is a `/` that native evaluation runs as a decimal division
 /// with a declared output type.
-pub(in crate::native) fn is_decimal_division(binary: &BinaryExpr, input_schema: &SchemaRef) -> bool {
+fn is_decimal_division(binary: &BinaryExpr, input_schema: &SchemaRef) -> bool {
     matches!(binary.op(), Operator::Divide)
         && declared_decimal_divide_output_type(binary, input_schema).is_ok_and(|declared| declared.is_some())
 }

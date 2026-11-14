@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    expr::{ColumnRef, Expr},
+    expr::{ColumnRef, Expr, input_column_type},
     plan::{JoinNode, JoinOutputColumn, NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan},
     source::{LocalParquetSource, SourceColumnRef, SourceNode},
 };
@@ -208,4 +208,60 @@ fn collect_expr_columns(expr: &Expr, columns: &mut Vec<String>) {
         },
         Expr::Literal(_) => {},
     }
+}
+
+/// Whether some expression in the subplan under `root` [can
+/// fail](Expr::can_fail), each typed by the schemas of its node's inputs.
+///
+/// Window functions and the graph, vector and ML algorithm nodes count as
+/// expressions that can fail, since nothing here types their arguments. A
+/// rule that evaluates the subplan on rows the original plan does not combine
+/// uses this to decide whether the extra rows can change whether the query
+/// succeeds.
+pub(super) fn subplan_can_fail(plan: &QueryPlan, root: NodeId) -> bool {
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(node_id) = pending.pop() {
+        if !visited.insert(node_id) {
+            continue;
+        }
+        let Some(node) = plan.node(node_id) else {
+            return true;
+        };
+        let Some(inputs) = node
+            .input_ids()
+            .iter()
+            .map(|input| plan.node(*input).map(|input| input.output_schema().as_ref()))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return true;
+        };
+        let column_type = |column: &ColumnRef| input_column_type(&inputs, column);
+        let mut expressions: Box<dyn Iterator<Item = &Expr>> = match &node.kind {
+            PlanNode::Source(_) | PlanNode::Limit(_) | PlanNode::Union(_) => Box::new(std::iter::empty()),
+            PlanNode::Filter(filter) => Box::new(std::iter::once(&filter.predicate)),
+            PlanNode::Projection(projection) => Box::new(projection.expressions()),
+            PlanNode::Aggregate(aggregate) => Box::new(
+                aggregate.spec.group_exprs.iter().chain(
+                    aggregate
+                        .spec
+                        .aggr_exprs
+                        .iter()
+                        .flat_map(|aggregate| std::iter::once(&aggregate.expr).chain(&aggregate.filter)),
+                ),
+            ),
+            PlanNode::Join(join) => Box::new(join.spec.residual_predicate.iter()),
+            PlanNode::Sort(sort) => Box::new(sort.spec.expressions.iter().map(|sort| &sort.expr)),
+            PlanNode::Window(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => return true,
+        };
+        if expressions.any(|expr| expr.can_fail(&column_type)) {
+            return true;
+        }
+        pending.extend(node.input_ids().iter().copied());
+    }
+    false
 }

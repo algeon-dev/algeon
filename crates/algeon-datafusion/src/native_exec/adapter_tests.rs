@@ -56,7 +56,8 @@ use crate::{
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking},
     native_report::NativeDataFusionExecutionMetrics,
     planner::{
-        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::wrap_direct_native_plan_with_admission,
+        AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
+        native::wrap_direct_native_plan_with_admission,
     },
     report::CandidateOutcome,
 };
@@ -453,7 +454,9 @@ async fn deferred_host_wrapper_metrics_project_the_plans_final_metrics() {
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let fixture = backend_fixture();
-    let config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(bound_execution_config(&fixture));
+    let config = AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(bound_execution_config(&fixture))
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
     let rule = AlgeonNativePhysicalOptimizerRule::new(config);
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
     let attempt = fixture.backend().begin_attempt(AttemptOptions::default()).expect("attempt begins");
@@ -505,7 +508,9 @@ async fn native_optimizer_property_checked_ilike_boundary_honors_pre_execution_c
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let fixture = backend_fixture();
-    let config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(bound_execution_config(&fixture));
+    let config = AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(bound_execution_config(&fixture))
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
     let rule = AlgeonNativePhysicalOptimizerRule::new(config);
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
     let attempt = fixture.backend().begin_attempt(AttemptOptions::default()).expect("attempt begins");

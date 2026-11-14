@@ -6,6 +6,8 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
     let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
+    config.native_optimizer_config =
+        config.native_optimizer_config.clone().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
@@ -244,6 +246,8 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
     let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
+    config.native_optimizer_config =
+        config.native_optimizer_config.clone().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
     let backend = build_injected_test_backend(&mut config);
     // Match the certified mixed shape, a CPU ILIKE filter directly over the
     // local-Parquet native leaf. The server's normal multi-partition defaults

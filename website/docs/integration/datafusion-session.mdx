@@ -225,9 +225,16 @@ Set `AlgeonGpuExecutionMode` on the shared backend before installing sessions:
 
 | Rust mode | Behavior | Use it when |
 | --- | --- | --- |
-| `NativePreferred` (default) | Select supported relational SQL for native GPU execution. Retain DataFusion for unsupported or unselected candidates. Explicit GPU UDTFs still run on GPU. | Accelerate relational SQL together with graph, vector, and machine learning functions on the GPU. |
+| `NativePreferred` | Select supported relational SQL for native GPU execution. Retain DataFusion for unsupported or unselected candidates. Explicit GPU UDTFs still run on GPU. | Accelerate relational SQL together with graph, vector, and machine learning functions on the GPU. |
 | `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU. Run explicit `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs on GPU. | Execute scans, joins, filters, and aggregations on DataFusion CPU while delegating GPU UDTFs to hardware. |
-| `NativeRequired` | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | Enforce plans containing zero DataFusion CPU execution operators. |
+| `NativeRequired` (default) | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | Enforce plans containing zero DataFusion CPU execution operators. |
+
+Under `NativeRequired`, `install_on` sets `target_partitions` to 1 and
+replaces any value in the caller's `SessionConfig`. No operator in that mode
+runs on DataFusion's CPU partitions, and DataFusion plans a query for several
+partitions in shapes native lowering rejects: a `LIMIT` applied per partition,
+partial and final stages of an aggregate such as `MEDIAN`, and a merge of
+sorted partitions. The other two modes keep the caller's value.
 
 This replaces the backend construction above, using the same `device`:
 

@@ -7,7 +7,7 @@ use std::{
 use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     native_report::{NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
-    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
@@ -179,8 +179,9 @@ async fn native_datafusion_planning_report_with_session(
     sql: &str,
     session_config: SessionConfig,
 ) -> NativeDataFusionPlanningReport {
-    let optimizer_config =
-        AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default());
+    let optimizer_config = AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(AlgeonNativeExecutionConfig::default())
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
         .with_algeon_native(optimizer_config)

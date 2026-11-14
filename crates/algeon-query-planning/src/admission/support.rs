@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityDecision, EdgeConsumer, Reason, Rejection, RejectionOwner, SubgraphInvariantKind,
-        classify_join,
+        classify_join, join_input_schemas,
     },
     error::Result,
     pipeline::{
@@ -111,7 +111,7 @@ pub fn compiled_bounded_query_plan_support(
                 [("plan_node_id", join_node.to_string())],
             ));
         };
-        if let Err(rejection) = classify_join(join_node, join) {
+        if let Err(rejection) = classify_join(join_node, join, &join_input_schemas(plan, join)) {
             return Ok(CompiledBoundedPipelineSupport::Unsupported(rejection));
         }
     }

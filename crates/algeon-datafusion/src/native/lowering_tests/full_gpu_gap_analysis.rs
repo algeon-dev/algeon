@@ -542,17 +542,44 @@ const JOIN_RESIDUAL_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
     // A cast to BIGINT UNSIGNED fails on a negative payload. The cuDF AST casts
-    // to that type without the check, and nothing else in the residual runs it
-    // as the checked filter.
+    // to that type without the check, so the inner join filters its matched
+    // pairs with the residual instead, as it does for a cast the AST cannot do.
     GpuGapCase {
-        id: "join_residual_unchecked_ast_cast_that_can_fail",
+        id: "join_residual_ast_target_cast_that_can_fail",
 
         sql: "SELECT b.id FROM bench b JOIN bench s ON b.key = s.key \
+              AND CAST(s.payload AS BIGINT UNSIGNED) > CAST(b.id AS BIGINT UNSIGNED)",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    // A left join keeps unmatched rows, so filtering matched pairs would change
+    // them and the cast stays on DataFusion.
+    GpuGapCase {
+        id: "join_residual_ast_target_cast_that_can_fail_left",
+
+        sql: "SELECT b.id FROM bench b LEFT JOIN bench s ON b.key = s.key \
               AND CAST(s.payload AS BIGINT UNSIGNED) > CAST(b.id AS BIGINT UNSIGNED)",
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedType,
             unsupported_category: "type_cast_int64_to_uint64",
             blocking: ("cast", "cast from Int64 to UInt64 in `CAST(payload AS UInt64)`"),
+        },
+    },
+    // The division fails on a zero `key`, which the cuDF AST does not check,
+    // so the inner join filters its matched pairs with the residual.
+    GpuGapCase {
+        id: "join_residual_integer_division_by_a_column",
+
+        sql: "SELECT b.id FROM bench b JOIN bench s ON b.key = s.key AND b.payload / s.key > b.id",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "join_residual_integer_division_by_a_column_left",
+
+        sql: "SELECT b.id, s.id AS sid FROM bench b LEFT JOIN bench s ON b.key = s.key AND b.payload / s.key > b.id",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedExpression,
+            unsupported_category: "expression",
+            blocking: ("binary_operator", "binary operator `/` over Int64 and Int64 in `payload / CAST(key AS Int64)`"),
         },
     },
 ];

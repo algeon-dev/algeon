@@ -118,7 +118,8 @@ whose size differs from its manifest entry fails with
    its planned execution path and the reason for any part that remains on the
    CPU using [GPU coverage validation](./gpu-coverage-validation.mdx):
    `algeon_explain_coverage` in embedded SQL, `EXPLAIN GPU` through Flight SQL,
-   or `validate_query` in Rust. With the default `native_preferred` mode,
+   or `validate_query` in Rust. The default `native_required` mode rejects
+   a query whose plan keeps any part on the CPU; under `native_preferred`,
    relational candidates not selected for GPU execution stay in DataFusion.
 5. Handle failures. A GPU execution failure returns an error with a stable
    code, kind, and status. At the application boundary, inspect errors that

@@ -1234,7 +1234,9 @@ fn register_events(ctx: &SessionContext) {
 #[tokio::test]
 async fn cugraph_edge_input_that_cannot_lower_is_reported_with_its_function_and_relation() {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_algeon_native(AlgeonNativeOptimizerConfig::default())
+        .with_algeon_native(
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred),
+        )
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("install cuGraph SQL")
         .build();

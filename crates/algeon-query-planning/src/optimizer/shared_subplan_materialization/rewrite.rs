@@ -39,6 +39,7 @@ use crate::{
     backend::AnalysisContext,
     expr::{AggregateExpr, AggregateSpec, ColumnRef, Expr, LiteralValue},
     optimizer::{
+        access::subplan_can_fail,
         predicate_factoring::{conjunction, disjunction, factor_selections, map_residual, split_conjuncts},
         rewrite as optimizer_rewrite,
     },
@@ -52,8 +53,9 @@ use crate::{
 /// Shape signature of a scalar family's aggregate input, or `None` when it has
 /// an operator the scalar rewrite cannot clone with extra columns (a limit,
 /// aggregate, window, union or GPU function). Identity projections, filters
-/// that repeat the reader predicate, and, when allowed, column projections are
-/// left out so branches that differ only in those compare equal.
+/// that repeat the reader predicate, and, when allowed, column projections no
+/// operator of the shape reads are left out so branches that differ only in
+/// those compare equal.
 pub(super) fn scalar_materialization_input_shape(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -98,7 +100,12 @@ fn scalar_materialization_input_shape_inner(
                 allow_column_projection_elision,
             )
         },
-        PlanNode::Projection(projection) if allow_column_projection_elision => {
+        // Only the aggregate reads a projection reached without passing a
+        // filter, join, sort or kept projection, and a count-star family's
+        // aggregate reads no value from it. Below any of those, the operator
+        // reads the projection's outputs, so their definitions stay in the
+        // shape.
+        PlanNode::Projection(projection) if allow_column_projection_elision && allow_count_star_projection_elision => {
             scalar_materialization_input_shape_inner(
                 plan,
                 projection.input,
@@ -226,6 +233,19 @@ fn widened_source_fingerprints(family: &[AggregateMaterializationSignature]) -> 
         .collect()
 }
 
+/// Whether the representative's subplan, reading the union of the members'
+/// selections on each widened source, can fail on a row combination no member
+/// reads. A member reads the product of its own selections, so with two or
+/// more widened sources the product of the unions pairs rows no member pairs.
+/// With one widened source every combination is one some member reads.
+fn widened_sources_pair_failing_rows(
+    plan: &QueryPlan,
+    representative: &AggregateMaterializationSignature,
+    widened_source_fingerprints: &BTreeSet<String>,
+) -> bool {
+    widened_source_fingerprints.len() > 1 && subplan_can_fail(plan, representative.aggregate_node_id)
+}
+
 /// Plans how `family` is shared, or names the reason it cannot be. The
 /// reason is a report contract; the check order fixes which one a family with
 /// several defects reports. A widened reader predicate the representative's
@@ -299,6 +319,9 @@ fn family_rewrite_plan(
                 branch_filters: family.iter().map(|signature| (signature.aggregate_node_id, None)).collect(),
             },
         });
+    }
+    if widened_sources_pair_failing_rows(plan, representative, &widened_source_fingerprints) {
+        return Err(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail);
     }
 
     let mut widened_source_predicates = BTreeMap::new();
@@ -455,6 +478,14 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
     let widened_source_fingerprints = widened_source_fingerprints(family);
     if widened_source_fingerprints.is_empty() {
         return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
+    }
+    // Every member reads the representative's subplan over the widened rows.
+    // The scalar family key leaves out projections no operator of the shape
+    // reads, yet the representative's still run, so even one widened source
+    // can run one of their expressions on rows its own member never
+    // evaluates.
+    if subplan_can_fail(plan, representative.aggregate_node_id) {
+        return Err(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail);
     }
 
     let mut widened_source_predicates = BTreeMap::new();

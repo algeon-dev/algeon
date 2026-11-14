@@ -109,6 +109,9 @@ fn native_query_rejects_post_join_residual_cast_without_native_support_before_so
 
 #[test]
 fn native_query_rejects_join_residual_casts_and_integer_division_the_ast_cannot_check() {
+    // An inner join runs a residual that can fail as the checked filter over
+    // its matched pairs. A left join keeps its unmatched rows, so that filter
+    // would change them and the residual must be one the AST evaluates.
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("score", DataType::Float64, false),
@@ -123,7 +126,7 @@ fn native_query_rejects_join_residual_casts_and_integer_division_the_ast_cannot_
         widened_id(1, "id", "right_id"),
     );
     let error = residual_validation_error_with_schema(
-        JoinType::Inner,
+        JoinType::Left,
         vec![id_join_key()],
         float_to_integer,
         Arc::clone(&schema),
@@ -168,7 +171,7 @@ fn native_query_rejects_join_residual_casts_and_integer_division_the_ast_cannot_
             Expr::literal(LiteralValue::Int64(1)),
         );
         let error = residual_validation_error_with_schema(
-            JoinType::Inner,
+            JoinType::Left,
             vec![id_join_key()],
             integer_arithmetic,
             Arc::clone(&schema),

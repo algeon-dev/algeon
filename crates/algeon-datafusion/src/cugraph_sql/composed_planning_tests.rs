@@ -19,7 +19,7 @@ use query_planning::{
 };
 use tokio::runtime::Builder as TestRuntimeBuilder;
 
-use super::{CugraphAlgoExec, CugraphSqlConfig};
+use super::{CugraphAlgoExec, CugraphSqlConfig, native_graph_input_execution_plan};
 use crate::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
     closing_backend::ClosingBackend,
@@ -370,8 +370,10 @@ async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
         .iter()
         .map(|producer| {
             assert_eq!(producer.children().len(), 1, "each graph producer must have one shared edge relation input");
-            let edge_input = producer.children()[0]
-                .downcast_ref::<AlgeonNativeExec>()
+            // DataFusion may wrap the producer in scheduling operators, such as
+            // the `CooperativeExec` of a one-partition plan.
+            let edge_input = native_graph_input_execution_plan(producer.children()[0].as_ref())
+                .and_then(|input| input.downcast_ref::<AlgeonNativeExec>())
                 .expect("graph edge input must be planned as a GPU-resident native producer");
             assert_eq!(
                 edge_input.schema().fields().iter().map(|field| field.name().to_string()).collect::<Vec<_>>(),

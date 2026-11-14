@@ -1821,8 +1821,6 @@ pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_execution_m
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_native_execution_config(self, algeon_datafusion::native_exec::AlgeonNativeExecutionConfig) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_native_optimizer_options(self, query_planning::optimizer::NativeOptimizerOptions) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_statistical_aggregate_execution_mode(self, query_planning::mode::StatisticalAggregateExecutionMode) -> Self
-impl core::default::Default for algeon_datafusion::planner::AlgeonNativeOptimizerConfig
-pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::default() -> Self
 pub struct algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule
 impl algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule
 pub fn algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule::config(&self) -> &algeon_datafusion::planner::AlgeonNativeOptimizerConfig

@@ -74,12 +74,12 @@ impl std::fmt::Display for FinalPlanDisposition {
 #[non_exhaustive]
 pub enum AlgeonGpuExecutionMode {
     /// Prefer native relational execution and allow a DataFusion CPU result.
-    #[default]
     NativePreferred,
     /// Keep ordinary SQL in DataFusion and execute only explicit GPU UDTFs
     /// on the GPU.
     FunctionsOnly,
     /// Require the completed plan to contain no DataFusion CPU execution.
+    #[default]
     NativeRequired,
 }
 
@@ -124,26 +124,18 @@ pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
 
 /// DataFusion-facing native optimizer configuration.
 ///
-/// Defaults preserve the DataFusion baseline when native candidates are not
-/// accepted. Native execution uses a bounded planning template and
-/// query-engine optimizer options use their own defaults. The native
+/// The default execution mode is [`AlgeonGpuExecutionMode::NativeRequired`],
+/// so a completed plan that still executes DataFusion CPU operators fails
+/// planning unless the caller selects another mode. Native execution uses a
+/// bounded planning template and query-engine optimizer options use their own
+/// defaults. The native
 /// [`ExecutionContext`](query_runtime::runtime::ExecutionContext) is
 /// acquired lazily from backend admission through [`AlgeonNativeExecutionConfig`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AlgeonNativeOptimizerConfig {
     native_execution_config: AlgeonNativeExecutionConfig,
     native_optimizer_options: NativeOptimizerOptions,
     execution_mode: AlgeonGpuExecutionMode,
-}
-
-impl Default for AlgeonNativeOptimizerConfig {
-    fn default() -> Self {
-        Self {
-            native_execution_config: AlgeonNativeExecutionConfig::default(),
-            native_optimizer_options: NativeOptimizerOptions::default(),
-            execution_mode: AlgeonGpuExecutionMode::NativePreferred,
-        }
-    }
 }
 
 impl AlgeonNativeOptimizerConfig {

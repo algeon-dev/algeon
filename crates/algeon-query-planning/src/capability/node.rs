@@ -17,6 +17,7 @@ use super::{
         validate_general_expr_capability, validate_join_residual_expr_capability,
         validate_named_column_expr_capability, validate_post_join_residual_expr_capability,
     },
+    join_input_schemas,
     model::{
         AggregateGrouping, CapabilityDecision, NodeCapability, NodeOperator, OrderingRequirement, ResidualRequirement,
         SourceFormatCapability,
@@ -162,7 +163,7 @@ fn node_executable_decision(
         ),
         PlanNode::Aggregate(aggregate) => aggregate_node_executable_decision(plan, node.id, aggregate),
         PlanNode::Sort(sort) => sort_node_executable_decision(node.id, sort),
-        PlanNode::Join(join) => match join_node_executable_decision(node.id, join) {
+        PlanNode::Join(join) => match join_node_executable_decision(node.id, join, &join_input_schemas(plan, join)) {
             CapabilityDecision::Satisfied => checked_node_decision(node.id, check_node(plan, node, columns, ctx)),
             rejected => rejected,
         },
@@ -400,11 +401,11 @@ fn sort_node_executable_decision(node_id: NodeId, sort: &SortNode) -> Capability
 
 /// Whether a join executor form runs the join and evaluates its residual.
 /// The IR and type rules every node meets come from [`check_node`] after it.
-fn join_node_executable_decision(node_id: NodeId, join: &JoinNode) -> CapabilityDecision {
+fn join_node_executable_decision(node_id: NodeId, join: &JoinNode, inputs: &[&ArrowSchema]) -> CapabilityDecision {
     // A residual that only a post-join filter evaluates rejects a non-inner
     // join after the residual expression is checked; every other structural
     // miss rejects first.
-    let form = match classify_join(node_id, join) {
+    let form = match classify_join(node_id, join, inputs) {
         Err(rejection) if rejection.reason != Reason::PostJoinResidualFilterRequiresOneShotEquiJoin => {
             return CapabilityDecision::Rejected { reason: rejection.reason, facts: rejection.facts };
         },

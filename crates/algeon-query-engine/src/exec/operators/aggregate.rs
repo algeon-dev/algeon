@@ -44,7 +44,7 @@ use super::{
     aggregate_spec_has_distinct, aggregate_spec_has_filters, aggregate_spec_has_floating_statistical_aggregate,
     attach_budget_token_failure_facts, budgeted_value, cast_count_output_columns,
     cast_count_output_columns_with_budget, cast_reduction_output_columns, cast_reduction_output_columns_with_budget,
-    cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error, execute_global_aggregate,
+    col, cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error, execute_global_aggregate,
     execute_global_aggregate_with_budget, final_global_aggregate_spec, final_global_aggregate_state_output_schema,
     finalize_avg_output_columns, finalize_avg_output_columns_with_budget, global_count_star_expr,
     global_valid_count_state_alias, lit, lit_null, lower_aggregate_function, lower_aggregate_spec_keys,

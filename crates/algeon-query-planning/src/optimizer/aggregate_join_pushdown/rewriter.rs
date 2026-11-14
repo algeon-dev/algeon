@@ -21,7 +21,7 @@ use super::{
     preaggregate_schema, preaggregate_spec, preaggregate_state_aliases, push_unique_preagg_group_column, rewrite,
     rewritten_join_key_after_preagg, unique_measure_input_alias,
 };
-use crate::{plan::UnionNode, source::SourceNode};
+use crate::{expr::input_column_type, plan::UnionNode, source::SourceNode};
 
 pub(in crate::optimizer::aggregate_join_pushdown) struct AggregateJoinPushdownRewriter<'a> {
     pub(in crate::optimizer::aggregate_join_pushdown) original: &'a QueryPlan,
@@ -311,6 +311,17 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             .filter(|node| node.id == preagg_input)
             .map(|node| Arc::clone(node.output_schema()))
             .ok_or(AggregateJoinPushdownRejectedReason::MissingInputField)?;
+        // The original plan computes a measure on joined rows only, and the
+        // pre-aggregate computes it on every row of its input, including rows
+        // that match no key.
+        if lineage.measure_columns.iter().any(|measure| {
+            measure
+                .side_input_aggregate
+                .expr
+                .can_fail(&|column| input_column_type(&[preagg_input_schema.as_ref()], column))
+        }) {
+            return Err(AggregateJoinPushdownRejectedReason::MeasureCanFail);
+        }
         for key in &join.spec.keys {
             let key_column = join_key_for_side(key, preagg_side);
             push_unique_preagg_group_column(

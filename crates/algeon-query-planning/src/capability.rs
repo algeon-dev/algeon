@@ -56,7 +56,7 @@ pub use join::{
     keyed_hash_join_strategy_input_facts_for_plan,
     keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness, keyed_join_filters_matched_pairs,
 };
-pub(crate) use join::{choose_join_strategy, classify_join, join_probe_streams_chunks};
+pub(crate) use join::{choose_join_strategy, classify_join, join_input_schemas, join_probe_streams_chunks};
 #[doc(hidden)]
 pub use join_strategy::{JoinStrategy, JoinStrategyChoice, JoinStrategyEvidence};
 pub use model::{

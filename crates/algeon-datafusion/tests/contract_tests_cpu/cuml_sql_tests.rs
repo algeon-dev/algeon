@@ -18,7 +18,7 @@ use algeon_datafusion::{
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_coverage::validate_query,
-    planner::AlgeonNativeOptimizerConfig,
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
@@ -71,7 +71,9 @@ fn context_with(config: CumlSqlConfig) -> SessionContext {
 fn native_context() -> SessionContext {
     register_fixtures(SessionContext::new_with_state(
         SessionStateBuilder::new_with_default_features()
-            .with_algeon_native(AlgeonNativeOptimizerConfig::default())
+            .with_algeon_native(
+                AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred),
+            )
             .try_with_cuml_sql_config(CumlSqlConfig::default())
             .unwrap()
             .build(),

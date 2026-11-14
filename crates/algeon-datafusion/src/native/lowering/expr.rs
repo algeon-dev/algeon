@@ -78,6 +78,28 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, LoweringRejection> {
+    lower_validated_physical_expr_on_rows(validated, bindings, None)
+}
+
+/// Lowers `expr` for a consumer that reads its value only on the rows where
+/// `activation` is TRUE. Every operand that native evaluation checks for
+/// failing values is NULL on the other rows, as inside a `CASE` branch, so
+/// evaluation cannot fail there and the value there is unspecified.
+pub(super) fn lower_physical_expr_on_rows(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+    bindings: Option<&[FieldBinding]>,
+    activation: Option<&NativeExpr>,
+) -> Result<NativeExpr, LoweringRejection> {
+    let validated = validate_physical_expr_contract(expr, input_schema)?;
+    lower_validated_physical_expr_on_rows(&validated, bindings, activation)
+}
+
+fn lower_validated_physical_expr_on_rows(
+    validated: &ValidatedPhysicalExpr,
+    bindings: Option<&[FieldBinding]>,
+    activation: Option<&NativeExpr>,
+) -> Result<NativeExpr, LoweringRejection> {
     let activation_nodes = Cell::new(0);
     lower_validated_physical_expr(
         validated,
@@ -85,7 +107,7 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
             bindings,
             join_columns: None,
             join_substitutions: &[],
-            activation: None,
+            activation,
             activation_nodes: &activation_nodes,
         },
     )
@@ -118,10 +140,11 @@ struct LoweringScope<'a> {
     bindings: Option<&'a [FieldBinding]>,
     join_columns: Option<&'a BTreeMap<usize, ColumnRef>>,
     join_substitutions: &'a [(Arc<dyn PhysicalExpr>, NativeExpr)],
-    /// Set inside a `CASE` branch or the right operand of an `AND` or `OR`,
-    /// which DataFusion may evaluate on a subset of rows: the rows where this
-    /// boolean is TRUE. Native evaluation visits every row, so an operand that
-    /// native evaluation checks for failing values is NULL on every other row.
+    /// Set inside a `CASE` branch, the right operand of an `AND` or `OR`, or
+    /// an aggregate argument under `FILTER (WHERE ...)`, which DataFusion may
+    /// evaluate on a subset of rows: the rows where this boolean is TRUE.
+    /// Native evaluation visits every row, so an operand that native
+    /// evaluation checks for failing values is NULL on every other row.
     activation: Option<&'a NativeExpr>,
     /// Nodes that [`Self::restrict`] has embedded so far in this expression.
     activation_nodes: &'a Cell<usize>,

@@ -81,6 +81,7 @@ fn pruning_test_backend() -> &'static AlgeonGpuBackend {
             .with_native_execution_config(AlgeonNativeExecutionConfig::new(
                 SourceChunking::try_new(TEST_MAX_SOURCE_CHUNK_BYTES, 1, 3, 1).expect("valid source chunking"),
             ))
+            .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
             .devices([device])
             .queue_policy(AlgeonGpuQueuePolicy::default())
             .build()

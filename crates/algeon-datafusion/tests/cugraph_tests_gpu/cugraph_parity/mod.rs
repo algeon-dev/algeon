@@ -25,6 +25,7 @@ use algeon_datafusion::{
             load_ref_csv_vertex_list,
         },
     },
+    planner::AlgeonGpuExecutionMode,
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
@@ -303,7 +304,11 @@ fn parity_session() -> (AlgeonGpuBackend, SessionContext) {
         .with_repartition_aggregations(false)
         .with_repartition_sorts(false);
     let device = AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
-    let backend = AlgeonGpuBackend::builder().devices([device]).build().expect("parity backend must build");
+    let backend = AlgeonGpuBackend::builder()
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
+        .devices([device])
+        .build()
+        .expect("parity backend must build");
     let state = backend
         .install_on(SessionStateBuilder::new().with_config(config).with_default_features())
         .expect("backend must install")

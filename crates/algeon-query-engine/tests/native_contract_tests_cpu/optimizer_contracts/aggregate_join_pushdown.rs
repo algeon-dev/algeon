@@ -1379,3 +1379,113 @@ fn aggregate_join_pushdown_still_preaggregates_grouping_sets_below_left_semi_on_
     };
     assert!(preaggregate.spec.grouping_sets.is_none());
 }
+
+/// `SUM(amount / qty)` over `fact(dk, grp, amount, qty)` joined on `dk` with
+/// `dim(dk, region)`: an inner join grouped by `region`, or a semi join
+/// grouped by `grp`. `measure_type` types `amount`, `qty` and the quotient.
+fn quotient_sum_over_join_plan(join_type: JoinType, measure_type: DataType) -> QueryPlan {
+    let sum_type = if measure_type.is_floating() { DataType::Float64 } else { DataType::Int64 };
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("dk", DataType::Int64, false),
+        Field::new("grp", DataType::Int64, false),
+        Field::new("amount", measure_type.clone(), false),
+        Field::new("qty", measure_type.clone(), false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("dk", DataType::Int64, false),
+        Field::new("region", DataType::Int64, false),
+    ]));
+    let (group, group_side) = match join_type {
+        JoinType::LeftSemi => ("grp", JoinSide::Left),
+        _ => ("region", JoinSide::Right),
+    };
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new(group, DataType::Int64, false),
+        Field::new("amount", measure_type.clone(), false),
+        Field::new("qty", measure_type.clone(), false),
+    ]));
+    let aggregate_input_schema = Arc::new(Schema::new(vec![
+        Field::new(group, DataType::Int64, false),
+        Field::new("__algeon_native_aggregate_arg_0", measure_type, false),
+    ]));
+    let aggregate_schema =
+        Arc::new(Schema::new(vec![Field::new(group, DataType::Int64, false), Field::new("s", sum_type, true)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fact", fact_schema)));
+    let dim = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dim", dim_schema)));
+    let join = builder
+        .add_join(
+            fact,
+            dim,
+            JoinSpec::new(
+                join_type,
+                vec![JoinKey::new(ColumnRef::input(0, "dk", "dk"), ColumnRef::input(1, "dk", "dk"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::new(
+                    group_side,
+                    ColumnRef::input(usize::from(group_side == JoinSide::Right), group, group),
+                    group,
+                ),
+                JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+            join_schema,
+        )
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            join,
+            projection_outputs(
+                vec![
+                    Expr::column(group),
+                    Expr::binary(Expr::column("amount"), BinaryOp::Divide, Expr::column("qty"))
+                        .alias("__algeon_native_aggregate_arg_0"),
+                ],
+                aggregate_input_schema,
+            ),
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            projection,
+            AggregateSpec::new(
+                vec![Expr::column(group)],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("__algeon_native_aggregate_arg_0"), "s")],
+            ),
+            aggregate_schema,
+        )
+        .unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
+}
+
+#[test]
+fn aggregate_join_pushdown_keeps_a_measure_that_can_fail_on_joined_rows() {
+    let optimize = |join_type: &JoinType, measure_type: DataType| {
+        optimize_query_plan(
+            quotient_sum_over_join_plan(join_type.clone(), measure_type),
+            &NativeOptimizerOptions::default(),
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap()
+        .diagnostics
+        .aggregate_join_pushdown
+    };
+    for join_type in [JoinType::Inner, JoinType::LeftSemi] {
+        // An integer `qty` of zero on a fact row that matches no `dim` key
+        // divides by zero only in a pre-aggregate below the join.
+        let integer = optimize(&join_type, DataType::Int64);
+        assert_eq!(integer.applied_count, 0, "{join_type}: {integer:?}");
+        assert_eq!(
+            integer.candidates[0].rejected_reason,
+            Some(AggregateJoinPushdownRejectedReason::MeasureCanFail),
+            "{join_type}"
+        );
+
+        let float = optimize(&join_type, DataType::Float64);
+        assert_eq!(float.applied_count, 1, "{join_type}: {float:?}");
+    }
+}

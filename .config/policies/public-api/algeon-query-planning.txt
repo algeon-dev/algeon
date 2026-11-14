@@ -1078,6 +1078,9 @@ pub fn query_planning::expr::Expr::trim(Self, impl core::convert::Into<alloc::st
 pub fn query_planning::expr::Expr::try_cast(Self, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::unary_math(query_planning::expr::UnaryMathOp, Self, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::upper(Self) -> Self
+impl query_planning::expr::Expr
+pub fn query_planning::expr::Expr::can_fail(&self, &dyn core::ops::function::Fn(&query_planning::expr::ColumnRef) -> core::option::Option<arrow_schema::datatype::DataType>) -> bool
+pub fn query_planning::expr::Expr::data_type(&self, &dyn core::ops::function::Fn(&query_planning::expr::ColumnRef) -> core::option::Option<arrow_schema::datatype::DataType>) -> core::option::Option<arrow_schema::datatype::DataType>
 impl core::fmt::Display for query_planning::expr::Expr
 pub fn query_planning::expr::Expr::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::bit::Not for query_planning::expr::Expr
@@ -1227,6 +1230,7 @@ pub query_planning::optimizer::AggregateJoinPushdownRejectedReason::DetailKeyPre
 pub query_planning::optimizer::AggregateJoinPushdownRejectedReason::InputNotJoin
 pub query_planning::optimizer::AggregateJoinPushdownRejectedReason::JoinResidualUnsupported
 pub query_planning::optimizer::AggregateJoinPushdownRejectedReason::LeftSemiAlreadyFiltersFinalGroups
+pub query_planning::optimizer::AggregateJoinPushdownRejectedReason::MeasureCanFail
 pub query_planning::optimizer::AggregateJoinPushdownRejectedReason::MissingInputField
 pub query_planning::optimizer::AggregateJoinPushdownRejectedReason::MissingJoinOutputLineage
 pub query_planning::optimizer::AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression
@@ -1362,12 +1366,14 @@ pub query_planning::optimizer::SharedResidentExtractionReason::ResidentPlanNotAd
 pub query_planning::optimizer::SharedResidentExtractionReason::ResidualNotMappedToOutput
 pub query_planning::optimizer::SharedResidentExtractionReason::RootDoesNotReduceRows
 pub query_planning::optimizer::SharedResidentExtractionReason::SubplanNotClosed
+pub query_planning::optimizer::SharedResidentExtractionReason::WidenedRowsCanFail
 pub query_planning::optimizer::SharedResidentExtractionReason::WidenedScanNotCovered
 pub enum query_planning::optimizer::SharedSubplanMaterializationRejectedReason
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::WidenedReaderPredicateUnsupported
+pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail
 pub enum query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::DistinctArgumentIsGroupKey
 pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::FilteredDistinctAggregate

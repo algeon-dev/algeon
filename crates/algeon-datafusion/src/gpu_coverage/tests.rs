@@ -43,7 +43,9 @@ fn test_execution_config() -> AlgeonNativeExecutionConfig {
 }
 
 fn bounded_optimizer_config() -> AlgeonNativeOptimizerConfig {
-    AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default())
+    AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(AlgeonNativeExecutionConfig::default())
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
 }
 
 fn validation_context(config: AlgeonNativeOptimizerConfig) -> SessionContext {

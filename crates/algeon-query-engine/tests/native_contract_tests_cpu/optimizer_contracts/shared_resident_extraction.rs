@@ -490,8 +490,13 @@ fn copies_split_on_a_floating_column_stay_separate() {
 
 /// `items` joined to `events` on `k` and projected for [`distinct_fragment`],
 /// with the join's build keys routed to the `events` reader. `items` is
-/// filtered only when `items_predicate` is given.
-fn joined_likes_fragment(items_predicate: Option<Expr>, events_predicate: Expr) -> QueryPlan {
+/// filtered only when `items_predicate` is given, and the joined rows only
+/// when `joined_predicate` is.
+fn joined_likes_fragment(
+    items_predicate: Option<Expr>,
+    events_predicate: Expr,
+    joined_predicate: Option<Expr>,
+) -> QueryPlan {
     let mut source_ids = None;
     let mut plan = distinct_fragment(
         |builder| {
@@ -523,7 +528,10 @@ fn joined_likes_fragment(items_predicate: Option<Expr>, events_predicate: Expr) 
                 )
                 .unwrap();
             source_ids = Some((joined, build, events));
-            joined
+            match joined_predicate {
+                Some(predicate) => builder.add_filter(joined, predicate).unwrap(),
+                None => joined,
+            }
         },
         late_from_k(),
     );
@@ -544,8 +552,8 @@ fn joined_likes_fragment(items_predicate: Option<Expr>, events_predicate: Expr) 
 fn a_filter_only_one_copy_applies_leaves_the_producer_and_its_route_moves_to_the_scan() {
     let items = compare("j", BinaryOp::Gt, LiteralValue::Int32(0));
     let shared = extract_shared_resident_fragments(vec![
-        joined_likes_fragment(Some(items), k_compare(BinaryOp::Lt, 10)),
-        joined_likes_fragment(None, k_compare(BinaryOp::GtEq, 10)),
+        joined_likes_fragment(Some(items), k_compare(BinaryOp::Lt, 10), None),
+        joined_likes_fragment(None, k_compare(BinaryOp::GtEq, 10), None),
     ])
     .unwrap();
 
@@ -575,6 +583,44 @@ fn a_filter_only_one_copy_applies_leaves_the_producer_and_its_route_moves_to_the
             Expr::column("late"),
         ]
     );
+}
+
+#[test]
+fn copies_that_widen_two_sources_of_a_subplan_that_can_fail_stay_separate() {
+    // The first copy pairs `j > 0` items with `k < 10` events and the second
+    // all items with `k >= 10` events. A producer reading all items and all
+    // events also pairs `j <= 0` items with `k < 10` events, where `s / k`
+    // would divide although no copy evaluates it there.
+    let items = || compare("j", BinaryOp::Gt, LiteralValue::Int32(0));
+    let quotient = || {
+        Some(Expr::binary(
+            Expr::binary(Expr::column("s"), BinaryOp::Divide, Expr::column("k")),
+            BinaryOp::Gt,
+            Expr::Literal(LiteralValue::Int64(0)),
+        ))
+    };
+    let shared = extract_shared_resident_fragments(vec![
+        joined_likes_fragment(Some(items()), k_compare(BinaryOp::Lt, 10), quotient()),
+        joined_likes_fragment(None, k_compare(BinaryOp::GtEq, 10), quotient()),
+    ])
+    .unwrap();
+
+    assert!(shared.producers.is_empty(), "{shared:?}");
+    assert_eq!(
+        root_reasons(&shared),
+        [(SharedResidentExtractionDecision::Rejected, SharedResidentExtractionReason::WidenedRowsCanFail); 2]
+    );
+
+    // With the same items filter in both copies, every pair the producer reads
+    // is one some copy reads.
+    let shared = extract_shared_resident_fragments(vec![
+        joined_likes_fragment(Some(items()), k_compare(BinaryOp::Lt, 10), quotient()),
+        joined_likes_fragment(Some(items()), k_compare(BinaryOp::GtEq, 10), quotient()),
+    ])
+    .unwrap();
+
+    let [producer] = shared.producers.as_slice() else { panic!("one producer for both copies: {shared:?}") };
+    assert_eq!(producer.consumer_fragments, [0, 1]);
 }
 
 /// [`distinct_fragment`] with `late = k >= 10` over a scan that selects by

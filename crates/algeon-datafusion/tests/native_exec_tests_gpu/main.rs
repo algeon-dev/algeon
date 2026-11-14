@@ -79,6 +79,7 @@ fn test_gpu_backend() -> &'static AlgeonGpuBackend {
             .with_native_execution_config(AlgeonNativeExecutionConfig::new(
                 SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
             ))
+            .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
             .devices([device])
             .build()
             .expect("native execution tests require a backend-owned GPU")
@@ -220,9 +221,11 @@ fn native_optimizer_ilike_fragment_reserves_host_output_before_d2h() {
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let backend = test_gpu_backend();
-    let config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(
-        backend.optimizer_config().native_execution_config().clone().with_host_output_memory_pool_accounting(true),
-    );
+    let config = AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(
+            backend.optimizer_config().native_execution_config().clone().with_host_output_memory_pool_accounting(true),
+        )
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
     let rule = AlgeonNativePhysicalOptimizerRule::new(config);
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
     let runtime_env = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1, 1.0).build().unwrap());

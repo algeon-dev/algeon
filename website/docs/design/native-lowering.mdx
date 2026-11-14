@@ -215,10 +215,22 @@ therefore stay separate unless one copy's reader predicate holds only shared
 conjuncts. The producer's scan keeps its reader predicate and its proven row
 bound as lowering set them.
 
+When the selections of two or more sources differ, the producer joins rows
+of those sources that no copy joins. Copy 1 may read `a[k = 1] ⋈ b[k = 1]` and
+copy 2 `a[k = 2] ⋈ b[k = 2]`, while the producer reads
+`a[k ∈ {1, 2}] ⋈ b[k ∈ {1, 2}]`. The extra pairs change no result, because each
+copy keeps only its own groups, but an expression evaluated on them can fail
+the query. Such copies share a producer only when no expression in the subplan
+can fail, as defined by
+[checked operations](../reference/native-evaluation-semantics.mdx#checked-operations).
+With one differing source, every pair the producer joins is one some copy
+joins.
+
 Each copy reads the producer through a `Filter` over its restated conjuncts,
 which `EXPLAIN` shows above the copy's `GpuResidentSource`. Diagnostics report
 such a copy as `ExtractedUnderResidualFilter`, and they report copies that
-stay separate as `WidenedScanNotCovered` or `ResidualNotMappedToOutput`.
+stay separate as `WidenedScanNotCovered`, `ResidualNotMappedToOutput` or
+`WidenedRowsCanFail`.
 
 ## Partitions and result semantics
 
@@ -344,11 +356,14 @@ writes the retained topology, events and completeness footer.
 
 <PlanSelection />
 
-The default mode first attempts whole-query lowering. Unsupported operators,
-types or semantics leave CPU work in the completed plan; supported subtrees
-may still become GPU fragments. Explicit graph, vector and ML functions also
-form GPU fragments. Transfers at CPU/GPU boundaries are part of the cost of
-such a mixed plan.
+Every mode that lowers relational SQL first attempts whole-query lowering.
+Under `native_preferred`, unsupported operators, types or semantics leave CPU
+work in the completed plan; supported subtrees may still become GPU
+fragments. Explicit graph, vector and ML functions also form GPU fragments.
+Transfers at CPU/GPU boundaries are part of the cost of such a mixed plan.
+The default, `native_required`, rejects a plan with CPU work instead, as
+[Require GPU execution](#baseline-preservation-and-final-plan-requirements)
+describes.
 
 A join condition that reads both inputs stays on the join. Each part of it
 that reads one input and that the cuDF join AST cannot evaluate, such as
@@ -358,21 +373,21 @@ that cannot fail moves, because DataFusion evaluates the condition on
 key-matched pairs alone. [Native Evaluation Semantics](../reference/native-evaluation-semantics.mdx#where-checked-operations-are-not-evaluated)
 states where a part with a checked operation runs.
 
-A keyed inner or semi join predicate with a decimal division, or with a
-single-input cast that can fail to a type the cuDF AST does not cast to, uses
-the native GPU post-join filter. Equality keys first select candidate row
-pairs. The GPU column evaluator then checks the division and the cast, and
-preserves `CASE` branch activation through the shared expression lowering
-contract. Unmatched rows do not evaluate the residual, and inactive branches
-cannot trigger division by zero, scaling overflow or a cast failure. The
-filter evaluates the predicate's top-level `AND` operands in order, each on
+A keyed inner join predicate, or a keyed semi join predicate that builds its
+right input, with a [checked operation](../reference/native-evaluation-semantics.mdx#checked-operations)
+over one input or both uses the native GPU post-join filter. Equality keys
+first select candidate row pairs. The GPU column evaluator then checks each
+such operation, and preserves `CASE` branch activation through the shared
+expression lowering contract. Unmatched rows do not evaluate the residual,
+and inactive branches cannot trigger division by zero, overflow or a cast
+failure. The filter evaluates the predicate's top-level `AND` operands in order, each on
 the pairs the earlier ones keep (`JoinSpec::residual_predicate`). Lowering
 therefore guards a checked operation only by the `CASE`, `AND` and `OR` inside
 its own operand, the size bound on guards applies per operand, and the lowered
 predicate grows linearly with the number of operands. A semi join keeps the
 distinct left rows of the passing pairs. Outer, anti and keyless joins retain
 their existing residual capability restrictions; a residual with a checked
-single-input operation in one of them is reported with that operation.
+operation in one of them is reported with that operation.
 
 `PlanningReport` records each candidate once as selected, unsupported with the first unmet
 contract, or supported but kept on DataFusion by a
@@ -437,10 +452,10 @@ source.
 
 ## Require GPU execution {/* #baseline-preservation-and-final-plan-requirements */}
 
-`NativeRequired` rejects a completed plan containing DataFusion CPU operators,
-and its error names the blocking element of the first unsupported candidate.
-`FunctionsOnly` retains CPU relational processing around explicit GPU
-functions. The default, `NativePreferred`, permits a CPU or mixed plan.
+The default, `NativeRequired`, rejects a completed plan containing DataFusion
+CPU operators, and its error names the blocking element of the first
+unsupported candidate. `FunctionsOnly` retains CPU relational processing
+around explicit GPU functions. `NativePreferred` permits a CPU or mixed plan.
 These modes classify DataFusion plan nodes. CPU orchestration and I/O metadata
 remain part of native execution. The default statistical mode uses GPU kernels;
 an optional [DataFusion-exact mode](../integration/configuration.mdx#native-settings)

@@ -6,7 +6,7 @@ use algeon_datafusion::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::record_batch::RecordBatch;
@@ -106,9 +106,9 @@ struct NativeProfileBase {
 
 /// Decision-grade session config for ClickBench reports.
 ///
-/// Uses one target partition, disables file/aggregate/join/sort repartitioning
-/// and dynamic filter pushdown, leaves Parquet pushdown filters enabled, and
-/// sets `binary_as_string=true` for upstream `BYTE_ARRAY` string columns.
+/// Uses one target partition, disables file/aggregate/join/sort repartitioning,
+/// dynamic filter pushdown and row-level Parquet filter pushdown, and sets
+/// `binary_as_string=true` for upstream `BYTE_ARRAY` string columns.
 pub fn clickbench_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -119,7 +119,10 @@ pub fn clickbench_report_session_config() -> SessionConfig {
     config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
-    config.options_mut().execution.parquet.pushdown_filters = true;
+    // Off, as DataFusion defaults it. The cuDF reader that decodes filter
+    // columns first and prunes payload pages with the result
+    // (`hybrid_scan_reader`) is experimental and has no binding here.
+    config.options_mut().execution.parquet.pushdown_filters = false;
     config.options_mut().execution.parquet.binary_as_string = true;
     config
 }
@@ -151,8 +154,9 @@ pub fn clickbench_tuned_cpu_session_config() -> SessionConfig {
 ///
 /// Resolves [`ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV`] plus optional
 /// `ALGEON_CLICKBENCH_NATIVE_*` overrides. Defaults remain conservative (no
-/// source-byte ceiling, 1 row group); callers select normal or strict native
-/// execution when they install the resulting rule.
+/// source-byte ceiling, 1 row group) and the mode is `NativePreferred`;
+/// callers select normal or strict native execution when they install the
+/// resulting rule.
 pub fn clickbench_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
     clickbench_native_optimizer_config_with_profile_settings(&clickbench_native_profile_settings_from_env())
 }
@@ -161,18 +165,20 @@ pub fn clickbench_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
 pub fn clickbench_native_optimizer_config_with_profile_settings(
     profile: &ClickbenchNativeProfileSettings,
 ) -> AlgeonNativeOptimizerConfig {
-    AlgeonNativeOptimizerConfig::default().with_native_execution_config(
-        AlgeonNativeExecutionConfig::new(
-            SourceChunking::try_new(
-                profile.max_source_chunk_bytes,
-                profile.max_row_groups_per_chunk,
-                profile.max_retry_attempts,
-                profile.min_retry_chunk_row_groups,
+    AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(
+            AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(
+                    profile.max_source_chunk_bytes,
+                    profile.max_row_groups_per_chunk,
+                    profile.max_retry_attempts,
+                    profile.min_retry_chunk_row_groups,
+                )
+                .expect("validated ClickBench native profile has nonzero source chunking"),
             )
-            .expect("validated ClickBench native profile has nonzero source chunking"),
+            .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
         )
-        .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
-    )
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
 }
 
 /// Resolves the ClickBench native bounded memory/source profile from env.

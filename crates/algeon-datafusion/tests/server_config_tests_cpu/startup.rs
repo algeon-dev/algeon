@@ -131,13 +131,13 @@ fn effective_toml_prints_every_value_with_its_source() {
     let (_dir, mut env) = env_with_server_toml(
         "[native]\nmax_retry_attempts = 5\n\n[[admission.device_profiles]]\ndevice_ordinal = 0\nmax_active_attempts = 3\n",
     );
-    env.insert("ALGEON_SERVER_NATIVE_EXECUTION_MODE", "native_required".to_string());
+    env.insert("ALGEON_SERVER_NATIVE_EXECUTION_MODE", "native_preferred".to_string());
     let rendered = LoadedServerConfig::from_vars(env).unwrap().effective_toml();
 
     for line in [
         "bind = \"127.0.0.1:50051\"  # source: default",
         "max_retry_attempts = 5  # source: file",
-        "execution_mode = \"native_required\"  # source: env ALGEON_SERVER_NATIVE_EXECUTION_MODE",
+        "execution_mode = \"native_preferred\"  # source: env ALGEON_SERVER_NATIVE_EXECUTION_MODE",
         "# max_source_chunk_bytes is unset  # source: default",
         "[[admission.device_profiles]]",
         "max_active_attempts = 3  # source: file",
@@ -149,6 +149,7 @@ fn effective_toml_prints_every_value_with_its_source() {
 
     let defaulted = LoadedServerConfig::from_vars(BTreeMap::<&str, String>::new()).unwrap().effective_toml();
     assert!(defaulted.contains("[[admission.device_profiles]]  # defaulted"), "{defaulted}");
+    assert!(defaulted.contains("execution_mode = \"native_required\"  # source: default"), "{defaulted}");
 }
 
 #[test]

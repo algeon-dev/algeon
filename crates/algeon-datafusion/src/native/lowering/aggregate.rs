@@ -20,7 +20,10 @@ use query_planning::{
 
 use super::{
     Demand, FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
-    expr::{alias_if_needed, collect_required_field_indices, lower_physical_expr_with_bindings, physical_expr_field},
+    expr::{
+        alias_if_needed, collect_required_field_indices, lower_physical_expr_on_rows,
+        lower_physical_expr_with_bindings, physical_expr_field,
+    },
     lower_native_input,
     naming::{sanitize_field_name, unique_name_with_suffix},
     projection_outputs,
@@ -377,7 +380,8 @@ pub(super) fn prepare_aggregate_input(
             group_aliases.push(None);
         } else {
             let alias = unique_synthetic_aggregate_group_alias(index, alias, &input_columns, &projection.fields);
-            projection.compute(&input, group_expr, &frontend_schema, alias.as_str())?;
+            let lowered = lower_physical_expr_with_bindings(group_expr, &frontend_schema, Some(&input.bindings))?;
+            projection.compute(lowered, group_expr, &frontend_schema, alias.as_str())?;
             group_aliases.push(Some(alias));
         }
     }
@@ -385,18 +389,27 @@ pub(super) fn prepare_aggregate_input(
     let mut filter_aliases = vec![None; args.len()];
     let mut filters_by_expression = HashMap::<String, String>::new();
     for (index, arg) in args.iter().enumerate() {
+        let filter = aggregate.filter_expr().get(index).and_then(Option::as_ref);
+        let lowered_filter = filter
+            .map(|filter| lower_physical_expr_with_bindings(filter, &frontend_schema, Some(&input.bindings)))
+            .transpose()?;
         if let Some(binding) = input_column(&input, arg)? {
             projection.keep(&input, binding)?;
             arg_aliases.push(None);
         } else {
             // cuDF aggregate lowering consumes columns, so SQL aggregate
             // arguments such as SUM(m00 + m01) are first materialized as
-            // synthetic projection columns.
+            // synthetic projection columns. The aggregate drops every row
+            // where its filter is not TRUE, so the argument is checked only
+            // on the rows the filter keeps, which are the rows DataFusion
+            // evaluates it on without GROUP BY.
             let alias = unique_synthetic_aggregate_arg_alias(index, &input.schema, &projection.fields);
-            projection.compute(&input, arg, &frontend_schema, alias.as_str())?;
+            let lowered_arg =
+                lower_physical_expr_on_rows(arg, &frontend_schema, Some(&input.bindings), lowered_filter.as_ref())?;
+            projection.compute(lowered_arg, arg, &frontend_schema, alias.as_str())?;
             arg_aliases.push(Some(alias));
         }
-        if let Some(filter) = aggregate.filter_expr().get(index).and_then(Option::as_ref) {
+        if let (Some(filter), Some(lowered_filter)) = (filter, lowered_filter) {
             let key = filter.to_string();
             let alias = match filters_by_expression.get(&key) {
                 Some(alias) => alias.clone(),
@@ -406,7 +419,7 @@ pub(super) fn prepare_aggregate_input(
                         &input.schema,
                         &projection.fields,
                     );
-                    projection.compute(&input, filter, &frontend_schema, alias.as_str())?;
+                    projection.compute(lowered_filter, filter, &frontend_schema, alias.as_str())?;
                     filters_by_expression.insert(key, alias.clone());
                     alias
                 },
@@ -454,17 +467,15 @@ impl AggregateInputProjection {
         Ok(())
     }
 
+    /// Adds `lowered`, the lowering of `expr`, as the column `alias`.
     fn compute(
         &mut self,
-        input: &LoweredNativeInput,
+        lowered: NativeExpr,
         expr: &Arc<dyn PhysicalExpr>,
         frontend_schema: &SchemaRef,
         alias: &str,
     ) -> Result<(), LoweringFailure> {
-        self.expressions.push(alias_if_needed(
-            lower_physical_expr_with_bindings(expr, frontend_schema, Some(&input.bindings))?,
-            alias,
-        ));
+        self.expressions.push(alias_if_needed(lowered, alias));
         self.fields.push(physical_expr_field(expr, frontend_schema, alias)?);
         Ok(())
     }

@@ -67,6 +67,7 @@ static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::const_new(());
 #[path = "../support/tpch_session.rs"]
 mod tpch_session;
 
+mod checked_operation_rewrites;
 mod datafusion_exec;
 mod fixtures;
 mod scalar_expressions;

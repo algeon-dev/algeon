@@ -24,7 +24,7 @@ use super::{
     types::{
         is_integral_type, require_arithmetic_type, require_boolean, require_comparable_types, require_compatible_types,
         require_date_or_timestamp, require_integral_type, require_remainder_type, require_scalar_operator_value,
-        require_string, require_timezone_free_operator_key,
+        require_string, require_timezone_free_operator_key, temporal_duration_binary_output_type,
     },
 };
 use crate::{
@@ -157,7 +157,12 @@ pub(crate) fn validate_join_capability(
             ctx,
         ) {
             Ok(data_type) => data_type,
-            Err(_error) if matches!(classify_join(node_id, join), Ok(JoinForm::KeyedEquiPostFilter)) => {
+            Err(_error)
+                if matches!(
+                    classify_join(node_id, join, &[left_schema.as_ref(), right_schema.as_ref()]),
+                    Ok(JoinForm::KeyedEquiPostFilter)
+                ) =>
+            {
                 validate_post_join_residual_expr(
                     predicate,
                     left_schema,
@@ -878,6 +883,11 @@ fn validate_post_join_residual_expr(
                 right_available,
                 ctx,
             )?;
+            // Temporal arithmetic is resolved before the arithmetic rules
+            // below, which would reject a timestamp or duration operand.
+            if let Some(output_type) = temporal_duration_binary_output_type(*op, &left_type, &right_type)? {
+                return Ok(output_type);
+            }
             match op {
                 BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
                     require_arithmetic_type(&left_type, "post-join residual arithmetic left operand")?;

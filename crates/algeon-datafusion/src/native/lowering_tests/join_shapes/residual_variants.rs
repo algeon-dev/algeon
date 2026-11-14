@@ -91,7 +91,8 @@ fn integer_divide_residual_hash_join_plan(
         left_schema.field_with_name("l_m00").unwrap().clone(),
         right_schema.field_with_name("r_m01").unwrap().clone(),
     ]));
-    // Residual join predicates must reject integer divide before it reaches libcudf.
+    // A left join keeps its unmatched rows, so its residual runs in the cuDF
+    // join AST, which divides integers without the zero-divisor check.
     let ratio = binary(
         col("l_m00", &filter_schema).unwrap(),
         Operator::Divide,
@@ -114,7 +115,7 @@ fn integer_divide_residual_hash_join_plan(
             right,
             vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
             Some(filter),
-            &JoinType::Inner,
+            &JoinType::Left,
             Some(vec![
                 left_schema.index_of("key").unwrap(),
                 left_schema.index_of("l_m00").unwrap(),

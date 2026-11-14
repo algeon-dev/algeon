@@ -18,8 +18,10 @@
 //! small: it never orders two sides and never reaches
 //! `estimated_output_rows`, which admission and replay sizing read.
 
+use arrow::datatypes::Schema;
+
 use crate::{
-    capability::classify_join,
+    capability::{classify_join, join_input_schemas},
     error::{QueryError, QueryErrorCode, Result},
     expr::{ColumnRef, Expr},
     plan::{
@@ -230,7 +232,7 @@ pub(crate) fn optimize_join_build_side_selection(
         let PlanNode::Join(join) = &node.kind else {
             continue;
         };
-        if !join_build_side_selection_supported(node.id, join) {
+        if !join_build_side_selection_supported(node.id, join, &join_input_schemas(&plan, join)) {
             continue;
         }
 
@@ -290,7 +292,7 @@ pub(crate) fn optimize_join_build_side_selection(
 
 /// Keyed inner, semi, and anti joins whose build side no reusable artifact
 /// fixes are candidates when a native executor runs either direction.
-fn join_build_side_selection_supported(node_id: NodeId, join: &JoinNode) -> bool {
+fn join_build_side_selection_supported(node_id: NodeId, join: &JoinNode, inputs: &[&Schema]) -> bool {
     if join.spec.keys.is_empty()
         || join.spec.build_artifact_id.is_some()
         || !matches!(join.spec.join_type, JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti { .. })
@@ -300,7 +302,7 @@ fn join_build_side_selection_supported(node_id: NodeId, join: &JoinNode) -> bool
     [JoinSide::Left, JoinSide::Right].into_iter().all(|build_side| {
         let mut oriented = join.clone();
         oriented.spec = oriented.spec.with_build_side(build_side);
-        classify_join(node_id, &oriented).is_ok()
+        classify_join(node_id, &oriented, inputs).is_ok()
     })
 }
 

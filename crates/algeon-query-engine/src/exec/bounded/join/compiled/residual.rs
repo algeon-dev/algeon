@@ -1,10 +1,11 @@
 //! Residual filtering for one-shot equi joins whose predicate cannot run inside the mixed kernel.
 //!
 //! An inner join, or a semi join that builds its right side, with equality keys and a residual
-//! containing CASE, IS DISTINCT FROM, IS NOT DISTINCT FROM, a decimal division or a cast to a type
-//! the cuDF AST does not cast to is classified `KeyedEquiPostFilter` and always runs as
-//! `OneShotEqui`. The equality gather maps pair every key match, and the residual removes pairs
-//! afterwards, so it is evaluated on the matched pairs only, as DataFusion evaluates a join filter.
+//! containing CASE, IS DISTINCT FROM, IS NOT DISTINCT FROM, a cast to a type the cuDF AST does not
+//! cast to, or an operation that can fail (`Expr::can_fail`) is classified `KeyedEquiPostFilter`
+//! and always runs as `OneShotEqui`. The equality gather maps pair every key match, and the
+//! residual removes pairs afterwards, so it is evaluated on the matched pairs only, as DataFusion
+//! evaluates a join filter.
 //! This module gathers a candidate frame that holds every column the residual reads, under
 //! generated `__algeon_native_one_shot_residual_*` names, and filters it by each top-level conjunct
 //! of the residual rewritten to those names (`rewrite_join_residual_for_candidate`), in order, each

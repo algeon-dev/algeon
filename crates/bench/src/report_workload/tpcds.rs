@@ -6,7 +6,7 @@ use algeon_datafusion::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
     source_cardinality::schema_with_source_unique_keys,
 };
@@ -116,11 +116,11 @@ struct NativeProfileBase {
 
 /// Session config used by TPC-DS native report surfaces.
 ///
-/// Uses one target partition, disables DataFusion repartitioning, dynamic
-/// filter pushdown, and leaves Parquet pushdown filters enabled for scan
-/// pruning parity with report binaries. The base config remains compatible
-/// with the CPU DataFusion oracle; native-only planner guards are applied by
-/// [`tpcds_native_report_session_config`].
+/// Uses one target partition and disables DataFusion repartitioning, dynamic
+/// filter pushdown and row-level Parquet filter pushdown, so a scan predicate
+/// stays a filter above the scan as it does in server sessions. The base
+/// config remains compatible with the CPU DataFusion oracle; native-only
+/// planner guards are applied by [`tpcds_native_report_session_config`].
 pub fn tpcds_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -131,7 +131,10 @@ pub fn tpcds_report_session_config() -> SessionConfig {
     config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
-    config.options_mut().execution.parquet.pushdown_filters = true;
+    // Off, as DataFusion defaults it. The cuDF reader that decodes filter
+    // columns first and prunes payload pages with the result
+    // (`hybrid_scan_reader`) is experimental and has no binding here.
+    config.options_mut().execution.parquet.pushdown_filters = false;
     config
 }
 
@@ -184,7 +187,9 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
 ///
 /// Numeric env vars parse unsigned integers. Source chunk bytes and row-group
 /// limits are planning targets; positive-value validation happens when the
-/// native execution context is built.
+/// native execution context is built. The mode is `NativePreferred`, so a
+/// planning report records the candidates of a query that keeps CPU work;
+/// execution reports set their own mode.
 pub fn tpcds_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
         StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
@@ -240,19 +245,21 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
 ) -> AlgeonNativeOptimizerConfig {
     let statistical_aggregate_execution_mode =
         optional_env_statistical_aggregate_execution_mode().unwrap_or(statistical_aggregate_execution_mode_default);
-    AlgeonNativeOptimizerConfig::default().with_native_execution_config(
-        AlgeonNativeExecutionConfig::new(
-            SourceChunking::try_new(
-                profile.max_source_chunk_bytes,
-                profile.max_row_groups_per_chunk,
-                profile.max_retry_attempts,
-                profile.min_retry_chunk_row_groups,
+    AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(
+            AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(
+                    profile.max_source_chunk_bytes,
+                    profile.max_row_groups_per_chunk,
+                    profile.max_retry_attempts,
+                    profile.min_retry_chunk_row_groups,
+                )
+                .expect("validated TPC-DS native profile has nonzero source chunking"),
             )
-            .expect("validated TPC-DS native profile has nonzero source chunking"),
+            .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
+            .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
         )
-        .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
-        .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
-    )
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
 }
 
 /// Resolves the TPC-DS native bounded memory/source profile from env.

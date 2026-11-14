@@ -75,7 +75,7 @@ use crate::{
         CandidateOutcomeKind, NativeFallbackPressureReport, NativeFallbackPressureWorkloadInput,
         NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
     report::{CandidateOutcome, PlanningReport},
 };
 
@@ -201,7 +201,9 @@ fn rejected_candidate_remedy(result: &NativeLoweringResult) -> QueryGpuRemedy {
 /// native plan and then enforces its orderings, and returns the rule's report
 /// with the native plan it kept.
 fn optimize_with_native_rule(plan: Arc<dyn ExecutionPlan>) -> (PlanningReport, Option<QueryPlan>) {
-    let rule = AlgeonNativePhysicalOptimizerRule::new(AlgeonNativeOptimizerConfig::default());
+    let rule = AlgeonNativePhysicalOptimizerRule::new(
+        AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred),
+    );
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
     let report = diagnostics.expect("the native rule reports its candidates").report;
     let native_plan = below_native_admission(&optimized)

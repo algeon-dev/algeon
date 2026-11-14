@@ -44,7 +44,7 @@ pub async fn build_session_context_with_backend(
 ) -> ServerResult<SessionContext> {
     let mut effective_config = config.clone();
     effective_config.native_optimizer_config = backend.optimizer_config().clone();
-    let session_config = build_session_config(&effective_config)?;
+    let session_config = build_session_config()?;
     let runtime_env = RuntimeEnvBuilder::new()
         .with_metadata_cache_limit(effective_config.metadata_cache_limit_bytes)
         .build_arc()
@@ -338,53 +338,15 @@ pub(crate) fn cugraph_sql_config(config: &CugraphServerConfig) -> CugraphSqlConf
 
 /// Build the `SessionConfig` for the Flight SQL server from DataFusion's
 /// standard environment configuration. The server enables catalog discovery
-/// but does not change optimizer or execution settings beyond what the
-/// configured final plan requirement implies (see below).
-pub(crate) fn build_session_config(config: &ServerConfig) -> ServerResult<SessionConfig> {
-    let gpu_only = config.native_optimizer_config.execution_mode().rejects_datafusion_cpu();
+/// and changes no optimizer or execution setting; the options the execution
+/// mode implies, such as one target partition under `native_required`, come
+/// from `AlgeonGpuBackend::install_on`.
+pub(crate) fn build_session_config() -> ServerResult<SessionConfig> {
     SessionConfig::from_env()
         .map(enable_session_discovery)
-        .map(|session_config| {
-            // Under the GPU-only requirement no query can execute on the CPU,
-            // so DataFusion-side parallelism is unreachable. Single-group
-            // scan planning keeps sort-declared fixtures (the source-sorted
-            // DBLP layout) eligible for native lowering. A declared scan
-            // ordering cannot be reproduced across parallel byte-range groups.
-            if gpu_only { session_config.with_target_partitions(1) } else { session_config }
-        })
         .map_err(|error| ServerError::session("failed to build DataFusion session config from environment", error))
 }
 
 pub(super) fn enable_session_discovery(config: SessionConfig) -> SessionConfig {
     config.with_information_schema(true)
-}
-
-#[cfg(all(test, feature = "cugraph"))]
-mod tests {
-    use super::*;
-    use crate::server::planner::AlgeonGpuExecutionMode;
-
-    fn server_config_with_execution_mode(mode: &str) -> ServerConfig {
-        ServerConfig::from_vars([("ALGEON_SERVER_NATIVE_EXECUTION_MODE", mode)]).expect("load server config")
-    }
-
-    #[test]
-    fn execution_mode_env_maps_to_functions_only_and_preserves_partitions() {
-        let server = server_config_with_execution_mode("functions_only");
-        assert_eq!(server.native_optimizer_config.execution_mode(), AlgeonGpuExecutionMode::FunctionsOnly);
-        let session = build_session_config(&server).expect("session config");
-        let baseline = SessionConfig::from_env().expect("baseline session config");
-        assert_eq!(
-            session.options().execution.target_partitions,
-            baseline.options().execution.target_partitions,
-            "functions-only must preserve DataFusion's configured parallelism"
-        );
-    }
-
-    #[test]
-    fn execution_mode_env_maps_native_required_to_single_partition() {
-        let server = server_config_with_execution_mode("native_required");
-        let session = build_session_config(&server).expect("session config");
-        assert_eq!(session.options().execution.target_partitions, 1);
-    }
 }
