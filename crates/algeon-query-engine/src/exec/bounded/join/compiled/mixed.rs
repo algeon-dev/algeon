@@ -2,8 +2,8 @@
 //!
 //! The planner picks this strategy for keyed inner, left, full, semi and anti joins whose residual
 //! can run inside the matching kernel. For an inner join, a residual containing CASE, IS DISTINCT
-//! FROM, IS NOT DISTINCT FROM or a decimal division filters after matching and goes to the one-shot
-//! path (`residual.rs`); other join types reject such a residual during planning. Large inputs use
+//! FROM, IS NOT DISTINCT FROM or an operation that can fail filters after matching and goes to the
+//! one-shot path (`residual.rs`); other join types reject such a residual during planning. Large inputs use
 //! the partitioned variant instead (`partitioned/mixed_keyed.rs`).
 //!
 //! The cuDF primitive is the mixed join: it hashes the equality keys and evaluates the lowered AST

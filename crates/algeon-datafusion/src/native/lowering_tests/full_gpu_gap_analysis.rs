@@ -564,6 +564,24 @@ const JOIN_RESIDUAL_CASES: &[GpuGapCase] = &[
             blocking: ("cast", "cast from Int64 to UInt64 in `CAST(payload AS UInt64)`"),
         },
     },
+    // The division fails on a zero `key`, which the cuDF AST does not check,
+    // so the inner join filters its matched pairs with the residual.
+    GpuGapCase {
+        id: "join_residual_integer_division_by_a_column",
+
+        sql: "SELECT b.id FROM bench b JOIN bench s ON b.key = s.key AND b.payload / s.key > b.id",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "join_residual_integer_division_by_a_column_left",
+
+        sql: "SELECT b.id, s.id AS sid FROM bench b LEFT JOIN bench s ON b.key = s.key AND b.payload / s.key > b.id",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedExpression,
+            unsupported_category: "expression",
+            blocking: ("binary_operator", "binary operator `/` over Int64 and Int64 in `payload / CAST(key AS Int64)`"),
+        },
+    },
 ];
 
 #[tokio::test]

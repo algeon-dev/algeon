@@ -373,21 +373,21 @@ that cannot fail moves, because DataFusion evaluates the condition on
 key-matched pairs alone. [Native Evaluation Semantics](../reference/native-evaluation-semantics.mdx#where-checked-operations-are-not-evaluated)
 states where a part with a checked operation runs.
 
-A keyed inner or semi join predicate with a decimal division, or with a
-single-input cast that can fail to a type the cuDF AST does not cast to, uses
-the native GPU post-join filter. Equality keys first select candidate row
-pairs. The GPU column evaluator then checks the division and the cast, and
-preserves `CASE` branch activation through the shared expression lowering
-contract. Unmatched rows do not evaluate the residual, and inactive branches
-cannot trigger division by zero, scaling overflow or a cast failure. The
-filter evaluates the predicate's top-level `AND` operands in order, each on
+A keyed inner join predicate, or a keyed semi join predicate that builds its
+right input, with a [checked operation](../reference/native-evaluation-semantics.mdx#checked-operations)
+over one input or both uses the native GPU post-join filter. Equality keys
+first select candidate row pairs. The GPU column evaluator then checks each
+such operation, and preserves `CASE` branch activation through the shared
+expression lowering contract. Unmatched rows do not evaluate the residual,
+and inactive branches cannot trigger division by zero, overflow or a cast
+failure. The filter evaluates the predicate's top-level `AND` operands in order, each on
 the pairs the earlier ones keep (`JoinSpec::residual_predicate`). Lowering
 therefore guards a checked operation only by the `CASE`, `AND` and `OR` inside
 its own operand, the size bound on guards applies per operand, and the lowered
 predicate grows linearly with the number of operands. A semi join keeps the
 distinct left rows of the passing pairs. Outer, anti and keyless joins retain
 their existing residual capability restrictions; a residual with a checked
-single-input operation in one of them is reported with that operation.
+operation in one of them is reported with that operation.
 
 `PlanningReport` records each candidate once as selected, unsupported with the first unmet
 contract, or supported but kept on DataFusion by a

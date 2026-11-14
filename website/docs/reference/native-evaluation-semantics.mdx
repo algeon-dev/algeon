@@ -82,17 +82,21 @@ join, where it is computed on every row of that input. Such a part cannot
 fail, and the extra rows change no result. Integer `/` and `%` by a literal
 other than `0` and `-1`, and floating-point `%`, can move this way.
 
-A part that reads one input and contains a checked operation stays in the
-condition. The condition is evaluated after matching, on the matched pairs
-only, with the guards described above, when it keeps a checked cast or a
-decimal `/` and belongs to an inner join or a semi join with equality keys.
-Its top-level `AND` operands are evaluated in order, each on the pairs the
-earlier ones keep, so an operand needs no guard built from the operands
-before it. `EXISTS`, `IN` and a correlated scalar subquery comparison plan to
-a semi join, which keeps each left row with at least one passing pair. The
-same condition in an anti, outer or mark join, or in a join without equality
-keys, keeps the join on DataFusion. Integer `/` or `%` with a column divisor,
-`%` over both inputs, and timestamp `+` or `-` keep it there in every join.
+A checked operation stays in the condition, whether it reads one input or
+both. A condition that keeps one is evaluated after matching, on the matched
+pairs only, with the guards described above, when it belongs to an inner
+join with equality keys or to a semi join with equality keys that builds its
+right input. Its top-level `AND` operands are evaluated in order, each on the
+pairs the earlier ones keep, so an operand needs no guard built from the
+operands before it. `EXISTS`, `IN` and a correlated scalar subquery
+comparison plan to a semi join, which keeps each left row with at least one
+passing pair. The same condition in any other join keeps the join on
+DataFusion, and the report names the checked operation.
+
+A floating-point `%`, an integer `/` or `%` by a literal, and a cast that
+the cuDF join AST does not evaluate can read both inputs only in a condition
+evaluated after matching. Without a checked operation the condition would
+run in the AST, so the join stays on DataFusion.
 
 The native optimizer derives filters from a join condition and applies them
 to one input before the join, and it computes some aggregates below a join.

@@ -1,17 +1,19 @@
-//! Native optimizer rewrites that move an operation that can fail onto rows
-//! the query does not evaluate it on. Each table holds a failing value only on
-//! rows DataFusion never evaluates the operation on, so the native result must
-//! match DataFusion's instead of failing.
+//! Native optimizer rewrites and join residuals that could move an operation
+//! that can fail onto rows the query does not evaluate it on. Each table holds
+//! a failing value only on rows DataFusion never evaluates the operation on,
+//! so the native result must match DataFusion's instead of failing. One case
+//! joins the failing row to a key, and both must fail.
 
 use std::{fs::File, path::Path};
 
-use arrow::array::{Float64Array, Int64Array};
+use algeon_datafusion::error::{DataFusionErrorExt, ErrorCode};
+use arrow::array::{Float64Array, Int64Array, TimestampNanosecondArray};
 use datafusion::parquet::arrow::ArrowWriter;
 use tokio::runtime::Builder as TestRuntimeBuilder;
 
 use super::*;
 
-const TABLES: &[&str] = &["t", "t_ok", "u", "u_all", "u_big", "fact", "dim_big"];
+const TABLES: &[&str] = &["t", "t_ok", "u", "u_all", "u_big", "fact", "dim_big", "num", "u_mod"];
 
 fn int64(values: impl IntoIterator<Item = i64>) -> ArrayRef {
     Arc::new(Int64Array::from_iter_values(values))
@@ -33,7 +35,9 @@ fn write_table(dir: &Path, name: &str, columns: Vec<(&str, ArrayRef)>) {
 /// holds an `f` no INT or BIGINT represents, and `u_big`, larger than `t` so
 /// that `t` builds and no key filter reaches it first, has no `k = 2`. Row
 /// `dk = 99` of `fact` has `qty = 0` and no `dim_big` row, and `dim_big` is
-/// larger than `fact` for the same reason.
+/// larger than `fact` for the same reason. Row `k = 2` of `num` has `n = 0`
+/// and a `ts` whose difference from any `u_mod.us` overflows, and the rows of
+/// `u_mod` with `m = 0` match no `num` key.
 fn write_tables(dir: &Path) {
     write_table(
         dir,
@@ -60,6 +64,26 @@ fn write_tables(dir: &Path) {
             ("grp", int64([1, 2, 1, 2, 1])),
             ("amount", int64([10, 20, 30, 40, 50])),
             ("qty", int64([2, 4, 5, 8, 0])),
+        ],
+    );
+    write_table(
+        dir,
+        "num",
+        vec![
+            ("k", int64([1, 2, 3, 4])),
+            ("a", int64([10, 20, 30, 40])),
+            ("n", int64([2, 0, 5, 4])),
+            ("ts", Arc::new(TimestampNanosecondArray::from(vec![3_000, i64::MIN + 1, 1_000, 5_000]))),
+        ],
+    );
+    let mod_keys = || [1, 3, 4].into_iter().chain(1000..3000);
+    write_table(
+        dir,
+        "u_mod",
+        vec![
+            ("k", int64(mod_keys())),
+            ("m", int64([3, 3, 4].into_iter().chain(std::iter::repeat_n(0, 2000)))),
+            ("us", Arc::new(TimestampNanosecondArray::from_iter_values(mod_keys().map(|_| 2_000)))),
         ],
     );
     let dim_keys = (1..=5000).filter(|key| *key != 99).collect::<Vec<i64>>();
@@ -146,6 +170,55 @@ async fn residual_cast_to_bigint_runs_natively() {
     .await;
 }
 
+/// The integer `/` reads one input and divides by zero only on the `num` row
+/// that matches no key.
+async fn residual_division_by_a_column_runs_after_matching() {
+    assert_native_matches_cpu(
+        "residual-division-one-input",
+        "SELECT t.k FROM num t JOIN u_big u ON t.k = u.k AND t.a / t.n < u.b ORDER BY t.k",
+    )
+    .await;
+}
+
+/// The `%` reads both inputs, and its zero divisors sit on `u_mod` rows that
+/// match no key.
+async fn residual_remainder_across_inputs_runs_after_matching() {
+    assert_native_matches_cpu(
+        "residual-remainder-both-inputs",
+        "SELECT t.k FROM num t JOIN u_mod u ON t.k = u.k AND t.a % u.m = 0 ORDER BY t.k",
+    )
+    .await;
+}
+
+/// The timestamp difference overflows only on the `num` row that matches no
+/// key.
+async fn residual_timestamp_difference_runs_after_matching() {
+    assert_native_matches_cpu(
+        "residual-timestamp-difference",
+        "SELECT t.k FROM num t JOIN u_mod u ON t.k = u.k AND CAST(t.ts - u.us AS BIGINT) > 0 ORDER BY t.k",
+    )
+    .await;
+}
+
+/// `u_all` matches the `num` row with `n = 0`, so DataFusion divides by zero
+/// on a matched pair and the native filter over matched pairs fails too.
+async fn residual_division_fails_on_a_matched_pair_like_cpu() {
+    let sql = "SELECT t.k FROM num t JOIN u_all u ON t.k = u.k AND t.a / t.n < u.b";
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-checked-rewrites-matched-zero-divisor");
+    write_tables(&dir);
+    let cpu_error = collect(tables_sql_plan(&dir, sql).await, Arc::new(TaskContext::default()))
+        .await
+        .expect_err("DataFusion divides by zero on a matched pair");
+    let optimization = optimize_with_pruning_template_requiring_native(tables_sql_plan(&dir, sql).await);
+    assert_algeon_native_exec(&optimization.plan, "matched zero divisor");
+    let native_error = collect(optimization.plan, Arc::new(TaskContext::default()))
+        .await
+        .expect_err("native evaluation divides by zero on a matched pair");
+    let algeon_error = native_error.find_algeon_error().expect("native failure keeps its typed Algeon error");
+    assert_eq!(algeon_error.code(), ErrorCode::RapidsInvalidInput, "native error {native_error} (cpu: {cpu_error})");
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn block_on(case: impl std::future::Future<Output = ()>) {
     TestRuntimeBuilder::new_current_thread().enable_all().build().expect("case runtime").block_on(case)
 }
@@ -164,5 +237,17 @@ fn checked_operation_rewrite_cases() {
             block_on(aggregate_measure_skips_a_fact_row_the_semi_join_removes())
         }),
         ("residual_cast_to_bigint_runs_natively", || block_on(residual_cast_to_bigint_runs_natively())),
+        ("residual_division_by_a_column_runs_after_matching", || {
+            block_on(residual_division_by_a_column_runs_after_matching())
+        }),
+        ("residual_remainder_across_inputs_runs_after_matching", || {
+            block_on(residual_remainder_across_inputs_runs_after_matching())
+        }),
+        ("residual_timestamp_difference_runs_after_matching", || {
+            block_on(residual_timestamp_difference_runs_after_matching())
+        }),
+        ("residual_division_fails_on_a_matched_pair_like_cpu", || {
+            block_on(residual_division_fails_on_a_matched_pair_like_cpu())
+        }),
     ]);
 }

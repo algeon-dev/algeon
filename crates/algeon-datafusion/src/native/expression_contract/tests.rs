@@ -951,16 +951,11 @@ fn join_residual_admits_decimal_division_for_checked_post_join_evaluation() {
 }
 
 #[test]
-fn join_residual_ast_rejects_integer_division_and_casts_it_cannot_evaluate_or_check() {
-    let timestamp = DataType::Timestamp(TimeUnit::Millisecond, None);
-    let left_schema =
-        Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, false), Field::new("t", timestamp.clone(), false)]));
+fn join_residual_casts_to_ast_targets_filter_matched_pairs_only_when_they_can_fail() {
+    let left_schema = Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("r", DataType::Int64, false)]));
-    let filter_schema = Arc::new(Schema::new(vec![
-        Field::new("l", DataType::Int32, false),
-        Field::new("r", DataType::Int64, false),
-        Field::new("t", timestamp, false),
-    ]));
+    let filter_schema =
+        Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, false), Field::new("r", DataType::Int64, false)]));
     let cast = |name: &str, target: DataType| -> Arc<dyn PhysicalExpr> {
         Arc::new(CastExpr::new(col(name, &filter_schema).unwrap(), target, None))
     };
@@ -970,43 +965,155 @@ fn join_residual_ast_rejects_integer_division_and_casts_it_cannot_evaluate_or_ch
             vec![
                 ColumnIndex { index: 0, side: DataFusionJoinSide::Left },
                 ColumnIndex { index: 0, side: DataFusionJoinSide::Right },
-                ColumnIndex { index: 1, side: DataFusionJoinSide::Left },
             ],
             Arc::clone(&filter_schema),
         )
     };
-    let validate = |expr: Arc<dyn PhysicalExpr>| {
-        validate_join_residual(&filter(expr), &left_schema, &right_schema, KEYED_INNER_JOIN).map(|_| ())
-    };
-
-    // The AST wraps timestamp arithmetic where Arrow fails the query.
-    let elapsed =
-        binary(col("t", &filter_schema).unwrap(), Operator::Minus, col("t", &filter_schema).unwrap(), &filter_schema)
-            .unwrap();
-    let elapsed_bound =
-        binary(elapsed, Operator::Gt, lit(ScalarValue::DurationMillisecond(Some(5))), &filter_schema).unwrap();
-    assert_eq!(validate(elapsed_bound).unwrap_err().capability(), ExpressionCapability::JoinResidualShape);
 
     // The AST casts to BIGINT UNSIGNED without the range check, so an inner
     // join filters its matched pairs with the cast and a left join, which
     // keeps its unmatched rows, leaves it on DataFusion.
     let failing_cast =
         binary(cast("l", DataType::UInt64), Operator::Eq, cast("r", DataType::UInt64), &filter_schema).unwrap();
-    validate(Arc::clone(&failing_cast)).expect("the inner join checks the cast on matched pairs");
+    let failing_cast = filter(failing_cast);
+    let validated = validate_join_residual(&failing_cast, &left_schema, &right_schema, KEYED_INNER_JOIN)
+        .expect("the inner join checks the cast on matched pairs");
+    assert!(validated.evaluates_after_matching());
     let left_join = Some((&NativeJoinType::Left, NativeJoinSide::Right));
-    let rejection = validate_join_residual(&filter(failing_cast), &left_schema, &right_schema, left_join).unwrap_err();
+    let rejection = validate_join_residual(&failing_cast, &left_schema, &right_schema, left_join).unwrap_err();
     assert_eq!(rejection.capability(), ExpressionCapability::CastPair);
 
     let safe_cast =
         binary(cast("l", DataType::Int64), Operator::Eq, col("r", &filter_schema).unwrap(), &filter_schema).unwrap();
-    validate(safe_cast).expect("an Int32 to Int64 cast cannot fail");
+    let safe_cast = filter(safe_cast);
+    let validated = validate_join_residual(&safe_cast, &left_schema, &right_schema, KEYED_INNER_JOIN)
+        .expect("an Int32 to Int64 cast cannot fail");
+    assert!(!validated.evaluates_after_matching(), "the AST evaluates a cast that cannot fail");
+}
 
-    for operator in [Operator::Divide, Operator::Modulo] {
-        let arithmetic =
-            binary(cast("l", DataType::Int64), operator, col("r", &filter_schema).unwrap(), &filter_schema).unwrap();
-        let comparison = binary(arithmetic, Operator::Gt, lit(ScalarValue::Int64(Some(1))), &filter_schema).unwrap();
-        let rejection = validate(comparison).unwrap_err();
-        assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualShape, "{operator:?}");
+#[test]
+fn join_residual_checked_arithmetic_filters_matched_pairs_and_is_rejected_where_unmatched_rows_stay() {
+    let timestamp = DataType::Timestamp(TimeUnit::Millisecond, None);
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("l", DataType::Int64, false),
+        Field::new("t", timestamp.clone(), false),
+        Field::new("f", DataType::Float64, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("r", DataType::Int64, false),
+        Field::new("u", timestamp.clone(), false),
+        Field::new("g", DataType::Float64, false),
+    ]));
+    let filter_schema = Arc::new(Schema::new(vec![
+        Field::new("l", DataType::Int64, false),
+        Field::new("t", timestamp.clone(), false),
+        Field::new("f", DataType::Float64, false),
+        Field::new("r", DataType::Int64, false),
+        Field::new("u", timestamp, false),
+        Field::new("g", DataType::Float64, false),
+    ]));
+    let column = |name: &str| col(name, &filter_schema).unwrap();
+    let op = |left, operator, right| binary(left, operator, right, &filter_schema).unwrap();
+    let filter = |expr: Arc<dyn PhysicalExpr>| {
+        JoinFilter::new(
+            expr,
+            vec![
+                ColumnIndex { index: 0, side: DataFusionJoinSide::Left },
+                ColumnIndex { index: 1, side: DataFusionJoinSide::Left },
+                ColumnIndex { index: 2, side: DataFusionJoinSide::Left },
+                ColumnIndex { index: 0, side: DataFusionJoinSide::Right },
+                ColumnIndex { index: 1, side: DataFusionJoinSide::Right },
+                ColumnIndex { index: 2, side: DataFusionJoinSide::Right },
+            ],
+            Arc::clone(&filter_schema),
+        )
+    };
+    let one = || lit(ScalarValue::Int64(Some(1)));
+    let five_ms = || lit(ScalarValue::DurationMillisecond(Some(5)));
+    let left_join = Some((&NativeJoinType::Left, NativeJoinSide::Right));
+
+    // Integer `/` and `%` fail on a zero divisor and timestamp `-` on
+    // overflow, and the cuDF AST checks neither. Only the filter over matched
+    // pairs evaluates them on the pairs DataFusion evaluates, whether they
+    // read one input or both.
+    for (label, residual, operator) in [
+        (
+            "integer / by a column of one input",
+            op(op(column("l"), Operator::Divide, column("l")), Operator::Lt, column("r")),
+            Operator::Divide,
+        ),
+        (
+            "integer / across both inputs",
+            op(op(column("l"), Operator::Divide, column("r")), Operator::Gt, one()),
+            Operator::Divide,
+        ),
+        (
+            "integer % across both inputs",
+            op(op(column("l"), Operator::Modulo, column("r")), Operator::Eq, one()),
+            Operator::Modulo,
+        ),
+        (
+            "timestamp - of one input",
+            op(
+                op(op(column("t"), Operator::Minus, column("t")), Operator::Gt, five_ms()),
+                Operator::And,
+                op(column("l"), Operator::Eq, column("r")),
+            ),
+            Operator::Minus,
+        ),
+        (
+            "timestamp - across both inputs",
+            op(op(column("t"), Operator::Minus, column("u")), Operator::Gt, five_ms()),
+            Operator::Minus,
+        ),
+    ] {
+        let filter = filter(residual);
+        let validated = validate_join_residual(&filter, &left_schema, &right_schema, KEYED_INNER_JOIN)
+            .unwrap_or_else(|error| panic!("{label} must validate in an inner join: {error:?}"));
+        assert!(validated.evaluates_after_matching(), "{label}");
+        assert!(validated.materializations().is_empty(), "{label}: the checked operation stays in the residual");
+
+        let rejection = validate_join_residual(&filter, &left_schema, &right_schema, left_join).unwrap_err();
+        assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualShape, "{label}");
+        assert!(
+            matches!(rejection.subject(), ExpressionRejectionSubject::BinaryOperator { operator: subject, .. } if *subject == operator),
+            "{label}: {:?}",
+            rejection.subject()
+        );
+    }
+
+    // A floating-point `%` cannot fail, but the AST has no verified
+    // remainder, and the AST casts a sum to no decimal type. The filter over
+    // matched pairs evaluates both when a checked operation already runs the
+    // residual there.
+    let remainder =
+        op(op(column("f"), Operator::Modulo, column("g")), Operator::Gt, lit(ScalarValue::Float64(Some(0.5))));
+    let widened_sum: Arc<dyn PhysicalExpr> =
+        Arc::new(CastExpr::new(op(column("l"), Operator::Plus, column("r")), DataType::Decimal128(20, 0), None));
+    let widened = op(widened_sum, Operator::Gt, lit(ScalarValue::Decimal128(Some(5), 20, 0)));
+    for (label, post_join_only, capability) in [
+        ("floating-point %", remainder, ExpressionCapability::JoinResidualShape),
+        ("cast of a sum to a decimal", widened, ExpressionCapability::JoinResidualCastTarget),
+    ] {
+        let rejection =
+            validate_join_residual(&filter(Arc::clone(&post_join_only)), &left_schema, &right_schema, KEYED_INNER_JOIN)
+                .unwrap_err();
+        assert_eq!(rejection.capability(), capability, "{label} alone runs in the AST");
+
+        let division = op(op(column("l"), Operator::Divide, column("r")), Operator::Gt, one());
+        let filter = filter(op(post_join_only, Operator::And, division));
+        let validated = validate_join_residual(&filter, &left_schema, &right_schema, KEYED_INNER_JOIN)
+            .unwrap_or_else(|error| panic!("{label} beside a division: {error:?}"));
+        assert!(validated.evaluates_after_matching(), "{label}");
+        let rejection = validate_join_residual(&filter, &left_schema, &right_schema, left_join).unwrap_err();
+        assert!(
+            matches!(
+                rejection.subject(),
+                ExpressionRejectionSubject::BinaryOperator { operator: Operator::Divide, .. }
+            ),
+            "{label}: a left join reports the checked operation: {:?}",
+            rejection.subject()
+        );
     }
 }
 

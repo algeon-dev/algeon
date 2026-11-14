@@ -23,7 +23,7 @@ use query_planning::{
 use super::{
     ExpressionCapability, ExpressionRejection, ExpressionRejectionSubject, ValidatedPhysicalExpr,
     binary_operator_subject, contains_fallible_operation, fallible_operand, is_checked_temporal_arithmetic,
-    is_decimal_division, physical_expr_data_type, validate_physical_expr_contract,
+    physical_expr_data_type, validate_physical_expr_contract,
 };
 
 /// Proof that a join filter satisfies both the general physical-expression
@@ -33,9 +33,9 @@ use super::{
 /// subexpression that reads one input and cannot fail is a
 /// [`JoinResidualMaterializationSite`]: lowering evaluates it on every row of
 /// that input before the join and the residual reads the result as a column.
-/// A subexpression that reads one input and can fail stays in the residual,
-/// which then runs as the checked filter over key-matched pairs
-/// ([`Self::evaluates_after_matching`]).
+/// A checked operation stays in the residual, whether it reads one input or
+/// both, and the residual then runs as the checked filter over key-matched
+/// pairs ([`Self::evaluates_after_matching`]).
 #[derive(Debug)]
 pub(in crate::native) struct ValidatedJoinResidual<'a> {
     filter: &'a JoinFilter,
@@ -73,9 +73,9 @@ impl<'a> ValidatedJoinResidual<'a> {
     }
 
     /// Whether lowering runs the residual as the checked filter over
-    /// key-matched pairs instead of the cuDF join AST. It does when the
-    /// residual keeps an operation that can fail, a decimal `/` or a
-    /// single-input subexpression, in a join that filters its matched pairs:
+    /// key-matched pairs instead of the cuDF join AST. It does exactly when
+    /// the residual keeps a checked operation ([`fallible_operand`]) and the
+    /// join filters its matched pairs ([`keyed_join_filters_matched_pairs`]):
     /// the AST applies none of the checks. Query planning classifies such a
     /// residual `KeyedEquiPostFilter` because its native expression can fail
     /// (`Expr::can_fail`).
@@ -91,12 +91,14 @@ impl<'a> ValidatedJoinResidual<'a> {
 /// Validates `filter`, the residual of a join whose native type and build side
 /// are `keyed_join` when it has equality keys and `None` when it has none.
 ///
-/// A kept single-input operation that can fail runs only in the checked filter
-/// over key-matched pairs, which query planning gives a keyed inner join and a
-/// semi join that builds its right side
+/// A kept checked operation, over one input or both, runs only in the checked
+/// filter over key-matched pairs, which query planning gives a keyed inner
+/// join and a semi join that builds its right side
 /// ([`keyed_join_filters_matched_pairs`]). For any other join the residual is
-/// rejected with that operation's reason, which names it, and so is a decimal
-/// `/` over both inputs, which only that filter checks.
+/// rejected with the reason of the first such operation, which names it.
+/// Arithmetic or a cast over both inputs that cannot fail but that the AST
+/// does not evaluate, such as a floating-point `%`, is admitted only in that
+/// filter.
 pub(in crate::native) fn validate_join_residual<'a>(
     filter: &'a JoinFilter,
     left_schema: &SchemaRef,
@@ -105,22 +107,20 @@ pub(in crate::native) fn validate_join_residual<'a>(
 ) -> Result<ValidatedJoinResidual<'a>, ExpressionRejection> {
     let expression = validate_physical_expr_contract(filter.expression(), filter.schema())?;
     let residual = filter.expression();
-    let mut shape = ResidualShape { filter, materializations: Vec::new(), first_checked_operation: None };
+    let mut shape = ResidualShape { filter, materializations: Vec::new(), first_post_join_operation: None };
     shape.visit(residual)?;
-    let decimal_division = first_decimal_division(residual, filter.schema());
+    // No materialization site can fail, so every checked operation stays in
+    // the residual.
+    let checked_operation = first_fallible_operation(residual, filter.schema());
     let filters_matched_pairs =
         keyed_join.is_some_and(|(join_type, build_side)| keyed_join_filters_matched_pairs(join_type, build_side));
-    let after_matching =
-        filters_matched_pairs && (decimal_division.is_some() || shape.first_checked_operation.is_some());
+    let after_matching = filters_matched_pairs && checked_operation.is_some();
     if !after_matching {
-        if let Some(rejection) = shape.first_checked_operation {
-            return Err(rejection);
+        if let Some(operation) = checked_operation {
+            return Err(checked_operation_rejection(operation, filter.schema()));
         }
-        // The residual keeps a decimal `/` over both inputs only because the
-        // filter over matched pairs checks it. The cuDF AST divides without
-        // DataFusion's zero-divisor and overflow checks.
-        if let Some(division) = decimal_division {
-            return Err(fallible_operation_rejection(division, filter.schema()));
+        if let Some(rejection) = shape.first_post_join_operation {
+            return Err(rejection);
         }
     }
     validate_join_residual_side_indices(residual, filter, left_schema, right_schema)
@@ -143,26 +143,16 @@ pub(in crate::native) fn validate_join_residual<'a>(
     })
 }
 
-fn first_decimal_division<'e>(
-    expr: &'e Arc<dyn PhysicalExpr>,
-    schema: &SchemaRef,
-) -> Option<&'e Arc<dyn PhysicalExpr>> {
-    if expr.downcast_ref::<BinaryExpr>().is_some_and(|binary| is_decimal_division(binary, schema)) {
-        return Some(expr);
-    }
-    expr.children().into_iter().find_map(|child| first_decimal_division(child, schema))
-}
-
-/// Walk of a residual that admits its shape, records its materialization
-/// sites, and records the single-input operations that can fail.
+/// Walk of a residual that admits its shape and records its materialization
+/// sites.
 struct ResidualShape<'f> {
     filter: &'f JoinFilter,
     materializations: Vec<JoinResidualMaterializationSite>,
-    /// The rejection of the first single-input subexpression that can fail
-    /// and stays in the residual. Only the checked filter over key-matched
-    /// pairs evaluates it on the rows DataFusion evaluates, so the residual is
-    /// rejected unless it runs as that filter.
-    first_checked_operation: Option<ExpressionRejection>,
+    /// The rejection of the first arithmetic ([`is_unchecked_ast_arithmetic`])
+    /// or cast over both inputs that cannot fail but that the AST does not
+    /// evaluate. The filter over matched pairs evaluates it, so it is admitted
+    /// only when a checked operation already runs the residual as that filter.
+    first_post_join_operation: Option<ExpressionRejection>,
 }
 
 impl ResidualShape<'_> {
@@ -194,26 +184,31 @@ impl ResidualShape<'_> {
             }
             return Ok(());
         }
-        if is_unchecked_ast_arithmetic(expr, schema) {
-            return Err(fallible_operation_rejection(expr, schema));
-        }
-        if self.first_checked_operation.is_none() {
-            self.first_checked_operation = Some(fallible_operation_rejection(expr, schema));
-        }
         self.visit_children(expr)
     }
 
-    /// Admits an expression over both inputs that the AST does not evaluate.
-    /// The planner evaluates an inner join residual with `CASE` or null-aware
-    /// comparison as a filter over key-matched pairs.
+    /// Admits an expression over both inputs that the AST does not evaluate:
+    /// a checked operation, arithmetic or a cast the filter over matched pairs
+    /// evaluates, and `CASE` or a null-aware comparison, which query planning
+    /// evaluates in that filter for an inner join.
     fn visit_cross_input(&mut self, expr: &Arc<dyn PhysicalExpr>) -> Result<(), ExpressionRejection> {
+        let schema = self.filter.schema();
+        if fallible_operand(expr, schema).is_some() {
+            return self.visit_children(expr);
+        }
+        if is_unchecked_ast_arithmetic(expr, schema) || expr.downcast_ref::<CastExpr>().is_some() {
+            if self.first_post_join_operation.is_none() {
+                self.first_post_join_operation = Some(cross_input_rejection(expr, schema).at_expression(expr));
+            }
+            return self.visit_children(expr);
+        }
         let null_aware = expr
             .downcast_ref::<BinaryExpr>()
             .is_some_and(|binary| matches!(binary.op(), Operator::IsDistinctFrom | Operator::IsNotDistinctFrom));
         if null_aware || expr.downcast_ref::<CaseExpr>().is_some() {
             return self.visit_children(expr);
         }
-        Err(cross_input_rejection(expr, self.filter.schema()))
+        Err(cross_input_rejection(expr, schema))
     }
 }
 
@@ -260,8 +255,8 @@ fn is_unchecked_ast_arithmetic(expr: &Arc<dyn PhysicalExpr>, schema: &SchemaRef)
     }
 }
 
-/// The rejection for `expr`, an expression over both inputs that neither the
-/// AST nor the post-join filter evaluates.
+/// The rejection for `expr`, an expression over both inputs that the residual
+/// does not evaluate where it runs.
 fn cross_input_rejection(expr: &Arc<dyn PhysicalExpr>, schema: &SchemaRef) -> ExpressionRejection {
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         return ExpressionRejection::unsupported_expression(ExpressionCapability::JoinResidualShape)
@@ -277,10 +272,9 @@ fn cross_input_rejection(expr: &Arc<dyn PhysicalExpr>, schema: &SchemaRef) -> Ex
     ExpressionRejection::unsupported_expression(ExpressionCapability::JoinResidualShape)
 }
 
-/// The rejection for `expr`, a single-input expression whose evaluation can
-/// fail, naming its first fallible operation.
-fn fallible_operation_rejection(expr: &Arc<dyn PhysicalExpr>, schema: &SchemaRef) -> ExpressionRejection {
-    let operation = first_fallible_operation(expr, schema).unwrap_or(expr);
+/// The rejection that names `operation`, a checked operation the residual
+/// keeps in a join that does not filter its matched pairs.
+fn checked_operation_rejection(operation: &Arc<dyn PhysicalExpr>, schema: &SchemaRef) -> ExpressionRejection {
     let rejection = if let Some(binary) = operation.downcast_ref::<BinaryExpr>() {
         ExpressionRejection::unsupported_expression(ExpressionCapability::JoinResidualShape)
             .named_by_operator(binary_operator_subject(binary, schema))
