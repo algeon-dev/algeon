@@ -53,8 +53,9 @@ use crate::{
 /// Shape signature of a scalar family's aggregate input, or `None` when it has
 /// an operator the scalar rewrite cannot clone with extra columns (a limit,
 /// aggregate, window, union or GPU function). Identity projections, filters
-/// that repeat the reader predicate, and, when allowed, column projections are
-/// left out so branches that differ only in those compare equal.
+/// that repeat the reader predicate, and, when allowed, column projections no
+/// operator of the shape reads are left out so branches that differ only in
+/// those compare equal.
 pub(super) fn scalar_materialization_input_shape(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -99,7 +100,12 @@ fn scalar_materialization_input_shape_inner(
                 allow_column_projection_elision,
             )
         },
-        PlanNode::Projection(projection) if allow_column_projection_elision => {
+        // Only the aggregate reads a projection reached without passing a
+        // filter, join, sort or kept projection, and a count-star family's
+        // aggregate reads no value from it. Below any of those, the operator
+        // reads the projection's outputs, so their definitions stay in the
+        // shape.
+        PlanNode::Projection(projection) if allow_column_projection_elision && allow_count_star_projection_elision => {
             scalar_materialization_input_shape_inner(
                 plan,
                 projection.input,
@@ -473,10 +479,11 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
     if widened_source_fingerprints.is_empty() {
         return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
     }
-    // Every member reads the representative's subplan over the widened rows,
-    // and the scalar family key leaves count-star members' projections out of
-    // the comparison, so even one widened source can run an expression of
-    // that subplan on rows its own member never evaluates.
+    // Every member reads the representative's subplan over the widened rows.
+    // The scalar family key leaves out projections no operator of the shape
+    // reads, yet the representative's still run, so even one widened source
+    // can run one of their expressions on rows its own member never
+    // evaluates.
     if subplan_can_fail(plan, representative.aggregate_node_id) {
         return Err(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail);
     }

@@ -3582,3 +3582,66 @@ pub(super) fn assert_no_non_decimal_binary_output_types(expr: &Expr, message: &s
         Expr::Column(_) | Expr::Literal(_) => {},
     }
 }
+
+#[test]
+fn native_optimizer_keeps_scalar_count_members_apart_when_their_projections_differ() {
+    // Each member counts rows where `r > 0`, and `r` is `x + y` in one member
+    // and `x * y` in the other. The filters read the same name, so only the
+    // projections below them tell the members apart.
+    let mut builder = QueryPlanBuilder::new();
+    let count_schema = Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)]));
+    let mut counts = Vec::new();
+    for (bucket, op) in [(1, BinaryOp::Add), (2, BinaryOp::Multiply)] {
+        let fact = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
+            "store_sales",
+            "store_sales",
+            &["bucket", "x", "y"],
+            512 * 1024 * 1024,
+            10_000_000,
+            Expr::binary(Expr::column("bucket"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(bucket))),
+        ));
+        let projected = builder
+            .add_projection(
+                fact,
+                vec![
+                    ProjectionOutput::new(
+                        Expr::binary(Expr::column("x"), op, Expr::column("y")),
+                        Field::new("r", DataType::Int32, true),
+                    ),
+                    ProjectionOutput::new(
+                        Expr::literal(LiteralValue::Int64(1)),
+                        Field::new("one", DataType::Int64, false),
+                    ),
+                ],
+            )
+            .unwrap();
+        let filtered = builder
+            .add_filter(projected, Expr::binary(Expr::column("r"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))))
+            .unwrap();
+        counts.push(
+            builder
+                .add_aggregate(
+                    filtered,
+                    AggregateSpec::new(
+                        Vec::new(),
+                        vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
+                    ),
+                    Arc::clone(&count_schema),
+                )
+                .unwrap(),
+        );
+    }
+    let union = builder.add_union(counts, count_schema).unwrap();
+    let plan = builder.finish_gpu_resident(union).unwrap();
+
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.applied_count, 0, "{diagnostics:?}");
+}
