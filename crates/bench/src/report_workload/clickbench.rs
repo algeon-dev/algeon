@@ -6,7 +6,7 @@ use algeon_datafusion::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::record_batch::RecordBatch;
@@ -154,8 +154,9 @@ pub fn clickbench_tuned_cpu_session_config() -> SessionConfig {
 ///
 /// Resolves [`ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV`] plus optional
 /// `ALGEON_CLICKBENCH_NATIVE_*` overrides. Defaults remain conservative (no
-/// source-byte ceiling, 1 row group); callers select normal or strict native
-/// execution when they install the resulting rule.
+/// source-byte ceiling, 1 row group) and the mode is `NativePreferred`;
+/// callers select normal or strict native execution when they install the
+/// resulting rule.
 pub fn clickbench_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
     clickbench_native_optimizer_config_with_profile_settings(&clickbench_native_profile_settings_from_env())
 }
@@ -164,18 +165,20 @@ pub fn clickbench_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
 pub fn clickbench_native_optimizer_config_with_profile_settings(
     profile: &ClickbenchNativeProfileSettings,
 ) -> AlgeonNativeOptimizerConfig {
-    AlgeonNativeOptimizerConfig::default().with_native_execution_config(
-        AlgeonNativeExecutionConfig::new(
-            SourceChunking::try_new(
-                profile.max_source_chunk_bytes,
-                profile.max_row_groups_per_chunk,
-                profile.max_retry_attempts,
-                profile.min_retry_chunk_row_groups,
+    AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(
+            AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(
+                    profile.max_source_chunk_bytes,
+                    profile.max_row_groups_per_chunk,
+                    profile.max_retry_attempts,
+                    profile.min_retry_chunk_row_groups,
+                )
+                .expect("validated ClickBench native profile has nonzero source chunking"),
             )
-            .expect("validated ClickBench native profile has nonzero source chunking"),
+            .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
         )
-        .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
-    )
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
 }
 
 /// Resolves the ClickBench native bounded memory/source profile from env.

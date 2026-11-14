@@ -2,7 +2,7 @@ use std::{path::Path, sync::Arc};
 
 use algeon_datafusion::{
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
-    planner::AlgeonNativeOptimizerConfig,
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
 };
 use arrow::{
     array::{Int32Array, Int64Array},
@@ -47,7 +47,9 @@ pub(super) fn bounded_config() -> AlgeonNativeExecutionConfig {
 }
 
 pub(super) fn native_optimizer_config() -> AlgeonNativeOptimizerConfig {
-    AlgeonNativeOptimizerConfig::default().with_native_execution_config(bounded_config())
+    AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(bounded_config())
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
 }
 
 pub(super) fn parquet_scan_with_declared_output_ordering(path: &Path) -> Arc<dyn ExecutionPlan> {

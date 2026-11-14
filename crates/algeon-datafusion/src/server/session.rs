@@ -387,4 +387,11 @@ mod tests {
         let session = build_session_config(&server).expect("session config");
         assert_eq!(session.options().execution.target_partitions, 1);
     }
+
+    #[test]
+    fn unset_execution_mode_plans_one_partition() {
+        let server = ServerConfig::from_vars(Vec::<(&str, &str)>::new()).expect("load server config");
+        let session = build_session_config(&server).expect("session config");
+        assert_eq!(session.options().execution.target_partitions, 1);
+    }
 }

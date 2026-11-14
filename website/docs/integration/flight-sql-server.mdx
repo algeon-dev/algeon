@@ -64,7 +64,8 @@ Before binding another interface, enable
 To keep ordinary SQL on DataFusion CPU while explicit cuGraph, cuVS, and cuML
 calls run on the GPU, set `ALGEON_SERVER_NATIVE_EXECUTION_MODE=functions_only`
 (or `execution_mode = "functions_only"` under `[native]`) before startup.
-The default is `native_preferred`. See
+The default is `native_required`, which rejects a query whose plan keeps a
+DataFusion CPU operator. See
 [Execution mode](./configuration.mdx#execution-mode) for all three modes.
 
 From another terminal, verify the endpoint with the repository client:
@@ -181,9 +182,10 @@ Alternatively, submit each statement separately from a connected SQL client
 after startup. The first three tables supply the citation-path, bibliography
 and community queries on the investigation page. Examples that use author or
 field links also need `paper_authors` and `paper_fos`. The saved SQL includes
-any additional views that its algorithm inputs require. The default
-`native_preferred` mode supports the bibliography example's mixed execution
-path. Inspect a changed query with
+any additional views that its algorithm inputs require. The bibliography
+example runs a mixed CPU and GPU plan, so start the server with
+`ALGEON_SERVER_NATIVE_EXECUTION_MODE=native_preferred` to run it. Inspect a
+changed query with
 [GPU coverage validation](./gpu-coverage-validation.mdx).
 
 ## Shared catalog {/* #shared-catalog */}

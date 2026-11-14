@@ -356,11 +356,14 @@ writes the retained topology, events and completeness footer.
 
 <PlanSelection />
 
-The default mode first attempts whole-query lowering. Unsupported operators,
-types or semantics leave CPU work in the completed plan; supported subtrees
-may still become GPU fragments. Explicit graph, vector and ML functions also
-form GPU fragments. Transfers at CPU/GPU boundaries are part of the cost of
-such a mixed plan.
+Every mode that lowers relational SQL first attempts whole-query lowering.
+Under `native_preferred`, unsupported operators, types or semantics leave CPU
+work in the completed plan; supported subtrees may still become GPU
+fragments. Explicit graph, vector and ML functions also form GPU fragments.
+Transfers at CPU/GPU boundaries are part of the cost of such a mixed plan.
+The default, `native_required`, rejects a plan with CPU work instead, as
+[Require GPU execution](#baseline-preservation-and-final-plan-requirements)
+describes.
 
 A join condition that reads both inputs stays on the join. Each part of it
 that reads one input and that the cuDF join AST cannot evaluate, such as
@@ -449,10 +452,10 @@ source.
 
 ## Require GPU execution {/* #baseline-preservation-and-final-plan-requirements */}
 
-`NativeRequired` rejects a completed plan containing DataFusion CPU operators,
-and its error names the blocking element of the first unsupported candidate.
-`FunctionsOnly` retains CPU relational processing around explicit GPU
-functions. The default, `NativePreferred`, permits a CPU or mixed plan.
+The default, `NativeRequired`, rejects a completed plan containing DataFusion
+CPU operators, and its error names the blocking element of the first
+unsupported candidate. `FunctionsOnly` retains CPU relational processing
+around explicit GPU functions. `NativePreferred` permits a CPU or mixed plan.
 These modes classify DataFusion plan nodes. CPU orchestration and I/O metadata
 remain part of native execution. The default statistical mode uses GPU kernels;
 an optional [DataFusion-exact mode](../integration/configuration.mdx#native-settings)

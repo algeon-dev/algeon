@@ -457,7 +457,8 @@ async fn server_session_limits_the_file_metadata_cache_to_the_configured_bytes()
 #[tokio::test]
 async fn strict_injected_backend_is_the_session_policy_authority() {
     let mut caller_config = bounded_config(1);
-    caller_config.native_optimizer_config = AlgeonNativeOptimizerConfig::default();
+    caller_config.native_optimizer_config =
+        AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
     let backend = strict_runtime_backend(1);
 
     let ctx = build_session_context_with_backend(&caller_config, &backend).await.unwrap();
@@ -468,7 +469,8 @@ async fn strict_injected_backend_is_the_session_policy_authority() {
 
 async fn builder_rejects_strict_backend_session_with_incompatible_target_partitions() {
     let mut caller_config = bounded_config(1);
-    caller_config.native_optimizer_config = AlgeonNativeOptimizerConfig::default();
+    caller_config.native_optimizer_config =
+        AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
     let backend = strict_runtime_backend(1);
     let ctx = build_session_context_with_backend(&caller_config, &backend).await.unwrap();
     let incompatible_config = ctx.state().config().clone().with_target_partitions(8);

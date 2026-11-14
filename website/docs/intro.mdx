@@ -143,11 +143,11 @@ fields and retry guidance.
 />
 
 The [execution mode](./integration/datafusion-session.mdx#choose-an-execution-mode)
-sets how much relational SQL joins the GPU. By default, supported candidates
-execute on cuDF, while unsupported operators remain on DataFusion's CPU
-execution path; `functions_only` keeps ordinary SQL on
-the CPU around explicit GPU UDTFs, and `native_required` rejects a plan that
-still contains CPU operators. Explicit GPU UDTFs have no CPU fallback, and once
+sets how much relational SQL joins the GPU. The default, `native_required`,
+executes supported candidates on cuDF and rejects a plan that still contains
+CPU operators; `native_preferred` leaves unsupported operators on DataFusion's
+CPU execution path, and `functions_only` keeps ordinary SQL on the CPU around
+explicit GPU UDTFs. Explicit GPU UDTFs have no CPU fallback, and once
 GPU execution starts, failures return as structured errors and are never
 replayed on the CPU.
 

@@ -282,6 +282,8 @@ async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
     let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
+    config.native_optimizer_config =
+        config.native_optimizer_config.clone().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;

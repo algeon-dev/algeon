@@ -225,9 +225,15 @@ Set `AlgeonGpuExecutionMode` on the shared backend before installing sessions:
 
 | Rust mode | Behavior | Use it when |
 | --- | --- | --- |
-| `NativePreferred` (default) | Select supported relational SQL for native GPU execution. Retain DataFusion for unsupported or unselected candidates. Explicit GPU UDTFs still run on GPU. | Accelerate relational SQL together with graph, vector, and machine learning functions on the GPU. |
+| `NativePreferred` | Select supported relational SQL for native GPU execution. Retain DataFusion for unsupported or unselected candidates. Explicit GPU UDTFs still run on GPU. | Accelerate relational SQL together with graph, vector, and machine learning functions on the GPU. |
 | `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU. Run explicit `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs on GPU. | Execute scans, joins, filters, and aggregations on DataFusion CPU while delegating GPU UDTFs to hardware. |
-| `NativeRequired` | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | Enforce plans containing zero DataFusion CPU execution operators. |
+| `NativeRequired` (default) | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | Enforce plans containing zero DataFusion CPU execution operators. |
+
+`install_on` keeps the `SessionConfig` the caller passes. Under
+`NativeRequired`, a plan that DataFusion splits across several partitions can
+be rejected with the `set_target_partitions_one` remedy; build the session with
+`SessionConfig::new().with_target_partitions(1)` to plan one partition, as the
+Flight SQL server does in that mode.
 
 This replaces the backend construction above, using the same `device`:
 

@@ -90,9 +90,13 @@ pub const TPCH_NATIVE_DEVICE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 /// The bounded profile uses the default source chunking: no source-byte
 /// ceiling, one row group per chunk, three retry attempts, and one row group as
 /// the retry floor. Decision-grade benchmark binaries override this through
-/// their own TPC-H env-var surface.
+/// their own TPC-H env-var surface. The mode is `NativePreferred`, so a
+/// planning report records the candidates of a query that keeps CPU work
+/// instead of a final-plan rejection; execution reports set their own mode.
 pub fn tpch_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
-    AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default())
+    AlgeonNativeOptimizerConfig::default()
+        .with_native_execution_config(AlgeonNativeExecutionConfig::default())
+        .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
 }
 
 /// Builds fallback-pressure planning items for all TPC-H queries.

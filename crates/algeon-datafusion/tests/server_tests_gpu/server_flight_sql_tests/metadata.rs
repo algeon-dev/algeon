@@ -297,7 +297,8 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     config.native_optimizer_config =
         config.native_optimizer_config.clone().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
     let backend = build_injected_test_backend(&mut config);
-    config.native_optimizer_config = AlgeonNativeOptimizerConfig::default();
+    config.native_optimizer_config =
+        AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
     assert_eq!(backend.optimizer_config().execution_mode(), AlgeonGpuExecutionMode::NativeRequired);
     let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
     assert_eq!(ctx.state().config_options().execution.target_partitions, 1);

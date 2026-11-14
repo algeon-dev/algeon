@@ -84,9 +84,9 @@ fn server_config_maps_execution_mode_from_env_and_toml() {
     let config = load(env).unwrap();
     assert_eq!(config.native_optimizer_config.execution_mode(), AlgeonGpuExecutionMode::FunctionsOnly);
 
-    let (_dir, env) = env_with_server_toml("[native]\nexecution_mode = \"native_required\"\n");
+    let (_dir, env) = env_with_server_toml("[native]\nexecution_mode = \"native_preferred\"\n");
     let config = ServerConfig::from_vars(env.clone()).unwrap();
-    assert_eq!(config.native_optimizer_config.execution_mode(), AlgeonGpuExecutionMode::NativeRequired);
+    assert_eq!(config.native_optimizer_config.execution_mode(), AlgeonGpuExecutionMode::NativePreferred);
 }
 
 #[test]

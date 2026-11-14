@@ -76,7 +76,7 @@ install_telemetry = true
 # lane_count = 2
 
 [native]
-execution_mode = "native_preferred"             # ALGEON_SERVER_NATIVE_EXECUTION_MODE
+execution_mode = "native_required"              # ALGEON_SERVER_NATIVE_EXECUTION_MODE
 # max_source_chunk_bytes = 1073741824           # ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
 max_row_groups_per_chunk = 1                    # ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
 max_retry_attempts = 3                          # ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS
@@ -231,9 +231,11 @@ invalid server configuration: failed to initialize ownership-enforcing GPU backe
 
 ### Execution mode {/* #execution-mode */}
 
-The default is `native_preferred`. It selects supported relational SQL for
-native GPU execution and retains DataFusion for unsupported or unselected
-candidates. Set it in the configuration file or environment:
+The default is `native_required`. It selects supported relational SQL for
+native GPU execution and rejects a query whose completed plan still runs a
+DataFusion CPU operator. `native_preferred` retains DataFusion for
+unsupported or unselected candidates instead. Set it in the configuration
+file or environment:
 
 ```toml
 [native]
@@ -256,7 +258,7 @@ commit and enabled features.
 
 | `[native]` field | Default |
 |---|---|
-| `execution_mode` | `native_preferred` |
+| `execution_mode` | `native_required` |
 | `max_source_chunk_bytes` | Unset: derived from the admitted grant |
 | `max_row_groups_per_chunk` | `1` |
 | `max_retry_attempts` | `3` |
@@ -667,7 +669,7 @@ An unknown argument prints the usage to stderr and exits with status 2.
 value carries its source, and log lines go to stderr:
 
 ```text
-$ ALGEON_SERVER_NATIVE_EXECUTION_MODE=native_required target/release/algeon_server --check-config
+$ ALGEON_SERVER_NATIVE_EXECUTION_MODE=native_preferred target/release/algeon_server --check-config
 # Effective Algeon server configuration. Config file: none
 bind = "127.0.0.1:50051"  # source: default
 http2_keepalive_interval_secs = 30  # source: default
@@ -684,7 +686,7 @@ device_ordinal = 0  # source: default
 ...
 
 [native]
-execution_mode = "native_required"  # source: env ALGEON_SERVER_NATIVE_EXECUTION_MODE
+execution_mode = "native_preferred"  # source: env ALGEON_SERVER_NATIVE_EXECUTION_MODE
 max_retry_attempts = 3  # source: default
 max_row_groups_per_chunk = 1  # source: default
 # max_source_chunk_bytes is unset  # source: default
@@ -701,6 +703,10 @@ is not a default, with its source.
 The server reads `SessionConfig::from_env()`, with keys such as
 `DATAFUSION_EXECUTION_BATCH_SIZE`, `DATAFUSION_EXECUTION_TARGET_PARTITIONS`,
 `DATAFUSION_CATALOG_DEFAULT_CATALOG` and `DATAFUSION_CATALOG_DEFAULT_SCHEMA`.
+Under `native_required`, the default, the server sets `target_partitions` to
+1 and ignores `DATAFUSION_EXECUTION_TARGET_PARTITIONS`. No query in that mode
+runs DataFusion CPU operators, and one scan group keeps a sort-declared
+Parquet scan eligible for native lowering.
 In `native_preferred` and `native_required`, the native optimizer overrides
 one DataFusion optimizer default, described in
 [Uncorrelated scalar subqueries](../design/native-lowering.mdx#uncorrelated-scalar-subqueries).
