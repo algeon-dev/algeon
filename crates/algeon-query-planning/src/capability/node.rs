@@ -11,12 +11,13 @@ use super::{
     AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec, JoinForm, JoinNode, NodeId, PlanNode, QueryNode,
     QueryPlan, SourceNode,
     aggregate::aggregate_state_contract,
-    classify_join, join_input_schemas,
+    classify_join,
     expr::{
         expression_rejection_decision, validate_aggregate_expr_capability, validate_column_expr_capability,
         validate_general_expr_capability, validate_join_residual_expr_capability,
         validate_named_column_expr_capability, validate_post_join_residual_expr_capability,
     },
+    join_input_schemas,
     model::{
         AggregateGrouping, CapabilityDecision, NodeCapability, NodeOperator, OrderingRequirement, ResidualRequirement,
         SourceFormatCapability,

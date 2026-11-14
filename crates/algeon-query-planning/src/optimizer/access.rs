@@ -228,8 +228,11 @@ pub(super) fn subplan_can_fail(plan: &QueryPlan, root: NodeId) -> bool {
         let Some(node) = plan.node(node_id) else {
             return true;
         };
-        let Some(inputs) =
-            node.input_ids().iter().map(|input| plan.node(*input).map(|input| input.output_schema().as_ref())).collect::<Option<Vec<_>>>()
+        let Some(inputs) = node
+            .input_ids()
+            .iter()
+            .map(|input| plan.node(*input).map(|input| input.output_schema().as_ref()))
+            .collect::<Option<Vec<_>>>()
         else {
             return true;
         };
@@ -238,9 +241,15 @@ pub(super) fn subplan_can_fail(plan: &QueryPlan, root: NodeId) -> bool {
             PlanNode::Source(_) | PlanNode::Limit(_) | PlanNode::Union(_) => Box::new(std::iter::empty()),
             PlanNode::Filter(filter) => Box::new(std::iter::once(&filter.predicate)),
             PlanNode::Projection(projection) => Box::new(projection.expressions()),
-            PlanNode::Aggregate(aggregate) => Box::new(aggregate.spec.group_exprs.iter().chain(
-                aggregate.spec.aggr_exprs.iter().flat_map(|aggregate| std::iter::once(&aggregate.expr).chain(&aggregate.filter)),
-            )),
+            PlanNode::Aggregate(aggregate) => Box::new(
+                aggregate.spec.group_exprs.iter().chain(
+                    aggregate
+                        .spec
+                        .aggr_exprs
+                        .iter()
+                        .flat_map(|aggregate| std::iter::once(&aggregate.expr).chain(&aggregate.filter)),
+                ),
+            ),
             PlanNode::Join(join) => Box::new(join.spec.residual_predicate.iter()),
             PlanNode::Sort(sort) => Box::new(sort.spec.expressions.iter().map(|sort| &sort.expr)),
             PlanNode::Window(_)

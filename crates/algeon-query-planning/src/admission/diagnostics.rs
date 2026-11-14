@@ -10,7 +10,8 @@ use super::AdmissionDecision;
 use crate::{
     backend::AnalysisContext,
     capability::{
-        Rejection, choose_join_strategy, classify_join, join_input_schemas, keyed_hash_join_strategy_input_facts_for_plan,
+        Rejection, choose_join_strategy, classify_join, join_input_schemas,
+        keyed_hash_join_strategy_input_facts_for_plan,
     },
     plan::{PlanNode, QueryPlan},
 };

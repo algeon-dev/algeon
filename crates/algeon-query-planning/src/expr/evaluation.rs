@@ -72,9 +72,9 @@ impl Expr {
     /// Whether this node's own operation, apart from its operands, can fail.
     fn operation_can_fail(&self, column_type: &dyn Fn(&ColumnRef) -> Option<DataType>) -> bool {
         match self {
-            Self::Cast { expr, target_type } => {
-                expr.data_type(column_type).is_none_or(|source_type| cast_can_fail_at_runtime(&source_type, target_type))
-            },
+            Self::Cast { expr, target_type } => expr
+                .data_type(column_type)
+                .is_none_or(|source_type| cast_can_fail_at_runtime(&source_type, target_type)),
             Self::Binary { left, op: BinaryOp::Divide | BinaryOp::Modulo, right, output_type } => {
                 if matches!(output_type, Some(DataType::Decimal128(_, _))) {
                     return true;

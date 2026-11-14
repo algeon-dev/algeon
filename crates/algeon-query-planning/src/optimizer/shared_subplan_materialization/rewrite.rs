@@ -38,7 +38,6 @@ use super::{
 use crate::{
     backend::AnalysisContext,
     expr::{AggregateExpr, AggregateSpec, ColumnRef, Expr, LiteralValue},
-    expr::input_column_type,
     optimizer::{
         access::subplan_can_fail,
         predicate_factoring::{conjunction, disjunction, factor_selections, map_residual, split_conjuncts},
@@ -239,21 +238,6 @@ fn widened_sources_pair_failing_rows(
     widened_source_fingerprints: &BTreeSet<String>,
 ) -> bool {
     widened_source_fingerprints.len() > 1 && subplan_can_fail(plan, representative.aggregate_node_id)
-}
-
-/// Whether an argument or filter of the aggregate at `node_id` can fail. An
-/// aggregate the plan does not hold counts as one whose measures can.
-fn aggregate_measures_can_fail(plan: &QueryPlan, node_id: NodeId) -> bool {
-    let Some(PlanNode::Aggregate(aggregate)) = plan.node(node_id).map(|node| &node.kind) else {
-        return true;
-    };
-    let Some(input) = plan.node(aggregate.input) else {
-        return true;
-    };
-    let schema = input.output_schema();
-    aggregate.spec.aggr_exprs.iter().flat_map(|aggregate| std::iter::once(&aggregate.expr).chain(&aggregate.filter)).any(
-        |expr| expr.can_fail(&|column| input_column_type(&[schema.as_ref()], column)),
-    )
 }
 
 /// Plans how `family` is shared, or names the reason it cannot be. The
@@ -489,11 +473,11 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
     if widened_source_fingerprints.is_empty() {
         return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
     }
-    // The shared aggregate evaluates each member's measures on the rows of
-    // every member, under that member's filter.
-    if widened_sources_pair_failing_rows(plan, representative, &widened_source_fingerprints)
-        || family.iter().any(|signature| aggregate_measures_can_fail(plan, signature.aggregate_node_id))
-    {
+    // Every member reads the representative's subplan over the widened rows,
+    // and the scalar family key leaves count-star members' projections out of
+    // the comparison, so even one widened source can run an expression of
+    // that subplan on rows its own member never evaluates.
+    if subplan_can_fail(plan, representative.aggregate_node_id) {
         return Err(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail);
     }
 

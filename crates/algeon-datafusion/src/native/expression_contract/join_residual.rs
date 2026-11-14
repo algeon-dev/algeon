@@ -105,11 +105,7 @@ pub(in crate::native) fn validate_join_residual<'a>(
 ) -> Result<ValidatedJoinResidual<'a>, ExpressionRejection> {
     let expression = validate_physical_expr_contract(filter.expression(), filter.schema())?;
     let residual = filter.expression();
-    let mut shape = ResidualShape {
-        filter,
-        materializations: Vec::new(),
-        first_checked_operation: None,
-    };
+    let mut shape = ResidualShape { filter, materializations: Vec::new(), first_checked_operation: None };
     shape.visit(residual)?;
     let decimal_division = first_decimal_division(residual, filter.schema());
     let filters_matched_pairs =

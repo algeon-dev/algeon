@@ -1123,10 +1123,13 @@ fn native_optimizer_rejects_grouped_materialization_whose_widened_sources_pair_r
 }
 
 #[test]
-fn native_optimizer_rejects_scalar_materialization_whose_widened_sources_pair_rows_that_can_fail() {
-    // The shared scalar aggregate reads the union of each widened source's
-    // selections and evaluates the filter's `x / y` on all of their pairs,
-    // including bucket 1 sales at hour 9, which no member reads.
+fn native_optimizer_rejects_scalar_materialization_whose_subplan_can_fail() {
+    // The shared scalar aggregate evaluates the representative's subplan on
+    // the union of the members' selections. With two widened sources the
+    // filter's `x / y` runs on pairs no member reads, such as bucket 1 sales
+    // at hour 9. The scalar family key does not compare every member's
+    // projections, so a subplan that can fail is refused with one widened
+    // source as well.
     let materialize = |measure: BinaryOp, widened_sales: bool| {
         let result = optimize_query_plan(
             repeated_scalar_measure_over_filtered_join_plan(measure, widened_sales),
@@ -1146,7 +1149,10 @@ fn native_optimizer_rejects_scalar_materialization_whose_widened_sources_pair_ro
         (false, Some(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail))
     );
     assert_eq!(materialize(BinaryOp::Multiply, true), (true, None), "a product cannot fail on the added pairs");
-    assert_eq!(materialize(BinaryOp::Divide, false), (true, None), "one widened source adds no pair");
+    assert_eq!(
+        materialize(BinaryOp::Divide, false),
+        (false, Some(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail))
+    );
 }
 
 fn native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurrences() {

@@ -315,7 +315,10 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         // pre-aggregate computes it on every row of its input, including rows
         // that match no key.
         if lineage.measure_columns.iter().any(|measure| {
-            measure.side_input_aggregate.expr.can_fail(&|column| input_column_type(&[preagg_input_schema.as_ref()], column))
+            measure
+                .side_input_aggregate
+                .expr
+                .can_fail(&|column| input_column_type(&[preagg_input_schema.as_ref()], column))
         }) {
             return Err(AggregateJoinPushdownRejectedReason::MeasureCanFail);
         }

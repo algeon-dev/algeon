@@ -439,9 +439,7 @@ fn extract_shared_resident_subplans(
                 | SharedResidentExtractionReason::ResidentPlanNotAdmitted
                 | SharedResidentExtractionReason::WidenedScanNotCovered
                 | SharedResidentExtractionReason::ResidualNotMappedToOutput
-                | SharedResidentExtractionReason::WidenedRowsCanFail => {
-                    SharedResidentExtractionDecision::Rejected
-                },
+                | SharedResidentExtractionReason::WidenedRowsCanFail => SharedResidentExtractionDecision::Rejected,
                 _ => SharedResidentExtractionDecision::Skipped,
             };
             if decision == SharedResidentExtractionDecision::Rejected {
