@@ -8,6 +8,11 @@
 //! plan order. A complete prefix ROLLUP takes a shortcut: only the finest level reads the input,
 //! and each coarser level re-aggregates the next finer level's output.
 //!
+//! The concatenation requires equal column types, and cuDF's groupby result types differ from
+//! the declared ones: COUNT is INT32, an integer SUM is INT64 and a FLOAT32 SUM stays FLOAT32.
+//! Each completed set or level, and the grand-total identity row, therefore carries every
+//! aggregate column in the type `grouping_set_aggregate_types` declares for it.
+//!
 //! cuDF behaviors handled here. A groupby over zero rows returns zero groups, but SQL keeps the
 //! grand-total set, so the single-stage path synthesizes its identity row (COUNT 0, other
 //! aggregates NULL). The partial stage does not, so an empty chunk stays empty and still
@@ -18,24 +23,25 @@
 use std::time::Instant;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
+use query_planning::prepared::{AVG_COUNT_STATE_TYPE, avg_sum_state_type};
 
 use super::{
-    AggregateFunction, AggregateSpec, ArrowDataType, CudfAggSpec, DataFrame, ExecutionBudgetToken, ExecutionContext,
-    ExecutionMetrics, GpuDataFrame, GroupByAgg, LoweredAggregate, QueryError, QueryErrorCode, Result,
-    aggregate_spec_has_avg, aggregate_spec_has_floating_statistical_aggregate, budgeted_value,
-    cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
-    cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_unsupported_type_error, execute_groupby_aggregate, execute_groupby_aggregate_with_budget_observed,
-    finalize_avg_output_columns, finalize_avg_output_columns_with_budget, lit, lit_null, lower_partial_aggregate_spec,
+    AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, CudfAggSpec, DataFrame, ExecutionBudgetToken,
+    ExecutionContext, ExecutionMetrics, GpuDataFrame, GroupByAgg, LoweredAggregate, QueryError, QueryErrorCode, Result,
+    aggregate_spec_has_avg, aggregate_spec_has_floating_statistical_aggregate, budgeted_value, col,
+    cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error, execute_groupby_aggregate,
+    execute_groupby_aggregate_with_budget_observed, finalize_avg_output_columns,
+    finalize_avg_output_columns_with_budget, lit, lit_null, lower_column_expr, lower_partial_aggregate_spec,
     validate_avg_output_fields,
 };
 
 /// Single-stage grouping-sets aggregate; `token` selects the bounded form.
 ///
 /// Aggregations are lowered as partial state, so AVG runs as a (sum, count) pair that
-/// `finalize_avg_output_columns` divides after the sets are concatenated; reductions and counts
-/// are then cast to the output schema's types. An empty input still yields the grand-total
-/// set's identity row. Floating statistical aggregates fail with `UnsupportedOperator`, which
+/// `finalize_avg_output_columns` divides after the sets are concatenated. Every other aggregate
+/// column already carries its output type. An empty input still yields the grand-total set's
+/// identity row. Floating statistical aggregates fail with `UnsupportedOperator`, which
 /// backs up the planning rejection `grouping_sets_floating_statistical_aggregate_not_supported`.
 pub(super) fn execute_grouping_sets_aggregate(
     context: &ExecutionContext,
@@ -74,14 +80,6 @@ pub(super) fn execute_grouping_sets_aggregate(
     output = match token {
         Some(token) => finalize_avg_output_columns_with_budget(context, output, spec, output_schema, token, metrics)?,
         None => finalize_avg_output_columns(context, output, spec, output_schema)?,
-    };
-    output = match token {
-        Some(token) => cast_reduction_output_columns_with_budget(output, spec, output_schema, token, metrics)?,
-        None => cast_reduction_output_columns(output, spec, output_schema)?,
-    };
-    output = match token {
-        Some(token) => cast_count_output_columns_with_budget(output, spec, output_schema, token, metrics)?,
-        None => cast_count_output_columns(output, spec, output_schema)?,
     };
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         cudf_query_error(
@@ -133,7 +131,6 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
         /* synthesize_empty_grand_total */ false,
         "query_engine.aggregate.grouping_sets_partial",
     )?;
-    output = cast_count_output_columns_with_budget(output, spec, aggregate_output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         cudf_query_error(
             "query_engine.aggregate.grouping_sets_select_partial",
@@ -170,13 +167,14 @@ fn execute_grouping_sets_groupby(
             "grouping-sets execution requires a grouping-sets aggregate spec",
         )
     })?;
+    let aggregate_types = grouping_set_aggregate_types(spec, output_schema, &frame, operation)?;
     if rollup_prefix_fast_path_supported(spec)
         && let Some(levels) = prefix_rollup_levels(&grouping_sets.groups, spec.group_exprs.len())
     {
         return execute_prefix_rollup_grouping_sets_groupby(
             context,
-            spec,
             output_schema,
+            &aggregate_types,
             frame,
             aggregate,
             grouping_sets.grouping_id_alias.as_str(),
@@ -202,6 +200,7 @@ fn execute_grouping_sets_groupby(
         let output = execute_single_grouping_set_groupby(
             context,
             output_schema,
+            &aggregate_types,
             frame.clone(),
             aggregate,
             grouping_sets.grouping_id_alias.as_str(),
@@ -224,11 +223,10 @@ fn execute_grouping_sets_groupby(
 ///
 /// Only the full-key level reads `frame`. Each coarser level groups the next finer level's
 /// output again, with the aggregates in their final-merge form (SUM for SUM and COUNT, MIN, MAX),
-/// so coarser levels read finer-level output and never touch the input again. cuDF counts in
-/// INT32 and sums integers in INT64, so the full-key level's COUNT columns are cast to their
-/// output types before any coarser level sums them, as partial COUNT state is cast before a final
-/// merge; every level then has the column types the concatenation requires. Outputs are returned
-/// in plan order. If the finest level is empty, the grand-total level is synthesized as an
+/// so coarser levels read finer-level output and never touch the input again. Every level is
+/// completed in `aggregate_types`, so a coarser level sums counts that already carry their output
+/// type, and its own SUM result is cast back where cuDF widens it. Outputs are returned in plan
+/// order. If the finest level is empty, the grand-total level is synthesized as an
 /// identity row when `synthesize_empty_grand_total` is set.
 #[expect(
     clippy::too_many_arguments,
@@ -236,8 +234,8 @@ fn execute_grouping_sets_groupby(
 )]
 fn execute_prefix_rollup_grouping_sets_groupby(
     context: &ExecutionContext,
-    spec: &AggregateSpec,
     output_schema: &ArrowSchemaRef,
+    aggregate_types: &[(String, ArrowDataType)],
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     grouping_id_alias: &str,
@@ -255,6 +253,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     let full_output = execute_single_grouping_set_groupby(
         context,
         output_schema,
+        aggregate_types,
         frame,
         aggregate,
         grouping_id_alias,
@@ -268,10 +267,6 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     .map_err(|error| {
         cudf_query_error(operation, "failed to select native prefix-rollup detail output columns", error)
     })?;
-    let full_output = match token {
-        Some(token) => cast_count_output_columns_with_budget(full_output, spec, output_schema, token, metrics)?,
-        None => cast_count_output_columns(full_output, spec, output_schema)?,
-    };
     outputs_by_level[key_count] = Some(full_output);
 
     let final_aggregate = lower_final_aggregate_spec_for_prefix_rollup(aggregate)?;
@@ -288,6 +283,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
             let output = empty_grand_total_grouping_set_frame(
                 context,
                 output_schema,
+                aggregate_types,
                 aggregate,
                 grouping_id_alias,
                 &group,
@@ -345,6 +341,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
         let output = complete_grouping_set_output(
             context,
             output_schema,
+            aggregate_types,
             grouped,
             aggregate,
             grouping_id_alias,
@@ -373,7 +370,8 @@ fn execute_prefix_rollup_grouping_sets_groupby(
 /// omitted keys as NULLs and the grouping id afterward. The grand-total set keeps no key, so it
 /// groups by the constant grouping id added to `frame`. Key columns keep their input values in
 /// every set, because an aggregate argument can read a grouping key: the grand total of
-/// `SUM(a) ... ROLLUP(a)` sums every `a`, although its output `a` is NULL.
+/// `SUM(a) ... ROLLUP(a)` sums every `a`, although its output `a` is NULL. Aggregate columns are
+/// returned in `aggregate_types`.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -381,6 +379,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
 fn execute_single_grouping_set_groupby(
     context: &ExecutionContext,
     output_schema: &ArrowSchemaRef,
+    aggregate_types: &[(String, ArrowDataType)],
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     grouping_id_alias: &str,
@@ -397,6 +396,7 @@ fn execute_single_grouping_set_groupby(
         return empty_grand_total_grouping_set_frame(
             context,
             output_schema,
+            aggregate_types,
             aggregate,
             grouping_id_alias,
             group,
@@ -444,6 +444,7 @@ fn execute_single_grouping_set_groupby(
     complete_grouping_set_output(
         context,
         output_schema,
+        aggregate_types,
         grouped,
         aggregate,
         grouping_id_alias,
@@ -466,7 +467,7 @@ fn grouping_set_keeps_no_key(group: &[bool]) -> bool {
 
 /// One-row identity result of the grand-total set over empty input: NULL keys, the grouping id,
 /// 0 for COUNT, distinct-count and AVG count-state columns, and NULL for every other aggregate
-/// column.
+/// column, each aggregate column in its `aggregate_types` type.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -474,6 +475,7 @@ fn grouping_set_keeps_no_key(group: &[bool]) -> bool {
 fn empty_grand_total_grouping_set_frame(
     context: &ExecutionContext,
     output_schema: &ArrowSchemaRef,
+    aggregate_types: &[(String, ArrowDataType)],
     aggregate: &LoweredAggregate,
     grouping_id_alias: &str,
     group: &[bool],
@@ -524,13 +526,10 @@ fn empty_grand_total_grouping_set_frame(
 
     for aggregation in &aggregate.aggregations {
         let output_name = aggregation.resolved_output_name();
+        let data_type = declared_aggregate_type(aggregate_types, output_name.as_str(), operation)?;
         let series = match aggregation.agg() {
             GroupByAgg::Count { .. } | GroupByAgg::NUnique => {
-                let data_type = output_schema
-                    .field_with_name(output_name.as_str())
-                    .map(|field| field.data_type().clone())
-                    .unwrap_or(ArrowDataType::Int64);
-                empty_grouping_set_zero_series(context, &data_type, output_name.as_str(), token, metrics, operation)?
+                empty_grouping_set_zero_series(context, data_type, output_name.as_str(), token, metrics, operation)?
             },
             GroupByAgg::Sum
             | GroupByAgg::Min
@@ -538,39 +537,14 @@ fn empty_grand_total_grouping_set_frame(
             | GroupByAgg::Mean
             | GroupByAgg::Median
             | GroupByAgg::Std { .. }
-            | GroupByAgg::Variance { .. } => {
-                // Final AVG columns live under the user alias, while partial/final
-                // state frames keep intermediate sum/count aliases. Prefer the
-                // declared schema type and fall back for state columns.
-                if let Ok(field) = output_schema.field_with_name(output_name.as_str()) {
-                    empty_grouping_set_null_series_with_type(
-                        context,
-                        field.data_type(),
-                        output_name.as_str(),
-                        token,
-                        metrics,
-                        operation,
-                    )?
-                } else if output_name.contains("_count") {
-                    empty_grouping_set_zero_series(
-                        context,
-                        &ArrowDataType::Int64,
-                        output_name.as_str(),
-                        token,
-                        metrics,
-                        operation,
-                    )?
-                } else {
-                    empty_grouping_set_null_series_with_type(
-                        context,
-                        &ArrowDataType::Float64,
-                        output_name.as_str(),
-                        token,
-                        metrics,
-                        operation,
-                    )?
-                }
-            },
+            | GroupByAgg::Variance { .. } => empty_grouping_set_null_series_with_type(
+                context,
+                data_type,
+                output_name.as_str(),
+                token,
+                metrics,
+                operation,
+            )?,
         };
         columns.push((output_name, series));
     }
@@ -761,8 +735,9 @@ fn aggregate_for_grouping_set(
     LoweredAggregate { key_columns, output_key_names, aggregations: aggregate.aggregations.clone(), output_names }
 }
 
-/// Adds the columns a one-set groupby does not produce: a typed NULL for each omitted key, and
-/// the grouping id unless the groupby already grouped by it (the grand-total set does).
+/// Adds the columns a one-set groupby does not produce, a typed NULL for each omitted key and
+/// the grouping id unless the groupby already grouped by it (the grand-total set does), and casts
+/// each aggregate column whose cuDF result type differs from its `aggregate_types` type.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -770,6 +745,7 @@ fn aggregate_for_grouping_set(
 fn complete_grouping_set_output(
     context: &ExecutionContext,
     output_schema: &ArrowSchemaRef,
+    aggregate_types: &[(String, ArrowDataType)],
     output: DataFrame,
     aggregate: &LoweredAggregate,
     grouping_id_alias: &str,
@@ -821,6 +797,17 @@ fn complete_grouping_set_output(
         ));
     }
 
+    for (column, data_type) in aggregate_types {
+        let target = declared_aggregate_dtype(column, data_type, operation)?;
+        let actual = output.series(column.as_str()).and_then(|series| series.dtype()).map_err(|error| {
+            cudf_query_error(operation, "failed to inspect native grouping-set aggregate output column type", error)
+                .with_fact("column", column.as_str())
+        })?;
+        if actual != target {
+            expressions.push((column.clone(), col(column.as_str()).cast(target)));
+        }
+    }
+
     match token {
         Some(token) => token
             .run("dataframe::with_columns", |exec| output.on(exec).with_columns(expressions))
@@ -836,6 +823,77 @@ fn complete_grouping_set_output(
             })
         },
     }
+}
+
+/// Declared type of each aggregate column of a grouping-set output, in lowered aggregation order:
+/// the `output_schema` field of a named aggregate, and for an AVG the sum and count state types
+/// that `AvgStateAliases` carries, the sum state derived from the argument column in `frame`.
+fn grouping_set_aggregate_types(
+    spec: &AggregateSpec,
+    output_schema: &ArrowSchemaRef,
+    frame: &DataFrame,
+    operation: &'static str,
+) -> Result<Vec<(String, ArrowDataType)>> {
+    let mut types = Vec::with_capacity(spec.aggr_exprs.len());
+    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
+        let output_field = output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "grouping-set aggregate output field is missing from aggregate output schema",
+            )
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("arrow_error", error.to_string())
+        })?;
+        if expr.function != AggregateFunction::Avg {
+            types.push((expr.alias.clone(), output_field.data_type().clone()));
+            continue;
+        }
+        let input_column = lower_column_expr(&expr.expr, operation)?;
+        let input_dtype = frame.series(input_column.as_str()).and_then(|series| series.dtype()).map_err(|error| {
+            cudf_query_error(operation, "failed to inspect native grouping-set AVG argument column type", error)
+                .with_fact("column", input_column.as_str())
+        })?;
+        let input_type = arrow_type_from_cudf_dtype(input_dtype).map_err(|error| {
+            cudf_unsupported_type_error(operation, "grouping-set AVG argument type has no Arrow type", error)
+                .with_fact("column", input_column.as_str())
+        })?;
+        let state = AvgStateAliases::for_aggregate_index(index);
+        types.push((state.sum().to_string(), avg_sum_state_type(&input_type, output_field.data_type())?));
+        types.push((state.count().to_string(), AVG_COUNT_STATE_TYPE));
+    }
+    Ok(types)
+}
+
+fn declared_aggregate_type<'a>(
+    aggregate_types: &'a [(String, ArrowDataType)],
+    column: &str,
+    operation: &'static str,
+) -> Result<&'a ArrowDataType> {
+    aggregate_types.iter().find(|(name, _)| name == column).map(|(_, data_type)| data_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            operation,
+            "grouping-set aggregate column has no declared output type",
+        )
+        .with_fact("column", column)
+    })
+}
+
+fn declared_aggregate_dtype(
+    column: &str,
+    data_type: &ArrowDataType,
+    operation: &'static str,
+) -> Result<cudf::DataType> {
+    cudf_dtype_from_arrow_type(data_type).map_err(|error| {
+        cudf_unsupported_type_error(
+            operation,
+            "grouping-set aggregate output type is not supported by native execution",
+            error,
+        )
+        .with_fact("column", column)
+        .with_fact("data_type", format!("{data_type:?}"))
+    })
 }
 
 /// Sets the constant grouping-id column of a set that keeps no key, which then serves as that
@@ -886,9 +944,8 @@ fn with_grouping_id_column(
 }
 
 /// The prefix shortcut re-aggregates finer levels. Without DISTINCT or FILTER, SUM, MIN and MAX
-/// of a finer level's results equal the aggregate over its rows and keep the result type, and
-/// SUM of its counts equals COUNT once the counts carry their output type. Any other aggregate,
-/// such as AVG, takes one groupby per set.
+/// of a finer level's results equal the aggregate over its rows, and SUM of its counts equals
+/// its COUNT. Any other aggregate, such as AVG, takes one groupby per set.
 fn rollup_prefix_fast_path_supported(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().all(|expr| {
         !expr.distinct
