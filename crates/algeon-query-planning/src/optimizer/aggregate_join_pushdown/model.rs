@@ -93,6 +93,10 @@ pub enum AggregateJoinPushdownRejectedReason {
     /// would carry the final grouping unchanged and only retain every
     /// unfiltered group before the filter runs.
     LeftSemiAlreadyFiltersFinalGroups,
+    /// A measure expression [can fail](crate::expr::Expr::can_fail). The
+    /// pre-aggregate would evaluate it on measure-side rows that match no join
+    /// key, where the original plan never evaluates it.
+    MeasureCanFail,
 }
 
 /// Outcome of one run: the plan to continue with, whether it changed, and one

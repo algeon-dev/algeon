@@ -11,7 +11,7 @@ use arrow::datatypes::DataType;
 use crate::{
     capability::{
         EdgeConsumer, JoinForm, KeyedHashJoinStrategyOptions, Reason, Rejection, RejectionOwner, choose_join_strategy,
-        classify_join, join_probe_streams_chunks, keyed_hash_join_strategy_input_facts_for_plan,
+        classify_join, join_input_schemas, join_probe_streams_chunks, keyed_hash_join_strategy_input_facts_for_plan,
     },
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer},
     expr::{Expr, SortExpr},
@@ -40,7 +40,7 @@ pub(super) fn plan_joins(
         let Some(PlanNode::Join(join)) = plan.node(*node_id).map(|node| &node.kind) else {
             continue;
         };
-        let form = classify_join(*node_id, join)?;
+        let form = classify_join(*node_id, join, &join_input_schemas(plan, join))?;
         let input = keyed_hash_join_strategy_input_facts_for_plan(plan, *node_id, join);
         let planned = choose_join_strategy(form, join, input, keyed_hash_join).strategy();
         plans.insert(*node_id, JoinPlan::for_form(form, planned));

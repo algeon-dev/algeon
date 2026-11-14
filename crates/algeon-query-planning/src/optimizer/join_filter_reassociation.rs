@@ -32,7 +32,7 @@ use super::{
 };
 use crate::{
     error::Result,
-    expr::{BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, Expr, LiteralValue},
+    expr::{BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, Expr, LiteralValue, input_column_type},
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn,
         JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode,
@@ -787,6 +787,12 @@ fn input_has_top_filter(plan: &QueryPlan, node_id: NodeId, predicate: &Expr) -> 
 /// (see [`derive_side_scalar_range_filter`]). Conjuncts contribute
 /// independently; a disjunction contributes only when both branches do, as the
 /// OR of the two, since a matching row satisfies at least one branch.
+///
+/// The pushed filter runs on every row of `side`'s input: rows that match no
+/// key, rows a filter below the join removes first, and rows an earlier
+/// residual conjunct rejects. A term that [can fail](Expr::can_fail) would
+/// fail on rows the residual never evaluates, so it contributes nothing,
+/// though the conjuncts inside it still can.
 fn derive_side_necessary_filter(
     plan: &QueryPlan,
     join: &JoinNode,
@@ -795,9 +801,11 @@ fn derive_side_necessary_filter(
     resolver: &dyn dimension_pruning::LocalParquetPruningResolver,
 ) -> Option<Expr> {
     if expression_scope(plan, join, expr) == ExpressionScope::Side(side) {
-        return Some(strip_input_qualifiers(expr));
-    }
-    if let Some(filter) = derive_side_scalar_range_filter(plan, join, expr, side, resolver) {
+        let filter = strip_input_qualifiers(expr);
+        if !side_expr_can_fail(plan, join, side, &filter) {
+            return Some(filter);
+        }
+    } else if let Some(filter) = derive_side_scalar_range_filter(plan, join, expr, side, resolver) {
         return Some(filter);
     }
 
@@ -860,7 +868,11 @@ fn derive_side_scalar_range_filter(
     };
 
     let target_expr = strip_input_qualifiers(target_expr);
-    let target_type = infer_expr_type(plan, join.inputs[join_side_index(side)], &target_expr)?;
+    if side_expr_can_fail(plan, join, side, &target_expr) {
+        return None;
+    }
+    let target_schema = plan.node(join.inputs[join_side_index(side)])?.output_schema();
+    let target_type = target_expr.data_type(&|column| input_column_type(&[target_schema.as_ref()], column))?;
     let scalar_expr = strip_input_qualifiers(scalar_expr);
     let scalar_range = dimension_pruning::derive_i64_expr_range_from_filtered_subtree(
         plan,
@@ -942,84 +954,11 @@ fn typed_i64_literal(value: i64, data_type: &ArrowDataType) -> Option<Expr> {
     Some(Expr::literal(literal))
 }
 
-fn infer_expr_type(plan: &QueryPlan, input: NodeId, expr: &Expr) -> Option<ArrowDataType> {
-    infer_expr_type_with_schema(expr, plan.node(input)?.output_schema())
-}
-
-/// Result type of `expr` over `schema`, used to type range literals. `None`
-/// for forms whose type depends on execution (`SUBSTRING`, `CONCAT`, `CASE`),
-/// which then receive no range filter.
-fn infer_expr_type_with_schema(expr: &Expr, schema: &SchemaRef) -> Option<ArrowDataType> {
-    match expr {
-        Expr::Column(column) => Some(schema.field_with_name(column.name()).ok()?.data_type().clone()),
-        Expr::Literal(value) => Some(value.data_type()),
-        Expr::Alias { expr, .. } => infer_expr_type_with_schema(expr, schema),
-        Expr::Cast { target_type, .. } | Expr::TryCast { target_type, .. } => Some(target_type.clone()),
-        Expr::Binary { left, op, right, output_type } => {
-            infer_binary_expr_type(left, *op, right, output_type.as_ref(), schema)
-        },
-        Expr::Not(_)
-        | Expr::IsNull(_)
-        | Expr::IsNotNull(_)
-        | Expr::Like { .. }
-        | Expr::InList { .. }
-        | Expr::StringContains { .. }
-        | Expr::StartsWith { .. }
-        | Expr::EndsWith { .. }
-        | Expr::IsDistinctFrom { .. }
-        | Expr::IsNotDistinctFrom { .. } => Some(ArrowDataType::Boolean),
-        Expr::Lower(expr)
-        | Expr::Upper(expr)
-        | Expr::Trim { expr, .. }
-        | Expr::LTrim { expr, .. }
-        | Expr::RTrim { expr, .. }
-        | Expr::Abs(expr) => infer_expr_type_with_schema(expr, schema),
-        Expr::StringLength { output_type, .. }
-        | Expr::RegexpReplace { output_type, .. }
-        | Expr::UnaryMath { output_type, .. }
-        | Expr::Round { output_type, .. }
-        | Expr::DateTrunc { output_type, .. } => Some(output_type.clone()),
-        Expr::Extract { .. } => Some(ArrowDataType::Int32),
-        Expr::Substring { .. } | Expr::Concat(_) | Expr::Case { .. } => None,
-    }
-}
-
-fn infer_binary_expr_type(
-    left: &Expr,
-    op: BinaryOp,
-    right: &Expr,
-    output_type: Option<&ArrowDataType>,
-    schema: &SchemaRef,
-) -> Option<ArrowDataType> {
-    if let Some(output_type) = output_type {
-        return Some(output_type.clone());
-    }
-    if matches!(op, BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq) {
-        return Some(ArrowDataType::Boolean);
-    }
-    if matches!(op, BinaryOp::And | BinaryOp::Or) {
-        return Some(ArrowDataType::Boolean);
-    }
-    let left_interval = is_interval_literal(left);
-    let right_interval = is_interval_literal(right);
-    let left_type = (!left_interval).then(|| infer_expr_type_with_schema(left, schema)).flatten();
-    let right_type = (!right_interval).then(|| infer_expr_type_with_schema(right, schema)).flatten();
-    match (op, left_interval, right_interval, left_type, right_type) {
-        (BinaryOp::Add | BinaryOp::Subtract, false, true, Some(data_type), _) if is_date_or_timestamp(&data_type) => {
-            Some(data_type)
-        },
-        (BinaryOp::Add, true, false, _, Some(data_type)) if is_date_or_timestamp(&data_type) => Some(data_type),
-        (_, _, _, Some(data_type), _) => Some(data_type),
-        _ => None,
-    }
-}
-
-fn is_interval_literal(expr: &Expr) -> bool {
-    matches!(expr, Expr::Literal(LiteralValue::IntervalMonthDayNano { .. }))
-}
-
-fn is_date_or_timestamp(data_type: &ArrowDataType) -> bool {
-    matches!(data_type, ArrowDataType::Date32 | ArrowDataType::Timestamp(_, None))
+/// Whether `expr`, unqualified over `side`'s input, can fail on a row of it.
+/// An input the plan does not contain counts as one where it can.
+fn side_expr_can_fail(plan: &QueryPlan, join: &JoinNode, side: JoinSide, expr: &Expr) -> bool {
+    plan.node(join.inputs[join_side_index(side)])
+        .is_none_or(|input| expr.can_fail(&|column| input_column_type(&[input.output_schema().as_ref()], column)))
 }
 
 fn remap_projection_predicate(predicate: &Expr, projection: &ProjectionNode) -> Option<Expr> {

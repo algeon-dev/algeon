@@ -10,8 +10,10 @@ use std::{fmt, ops::Not};
 use arrow::datatypes::DataType;
 
 mod column;
+mod evaluation;
 mod literal;
 
+pub(crate) use self::evaluation::input_column_type;
 pub use self::{
     column::{ColumnQualifier, ColumnRef},
     literal::LiteralValue,

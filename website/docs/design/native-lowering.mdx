@@ -215,10 +215,22 @@ therefore stay separate unless one copy's reader predicate holds only shared
 conjuncts. The producer's scan keeps its reader predicate and its proven row
 bound as lowering set them.
 
+When the selections of two or more sources differ, the producer joins rows
+of those sources that no copy joins. Copy 1 may read `a[k = 1] ⋈ b[k = 1]` and
+copy 2 `a[k = 2] ⋈ b[k = 2]`, while the producer reads
+`a[k ∈ {1, 2}] ⋈ b[k ∈ {1, 2}]`. The extra pairs change no result, because each
+copy keeps only its own groups, but an expression evaluated on them can fail
+the query. Such copies share a producer only when no expression in the subplan
+can fail, as defined by
+[checked operations](../reference/native-evaluation-semantics.mdx#checked-operations).
+With one differing source, every pair the producer joins is one some copy
+joins.
+
 Each copy reads the producer through a `Filter` over its restated conjuncts,
 which `EXPLAIN` shows above the copy's `GpuResidentSource`. Diagnostics report
 such a copy as `ExtractedUnderResidualFilter`, and they report copies that
-stay separate as `WidenedScanNotCovered` or `ResidualNotMappedToOutput`.
+stay separate as `WidenedScanNotCovered`, `ResidualNotMappedToOutput` or
+`WidenedRowsCanFail`.
 
 ## Partitions and result semantics
 

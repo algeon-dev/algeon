@@ -7,7 +7,7 @@
 //! plan, the bounded executor's refinement, and the join-strategy metric rows
 //! read these two functions.
 
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, Schema};
 
 use super::{
     join_strategy::{JoinStrategy, JoinStrategyChoice, JoinStrategyEvidence},
@@ -16,7 +16,7 @@ use super::{
 use crate::{
     datatypes::is_ast_cast_target,
     error::{QueryError, QueryErrorCode, Result},
-    expr::{BinaryOp, Expr},
+    expr::{Expr, input_column_type},
     plan::{JoinNode, JoinSide, JoinType, NodeId, QueryPlan, estimated_output_bytes, estimated_output_rows},
 };
 
@@ -359,8 +359,13 @@ impl JoinForm {
 }
 
 /// Classifies a join node into the operator form that executes it, or
-/// rejects a join no native executor runs.
-pub(crate) fn classify_join(node_id: NodeId, join: &JoinNode) -> std::result::Result<JoinForm, Rejection> {
+/// rejects a join no native executor runs. `inputs` are the schemas of the
+/// join's inputs in order ([`join_input_schemas`]), which type the residual.
+pub(crate) fn classify_join(
+    node_id: NodeId,
+    join: &JoinNode,
+    inputs: &[&Schema],
+) -> std::result::Result<JoinForm, Rejection> {
     let spec = &join.spec;
     let rejection = |reason| {
         Rejection::new(
@@ -404,7 +409,7 @@ pub(crate) fn classify_join(node_id: NodeId, join: &JoinNode) -> std::result::Re
                     JoinType::Left => build_right,
                     JoinType::Cross | JoinType::LeftMark { .. } => false,
                 };
-            match (mixed, expr_requires_post_join_filter(residual)) {
+            match (mixed, expr_requires_post_join_filter(residual, inputs)) {
                 (false, _) => None,
                 (true, false) => Some(JoinForm::KeyedResidual { left_match }),
                 (true, true) if keyed_join_filters_matched_pairs(&spec.join_type, spec.build_side) => {
@@ -716,20 +721,31 @@ pub(crate) fn join_probe_streams_chunks(join: &JoinNode, form: JoinForm, strateg
     }
 }
 
-/// Residual forms the cuDF mixed join cannot evaluate while matching: it
-/// evaluates the residual as an AST expression, which has no CASE, no
-/// null-aware comparison, no Decimal128 division, and no cast to a type other
-/// than its [cast targets](is_ast_cast_target). Such a residual runs as a
-/// filter over the matched rows. That keeps SQL semantics for an inner join,
-/// and for a semi join that keeps each left row with a passing pair once; for
-/// any other join type the set of unmatched rows would change.
-fn expr_requires_post_join_filter(expr: &Expr) -> bool {
-    expr.any(|expr| match expr {
-        Expr::Case { .. } | Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => true,
-        Expr::Binary { op: BinaryOp::Divide, output_type: Some(DataType::Decimal128(_, _)), .. } => true,
-        Expr::Cast { target_type, .. } => !is_ast_cast_target(target_type),
-        _ => false,
-    })
+/// Residuals the cuDF mixed join cannot evaluate while matching. It evaluates
+/// the residual as an AST expression, which has no CASE, no null-aware
+/// comparison and no cast to a type other than its [cast
+/// targets](is_ast_cast_target), and which checks none of the operations that
+/// can fail ([`Expr::can_fail`]). Such a residual runs as a filter over the
+/// matched rows. That keeps SQL semantics for an inner join, and for a semi
+/// join that keeps each left row with a passing pair once; for any other join
+/// type the set of unmatched rows would change.
+fn expr_requires_post_join_filter(expr: &Expr, inputs: &[&Schema]) -> bool {
+    expr.can_fail(&|column| input_column_type(inputs, column))
+        || expr.any(|expr| match expr {
+            Expr::Case { .. } | Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => true,
+            Expr::Cast { target_type, .. } => !is_ast_cast_target(target_type),
+            _ => false,
+        })
+}
+
+/// The schemas of `join`'s inputs in order, or none when the plan lacks an
+/// input, which leaves every residual column untyped.
+pub(crate) fn join_input_schemas<'p>(plan: &'p QueryPlan, join: &JoinNode) -> Vec<&'p Schema> {
+    join.inputs
+        .iter()
+        .map(|input| plan.node(*input).map(|node| node.output_schema().as_ref()))
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 fn probe_input_for_join(join: &JoinNode) -> NodeId {
@@ -780,9 +796,11 @@ fn hash_join_prebuild_reservation_supported_type(data_type: &DataType) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use arrow::datatypes::Field;
+
     use super::*;
     use crate::{
-        expr::ColumnRef,
+        expr::{BinaryOp, ColumnRef},
         plan::{JoinKey, JoinOutputColumn, JoinSpec},
     };
 
@@ -838,7 +856,7 @@ mod tests {
     }
 
     fn form(join: &JoinNode) -> Option<JoinForm> {
-        classify_join(NodeId::from_index_for_test(2), join).ok()
+        classify_join(NodeId::from_index_for_test(2), join, &[]).ok()
     }
 
     fn choice(
@@ -923,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn residual_casts_the_ast_has_no_target_for_filter_matched_pairs_of_inner_and_right_building_semi_joins() {
+    fn residual_casts_the_ast_cannot_check_filter_matched_pairs_of_inner_and_right_building_semi_joins() {
         let decimal = DataType::Decimal128(30, 15);
         let checked = Expr::binary(
             Expr::cast(Expr::column("left_value"), decimal.clone()),
@@ -953,7 +971,7 @@ mod tests {
             with_residual(JoinType::LeftAnti { null_aware: false }, JoinSide::Right, checked.clone()),
             with_residual(JoinType::Left, JoinSide::Right, checked),
         ] {
-            let rejection = classify_join(NodeId::from_index_for_test(2), &join).unwrap_err();
+            let rejection = classify_join(NodeId::from_index_for_test(2), &join, &[]).unwrap_err();
             assert_eq!(
                 rejection.reason,
                 Reason::PostJoinResidualFilterRequiresOneShotEquiJoin,
@@ -963,13 +981,30 @@ mod tests {
             );
         }
 
-        let ast_cast = Expr::binary(
-            Expr::cast(Expr::column("left_value"), DataType::Float64),
-            BinaryOp::Gt,
-            Expr::column("right_value"),
+        // The AST casts to its targets without range checks, so whether the
+        // residual filters matched pairs depends on whether the cast can fail.
+        let left = Schema::new(vec![
+            Field::new("int_value", DataType::Int32, true),
+            Field::new("float_value", DataType::Float64, true),
+        ]);
+        let right = Schema::new(vec![Field::new("right_value", DataType::Int64, true)]);
+        let ast_target_cast = |column: &str| {
+            Expr::binary(
+                Expr::cast(Expr::input_column(0, column, column), DataType::Int64),
+                BinaryOp::Gt,
+                Expr::input_column(1, "right_value", "right_value"),
+            )
+        };
+        let semi = with_residual(JoinType::LeftSemi, JoinSide::Right, ast_target_cast("int_value"));
+        assert_eq!(
+            classify_join(NodeId::from_index_for_test(2), &semi, &[&left, &right]).ok(),
+            Some(JoinForm::KeyedResidual { left_match: false })
         );
-        let semi = with_residual(JoinType::LeftSemi, JoinSide::Right, ast_cast);
-        assert_eq!(form(&semi), Some(JoinForm::KeyedResidual { left_match: false }));
+        let semi = with_residual(JoinType::LeftSemi, JoinSide::Right, ast_target_cast("float_value"));
+        assert_eq!(
+            classify_join(NodeId::from_index_for_test(2), &semi, &[&left, &right]).ok(),
+            Some(JoinForm::KeyedEquiPostFilter)
+        );
     }
 
     #[test]

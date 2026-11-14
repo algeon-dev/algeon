@@ -157,7 +157,12 @@ pub(crate) fn validate_join_capability(
             ctx,
         ) {
             Ok(data_type) => data_type,
-            Err(_error) if matches!(classify_join(node_id, join), Ok(JoinForm::KeyedEquiPostFilter)) => {
+            Err(_error)
+                if matches!(
+                    classify_join(node_id, join, &[left_schema.as_ref(), right_schema.as_ref()]),
+                    Ok(JoinForm::KeyedEquiPostFilter)
+                ) =>
+            {
                 validate_post_join_residual_expr(
                     predicate,
                     left_schema,

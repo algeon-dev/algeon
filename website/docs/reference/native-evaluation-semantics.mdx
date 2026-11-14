@@ -78,19 +78,21 @@ other than `0` and `-1`, and floating-point `%`, can move this way.
 
 A part that reads one input and contains a checked operation stays in the
 condition. The condition is evaluated after matching, on the matched pairs
-only, with the guards described above, when it contains a decimal `/` or a
-cast to a type other than `BIGINT`, `BIGINT UNSIGNED` and `DOUBLE`, and
-belongs to an inner join or a semi join with equality keys. Its top-level
-`AND` operands are evaluated in order, each on the pairs the earlier ones
-keep, so an operand needs no guard built from the operands before it.
-`EXISTS`, `IN` and a correlated scalar subquery comparison plan to a semi
-join, which keeps each left row with at least one passing pair. Any other
-condition with a checked operation keeps the join on DataFusion. That includes
-a checked cast to `BIGINT` or `BIGINT UNSIGNED` without a decimal `/` or
-another such cast, and these conditions in an anti, outer or mark join or in
-a join without equality keys. Integer `/` or `%` with a
-column divisor, `%` over both inputs, and timestamp `+` or `-` keep it there
-in every join.
+only, with the guards described above, when it keeps a checked cast or a
+decimal `/` and belongs to an inner join or a semi join with equality keys.
+Its top-level `AND` operands are evaluated in order, each on the pairs the
+earlier ones keep, so an operand needs no guard built from the operands
+before it. `EXISTS`, `IN` and a correlated scalar subquery comparison plan to
+a semi join, which keeps each left row with at least one passing pair. The
+same condition in an anti, outer or mark join, or in a join without equality
+keys, keeps the join on DataFusion. Integer `/` or `%` with a column divisor,
+`%` over both inputs, and timestamp `+` or `-` keep it there in every join.
+
+The native optimizer derives filters from a join condition and applies them
+to one input before the join, and it computes some aggregates below a join.
+Neither contains a checked operation. When copies of an aggregate that select
+different rows share one computation, a checked operation in it runs only
+on rows, and pairs of joined rows, that some copy runs it on.
 
 <div className="fineprint">
 

@@ -106,9 +106,9 @@ struct NativeProfileBase {
 
 /// Decision-grade session config for ClickBench reports.
 ///
-/// Uses one target partition, disables file/aggregate/join/sort repartitioning
-/// and dynamic filter pushdown, leaves Parquet pushdown filters enabled, and
-/// sets `binary_as_string=true` for upstream `BYTE_ARRAY` string columns.
+/// Uses one target partition, disables file/aggregate/join/sort repartitioning,
+/// dynamic filter pushdown and row-level Parquet filter pushdown, and sets
+/// `binary_as_string=true` for upstream `BYTE_ARRAY` string columns.
 pub fn clickbench_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -119,7 +119,10 @@ pub fn clickbench_report_session_config() -> SessionConfig {
     config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
-    config.options_mut().execution.parquet.pushdown_filters = true;
+    // Off, as DataFusion defaults it. The cuDF reader that decodes filter
+    // columns first and prunes payload pages with the result
+    // (`hybrid_scan_reader`) is experimental and has no binding here.
+    config.options_mut().execution.parquet.pushdown_filters = false;
     config.options_mut().execution.parquet.binary_as_string = true;
     config
 }

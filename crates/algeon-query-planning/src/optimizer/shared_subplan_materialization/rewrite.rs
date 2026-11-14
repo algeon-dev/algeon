@@ -38,7 +38,9 @@ use super::{
 use crate::{
     backend::AnalysisContext,
     expr::{AggregateExpr, AggregateSpec, ColumnRef, Expr, LiteralValue},
+    expr::input_column_type,
     optimizer::{
+        access::subplan_can_fail,
         predicate_factoring::{conjunction, disjunction, factor_selections, map_residual, split_conjuncts},
         rewrite as optimizer_rewrite,
     },
@@ -226,6 +228,34 @@ fn widened_source_fingerprints(family: &[AggregateMaterializationSignature]) -> 
         .collect()
 }
 
+/// Whether the representative's subplan, reading the union of the members'
+/// selections on each widened source, can fail on a row combination no member
+/// reads. A member reads the product of its own selections, so with two or
+/// more widened sources the product of the unions pairs rows no member pairs.
+/// With one widened source every combination is one some member reads.
+fn widened_sources_pair_failing_rows(
+    plan: &QueryPlan,
+    representative: &AggregateMaterializationSignature,
+    widened_source_fingerprints: &BTreeSet<String>,
+) -> bool {
+    widened_source_fingerprints.len() > 1 && subplan_can_fail(plan, representative.aggregate_node_id)
+}
+
+/// Whether an argument or filter of the aggregate at `node_id` can fail. An
+/// aggregate the plan does not hold counts as one whose measures can.
+fn aggregate_measures_can_fail(plan: &QueryPlan, node_id: NodeId) -> bool {
+    let Some(PlanNode::Aggregate(aggregate)) = plan.node(node_id).map(|node| &node.kind) else {
+        return true;
+    };
+    let Some(input) = plan.node(aggregate.input) else {
+        return true;
+    };
+    let schema = input.output_schema();
+    aggregate.spec.aggr_exprs.iter().flat_map(|aggregate| std::iter::once(&aggregate.expr).chain(&aggregate.filter)).any(
+        |expr| expr.can_fail(&|column| input_column_type(&[schema.as_ref()], column)),
+    )
+}
+
 /// Plans how `family` is shared, or names the reason it cannot be. The
 /// reason is a report contract; the check order fixes which one a family with
 /// several defects reports. A widened reader predicate the representative's
@@ -299,6 +329,9 @@ fn family_rewrite_plan(
                 branch_filters: family.iter().map(|signature| (signature.aggregate_node_id, None)).collect(),
             },
         });
+    }
+    if widened_sources_pair_failing_rows(plan, representative, &widened_source_fingerprints) {
+        return Err(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail);
     }
 
     let mut widened_source_predicates = BTreeMap::new();
@@ -455,6 +488,13 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
     let widened_source_fingerprints = widened_source_fingerprints(family);
     if widened_source_fingerprints.is_empty() {
         return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
+    }
+    // The shared aggregate evaluates each member's measures on the rows of
+    // every member, under that member's filter.
+    if widened_sources_pair_failing_rows(plan, representative, &widened_source_fingerprints)
+        || family.iter().any(|signature| aggregate_measures_can_fail(plan, signature.aggregate_node_id))
+    {
+        return Err(SharedSubplanMaterializationRejectedReason::WidenedRowsCanFail);
     }
 
     let mut widened_source_predicates = BTreeMap::new();

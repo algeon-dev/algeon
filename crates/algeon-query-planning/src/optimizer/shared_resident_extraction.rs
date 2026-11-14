@@ -34,7 +34,7 @@ use std::{
 use arrow::datatypes::DataType;
 
 use super::{
-    access::{local_parquet_source, projection_only_selects_columns},
+    access::{local_parquet_source, projection_only_selects_columns, subplan_can_fail},
     lineage::substitute_unqualified_columns,
     predicate_factoring::{
         GroupKeyDefinition, GroupKeyOutput, conjunction, factor_selections, is_lossless_integer_widening, map_residual,
@@ -101,6 +101,11 @@ pub enum SharedResidentExtractionReason {
     /// because a predicate one of them does not share has no restatement over
     /// the aggregate's group outputs.
     ResidualNotMappedToOutput,
+    /// Copies that differ in the selection of two or more sources stay
+    /// separate because the subplan has an expression that [can
+    /// fail](crate::expr::Expr::can_fail). The producer would pair rows of
+    /// those sources that no copy pairs and evaluate it there.
+    WidenedRowsCanFail,
 }
 
 /// Structured decision for one inspected native-plan node.
@@ -433,7 +438,8 @@ fn extract_shared_resident_subplans(
                 SharedResidentExtractionReason::RootDoesNotReduceRows
                 | SharedResidentExtractionReason::ResidentPlanNotAdmitted
                 | SharedResidentExtractionReason::WidenedScanNotCovered
-                | SharedResidentExtractionReason::ResidualNotMappedToOutput => {
+                | SharedResidentExtractionReason::ResidualNotMappedToOutput
+                | SharedResidentExtractionReason::WidenedRowsCanFail => {
                     SharedResidentExtractionDecision::Rejected
                 },
                 _ => SharedResidentExtractionDecision::Skipped,
@@ -594,7 +600,10 @@ fn decide_residual_families(
 /// `max_rows` bound stays proven. A source with a scan limit or a count-star
 /// probe takes part only when every member selects the same rows from it.
 /// Selected row groups are pruning results of predicates and joins every
-/// member applies, so reading more of them changes no result.
+/// member applies, so reading more of them changes no result. It can change
+/// whether the query fails: with two or more widened sources the producer
+/// pairs rows no copy pairs, so such a family needs a subplan in which no
+/// expression can fail.
 fn fuse_residual_family(
     fragments: &[QueryPlan],
     groups: &BTreeMap<PlanFingerprint, CandidateGroup>,
@@ -671,11 +680,13 @@ fn fuse_residual_family(
 
     let mut nodes = representative.nodes().to_vec();
     let mut removed_filters = BTreeSet::new();
+    let mut widened_sources = 0_usize;
     for (selection, (sources, readers, factored, any_filter)) in member_selections[0].iter().zip(factored_sources) {
         let selections_differ = factored.differing.iter().any(|differing| !differing.is_empty())
             || sources.iter().any(|other| {
                 other.files.iter().map(|file| &file.row_groups).ne(sources[0].files.iter().map(|file| &file.row_groups))
             });
+        widened_sources += usize::from(selections_differ);
         if selections_differ && sources.iter().any(|source| !source.selection_can_widen()) {
             return Ok(Err(SharedResidentExtractionReason::WidenedScanNotCovered));
         }
@@ -720,6 +731,12 @@ fn fuse_residual_family(
         }
         let source = sources[covering].clone();
         nodes[selection.source.index()].kind = PlanNode::Source(Box::new(SourceNode::LocalParquet(source)));
+    }
+    // A copy reads the product of its own selections, and the producer the
+    // product of their unions; with one widened source every row combination
+    // is one some copy reads.
+    if widened_sources > 1 && subplan_can_fail(representative, representative.root_id()) {
+        return Ok(Err(SharedResidentExtractionReason::WidenedRowsCanFail));
     }
     // The node list keeps its structure, so the representative's routes keep
     // their endpoints; a wider build input only widens the runtime filter.

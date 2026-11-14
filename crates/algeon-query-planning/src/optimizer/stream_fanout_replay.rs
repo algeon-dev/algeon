@@ -21,9 +21,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use arrow::datatypes::Schema;
+
 use super::{consumers_by_node, rewrite};
 use crate::{
-    capability::{classify_join, join_probe_streams_chunks},
+    capability::{classify_join, join_input_schemas, join_probe_streams_chunks},
     error::Result,
     execution_contracts::MemoryControlPolicy,
     plan::{
@@ -341,7 +343,7 @@ fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, ReplayCandidate> {
         let PlanNode::Join(join) = &node.kind else {
             continue;
         };
-        if !join_probe_stream_capable(node.id, join) {
+        if !join_probe_stream_capable(node.id, join, &join_input_schemas(plan, join)) {
             continue;
         }
         let probe_input = join.inputs[probe_input_index(join)];
@@ -363,8 +365,8 @@ fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, ReplayCandidate> {
 
 /// Whether the join's probe pulls its input chunk by chunk under every
 /// strategy that can execute it.
-fn join_probe_stream_capable(node_id: NodeId, join: &JoinNode) -> bool {
-    classify_join(node_id, join)
+fn join_probe_stream_capable(node_id: NodeId, join: &JoinNode, inputs: &[&Schema]) -> bool {
+    classify_join(node_id, join, inputs)
         .is_ok_and(|form| form.strategies().iter().all(|strategy| join_probe_streams_chunks(join, form, *strategy)))
 }
 

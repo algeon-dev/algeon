@@ -88,4 +88,9 @@ pub enum SharedSubplanMaterializationRejectedReason {
     /// reader contract does not accept the expression, or the source has a
     /// scan limit or is a count-star probe.
     WidenedReaderPredicateUnsupported,
+    /// The shared aggregate would evaluate an expression that [can
+    /// fail](crate::expr::Expr::can_fail) on rows no member evaluates: a
+    /// member's aggregate argument on another member's rows, or the subplan on
+    /// row combinations that two or more widened sources produce.
+    WidenedRowsCanFail,
 }

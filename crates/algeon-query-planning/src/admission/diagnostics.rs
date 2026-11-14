@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use super::AdmissionDecision;
 use crate::{
     backend::AnalysisContext,
-    capability::{Rejection, choose_join_strategy, classify_join, keyed_hash_join_strategy_input_facts_for_plan},
+    capability::{
+        Rejection, choose_join_strategy, classify_join, join_input_schemas, keyed_hash_join_strategy_input_facts_for_plan,
+    },
     plan::{PlanNode, QueryPlan},
 };
 
@@ -69,7 +71,7 @@ fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: 
         let PlanNode::Join(join) = &node.kind else {
             continue;
         };
-        let Ok(form) = classify_join(node.id, join) else {
+        let Ok(form) = classify_join(node.id, join, &join_input_schemas(plan, join)) else {
             continue;
         };
         let input = keyed_hash_join_strategy_input_facts_for_plan(plan, node.id, join);

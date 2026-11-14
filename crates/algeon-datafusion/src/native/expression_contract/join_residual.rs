@@ -15,7 +15,7 @@ use datafusion::{
 use query_engine::rapids_backend::rapids_backend;
 use query_planning::{
     capability::keyed_join_filters_matched_pairs,
-    datatypes::{is_ast_cast_target, is_supported_ast_cast},
+    datatypes::is_supported_ast_cast,
     plan::{JoinSide as NativeJoinSide, JoinType as NativeJoinType},
     validation::is_integral_type,
 };
@@ -73,11 +73,12 @@ impl<'a> ValidatedJoinResidual<'a> {
     }
 
     /// Whether lowering runs the residual as the checked filter over
-    /// key-matched pairs instead of the cuDF join AST. It does for a decimal
-    /// `/` and for a cast to a type the AST does not cast to, whose checks
-    /// only that filter applies, in a join that filters its matched pairs.
-    /// Query planning classifies such a residual `KeyedEquiPostFilter` from
-    /// the same operations.
+    /// key-matched pairs instead of the cuDF join AST. It does when the
+    /// residual keeps an operation that can fail, a decimal `/` or a
+    /// single-input subexpression, in a join that filters its matched pairs:
+    /// the AST applies none of the checks. Query planning classifies such a
+    /// residual `KeyedEquiPostFilter` because its native expression can fail
+    /// (`Expr::can_fail`).
     pub(in crate::native) fn evaluates_after_matching(&self) -> bool {
         self.after_matching
     }
@@ -108,13 +109,13 @@ pub(in crate::native) fn validate_join_residual<'a>(
         filter,
         materializations: Vec::new(),
         first_checked_operation: None,
-        checked_cast_after_matching: false,
     };
     shape.visit(residual)?;
     let decimal_division = first_decimal_division(residual, filter.schema());
     let filters_matched_pairs =
         keyed_join.is_some_and(|(join_type, build_side)| keyed_join_filters_matched_pairs(join_type, build_side));
-    let after_matching = filters_matched_pairs && (decimal_division.is_some() || shape.checked_cast_after_matching);
+    let after_matching =
+        filters_matched_pairs && (decimal_division.is_some() || shape.first_checked_operation.is_some());
     if !after_matching {
         if let Some(rejection) = shape.first_checked_operation {
             return Err(rejection);
@@ -166,9 +167,6 @@ struct ResidualShape<'f> {
     /// pairs evaluates it on the rows DataFusion evaluates, so the residual is
     /// rejected unless it runs as that filter.
     first_checked_operation: Option<ExpressionRejection>,
-    /// Whether a kept single-input subexpression is a cast to a type the cuDF
-    /// AST does not cast to, which runs the residual as that filter.
-    checked_cast_after_matching: bool,
 }
 
 impl ResidualShape<'_> {
@@ -206,8 +204,6 @@ impl ResidualShape<'_> {
         if self.first_checked_operation.is_none() {
             self.first_checked_operation = Some(fallible_operation_rejection(expr, schema));
         }
-        self.checked_cast_after_matching |=
-            expr.downcast_ref::<CastExpr>().is_some_and(|cast| !is_ast_cast_target(cast.cast_type()));
         self.visit_children(expr)
     }
 

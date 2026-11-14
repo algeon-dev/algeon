@@ -116,11 +116,11 @@ struct NativeProfileBase {
 
 /// Session config used by TPC-DS native report surfaces.
 ///
-/// Uses one target partition, disables DataFusion repartitioning, dynamic
-/// filter pushdown, and leaves Parquet pushdown filters enabled for scan
-/// pruning parity with report binaries. The base config remains compatible
-/// with the CPU DataFusion oracle; native-only planner guards are applied by
-/// [`tpcds_native_report_session_config`].
+/// Uses one target partition and disables DataFusion repartitioning, dynamic
+/// filter pushdown and row-level Parquet filter pushdown, so a scan predicate
+/// stays a filter above the scan as it does in server sessions. The base
+/// config remains compatible with the CPU DataFusion oracle; native-only
+/// planner guards are applied by [`tpcds_native_report_session_config`].
 pub fn tpcds_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -131,7 +131,10 @@ pub fn tpcds_report_session_config() -> SessionConfig {
     config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
-    config.options_mut().execution.parquet.pushdown_filters = true;
+    // Off, as DataFusion defaults it. The cuDF reader that decodes filter
+    // columns first and prunes payload pages with the result
+    // (`hybrid_scan_reader`) is experimental and has no binding here.
+    config.options_mut().execution.parquet.pushdown_filters = false;
     config
 }
 
