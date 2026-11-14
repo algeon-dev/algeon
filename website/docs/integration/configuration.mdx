@@ -703,9 +703,11 @@ is not a default, with its source.
 The server reads `SessionConfig::from_env()`, with keys such as
 `DATAFUSION_EXECUTION_BATCH_SIZE`, `DATAFUSION_EXECUTION_TARGET_PARTITIONS`,
 `DATAFUSION_CATALOG_DEFAULT_CATALOG` and `DATAFUSION_CATALOG_DEFAULT_SCHEMA`.
-Under `native_required`, the default, the server sets `target_partitions` to
-1 and ignores `DATAFUSION_EXECUTION_TARGET_PARTITIONS`. No query in that mode
-runs DataFusion CPU operators, and one scan group keeps a sort-declared
+Under `native_required`, the default, the session plans one partition and
+ignores `DATAFUSION_EXECUTION_TARGET_PARTITIONS`, as every session the backend
+installs in that mode does (see
+[Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode)). No query in that
+mode runs DataFusion CPU operators, and one scan group keeps a sort-declared
 Parquet scan eligible for native lowering.
 In `native_preferred` and `native_required`, the native optimizer overrides
 one DataFusion optimizer default, described in

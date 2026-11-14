@@ -189,7 +189,10 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
     }
 }
 
-/// Sets the DataFusion options an Algeon session overrides for `mode`.
+/// Sets the DataFusion options an Algeon session overrides for `mode`:
+/// physical scalar subqueries are off whenever relational SQL is lowered, and
+/// under [`AlgeonGpuExecutionMode::NativeRequired`] `target_partitions` is 1,
+/// replacing any value the caller set.
 ///
 /// [`AlgeonSessionStateBuilderExt::with_algeon_native`] applies these settings
 /// to the session configuration. Standalone DataFusion contexts that model
@@ -202,6 +205,15 @@ pub fn apply_algeon_option_overrides(options: &mut ConfigOptions, mode: AlgeonGp
     // into a join with its one-row aggregate, a shape native lowering covers.
     if mode.rewrites_relational_plans() {
         options.optimizer.enable_physical_uncorrelated_scalar_subquery = false;
+    }
+    // When no operator may run on the CPU, DataFusion's partition parallelism
+    // has nothing to run, and native execution chunks its inputs on its own.
+    // The shapes DataFusion plans for several partitions are ones native
+    // lowering does not reproduce: a limit per partition, partial and final
+    // stages of an aggregate such as MEDIAN, and a merge of sorted partitions.
+    // A declared scan ordering also survives only from one file group.
+    if mode.rejects_datafusion_cpu() {
+        options.execution.target_partitions = 1;
     }
 }
 
@@ -468,6 +480,24 @@ mod tests {
         assert!(!physical_scalar_subquery(AlgeonGpuExecutionMode::NativeRequired));
     }
 
+    /// Under `native_required` a session DataFusion plans for several
+    /// partitions gets shapes native lowering rejects, such as a per-partition
+    /// limit, so the session plans one partition whatever the caller set.
+    #[test]
+    fn only_native_required_sessions_replace_the_callers_target_partitions() {
+        let target_partitions = |mode| {
+            SessionStateBuilder::new()
+                .with_config(SessionConfig::new().with_target_partitions(8))
+                .with_algeon_native(AlgeonNativeOptimizerConfig::default().with_execution_mode(mode))
+                .build()
+                .config()
+                .target_partitions()
+        };
+        assert_eq!(target_partitions(AlgeonGpuExecutionMode::NativeRequired), 1);
+        assert_eq!(target_partitions(AlgeonGpuExecutionMode::NativePreferred), 8);
+        assert_eq!(target_partitions(AlgeonGpuExecutionMode::FunctionsOnly), 8);
+    }
+
     /// A cuGraph input subplan is a child of the query root, so its final
     /// rewrite leaves the DataFusion CPU policy to the outer run.
     #[test]
@@ -576,8 +606,11 @@ mod tests {
     #[test]
     fn cugraph_subplanning_plans_single_group_scans_for_declared_orderings() {
         let optimizer_config =
-            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
-        let state = SessionStateBuilder::new().with_algeon_native(optimizer_config.clone()).build();
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativePreferred);
+        let state = SessionStateBuilder::new()
+            .with_config(SessionConfig::new().with_target_partitions(4))
+            .with_algeon_native(optimizer_config.clone())
+            .build();
         let nested = session_state_with_native_execution_config(
             &state,
             optimizer_config.native_execution_config().clone(),
@@ -586,8 +619,8 @@ mod tests {
         )
         .expect("nested cuGraph planning requires installed native selection");
         assert_eq!(nested.config().target_partitions(), 1);
-        // The caller's own session keeps whatever parallelism it configured.
-        assert!(state.config().target_partitions() >= 1);
+        // Under `native_preferred` the caller's own session keeps its parallelism.
+        assert_eq!(state.config().target_partitions(), 4);
     }
 
     #[test]
