@@ -60,9 +60,15 @@ WHERE n >= 0 AND total / n > 1          -- fails on a row with n = 0, as on Data
   expressions. A chain of about eight such conditions stays on DataFusion. In
   a join condition evaluated after matching (see below), the limit applies
   within each top-level `AND` operand.
-- Native evaluation is more permissive in one case: DataFusion skips the right
-  operand only on some batches, and when it evaluates a decided row that fails,
-  DataFusion fails the query while native evaluation returns the result.
+- An aggregate's `FILTER (WHERE …)` limits where its argument is checked in
+  the same way, to the rows where the filter is true, so
+  `SUM(total / n) FILTER (WHERE n <> 0)` never divides by zero.
+- Native evaluation is more permissive in two cases. DataFusion skips the
+  right operand only on some batches, and when it evaluates a decided row that
+  fails, DataFusion fails the query while native evaluation returns the
+  result. With `GROUP BY`, DataFusion evaluates an aggregate argument on every
+  row, including rows its filter drops, and fails the query where native
+  evaluation does not.
 
 ## Where checked operations are not evaluated
 
