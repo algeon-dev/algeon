@@ -175,6 +175,7 @@ fn execute_grouping_sets_groupby(
     {
         return execute_prefix_rollup_grouping_sets_groupby(
             context,
+            spec,
             output_schema,
             frame,
             aggregate,
@@ -223,8 +224,11 @@ fn execute_grouping_sets_groupby(
 ///
 /// Only the full-key level reads `frame`. Each coarser level groups the next finer level's
 /// output again, with the aggregates in their final-merge form (SUM for SUM and COUNT, MIN, MAX),
-/// so coarser levels read finer-level output and never touch the input again. Outputs are
-/// returned in plan order. If the finest level is empty, the grand-total level is synthesized as an
+/// so coarser levels read finer-level output and never touch the input again. cuDF counts in
+/// INT32 and sums integers in INT64, so the full-key level's COUNT columns are cast to their
+/// output types before any coarser level sums them, as partial COUNT state is cast before a final
+/// merge; every level then has the column types the concatenation requires. Outputs are returned
+/// in plan order. If the finest level is empty, the grand-total level is synthesized as an
 /// identity row when `synthesize_empty_grand_total` is set.
 #[expect(
     clippy::too_many_arguments,
@@ -232,6 +236,7 @@ fn execute_grouping_sets_groupby(
 )]
 fn execute_prefix_rollup_grouping_sets_groupby(
     context: &ExecutionContext,
+    spec: &AggregateSpec,
     output_schema: &ArrowSchemaRef,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
@@ -263,6 +268,10 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     .map_err(|error| {
         cudf_query_error(operation, "failed to select native prefix-rollup detail output columns", error)
     })?;
+    let full_output = match token {
+        Some(token) => cast_count_output_columns_with_budget(full_output, spec, output_schema, token, metrics)?,
+        None => cast_count_output_columns(full_output, spec, output_schema)?,
+    };
     outputs_by_level[key_count] = Some(full_output);
 
     let final_aggregate = lower_final_aggregate_spec_for_prefix_rollup(aggregate)?;
@@ -876,8 +885,10 @@ fn with_grouping_id_column(
     }
 }
 
-/// The prefix shortcut re-aggregates finer levels, which holds for SUM, COUNT, MIN and MAX
-/// without DISTINCT or FILTER. Any other aggregate, such as AVG, takes one groupby per set.
+/// The prefix shortcut re-aggregates finer levels. Without DISTINCT or FILTER, SUM, MIN and MAX
+/// of a finer level's results equal the aggregate over its rows and keep the result type, and
+/// SUM of its counts equals COUNT once the counts carry their output type. Any other aggregate,
+/// such as AVG, takes one groupby per set.
 fn rollup_prefix_fast_path_supported(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().all(|expr| {
         !expr.distinct

@@ -197,6 +197,80 @@ fn rollup_grand_total_aggregates_read_grouping_key_input_values() {
 }
 
 #[test]
+fn prefix_rollup_count_levels_concatenate_with_per_set_output_types() {
+    // SUM, COUNT, MIN and MAX keep the plan on the prefix-rollup shortcut, where coarser levels
+    // re-aggregate the finer level's COUNT with SUM.
+    let context = backend_context();
+    let input_schema = prefix_rollup_count_input_schema();
+    let output_schema = prefix_rollup_count_output_schema();
+
+    let batch = prefix_rollup_count_input_batch(&input_schema);
+    let source = SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), vec![batch]));
+    let plan = prefix_rollup_count_plan(source, &output_schema);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_prefix_rollup_count_schema(batch, &output_schema);
+    assert_eq!(prefix_rollup_count_rows(batch), expected_prefix_rollup_count_rows());
+
+    let empty_batch = RecordBatch::new_empty(Arc::clone(&input_schema));
+    let source = SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), vec![empty_batch]));
+    let plan = prefix_rollup_count_plan(source, &output_schema);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_prefix_rollup_count_schema(batch, &output_schema);
+    assert_eq!(
+        prefix_rollup_count_rows(batch),
+        vec![(None, None, 3, 0, 0, None, None, None)],
+        "empty input keeps only the grand-total identity row"
+    );
+}
+
+#[test]
+fn bounded_prefix_rollup_count_partials_concatenate_with_per_set_output_types() {
+    let dir = unique_temp_dir("query-engine-bounded-prefix-rollup-count-partials");
+    let path = dir.join("input.parquet");
+    // One two-row row group per chunk gives the aggregate several partial frames.
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let input_schema = prefix_rollup_count_input_schema();
+    let output_schema = prefix_rollup_count_output_schema();
+    write_record_batch_with_row_group_rows(
+        &path,
+        Arc::clone(&input_schema),
+        prefix_rollup_count_input_batch(&input_schema),
+        2,
+    );
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["a".to_string(), "b".to_string(), "y".to_string()],
+    );
+    let plan = prefix_rollup_count_plan(SourceNode::LocalParquet(source), &output_schema);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    assert!(
+        result.metrics().partial_aggregate_count >= 2,
+        "the input should reach the aggregate as more than one partial"
+    );
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_prefix_rollup_count_schema(batch, &output_schema);
+    assert_eq!(prefix_rollup_count_rows(batch), expected_prefix_rollup_count_rows());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials() {
     let dir = unique_temp_dir("query-engine-bounded-compiled-rollup-avg-typed-null-partials");
     let inventory_path = dir.join("inventory.parquet");
@@ -392,6 +466,125 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
     );
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn prefix_rollup_count_input_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int32, true),
+        Field::new("b", DataType::Int32, true),
+        Field::new("y", DataType::Int32, true),
+    ]))
+}
+
+fn prefix_rollup_count_input_batch(schema: &Arc<Schema>) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::clone(schema),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(1), Some(1), Some(2), None, Some(2)])) as _,
+            Arc::new(Int32Array::from(vec![Some(10), Some(20), Some(10), Some(10), None])) as _,
+            Arc::new(Int32Array::from(vec![Some(5), None, Some(7), Some(9), Some(11)])) as _,
+        ],
+    )
+    .unwrap()
+}
+
+/// DataFusion output types of `a, b, COUNT(a), COUNT(y), SUM(y), MIN(y), MAX(y)`.
+fn prefix_rollup_count_output_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int32, true),
+        Field::new("b", DataType::Int32, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("c_a", DataType::Int64, false),
+        Field::new("c_y", DataType::Int64, false),
+        Field::new("s", DataType::Int64, true),
+        Field::new("mn", DataType::Int32, true),
+        Field::new("mx", DataType::Int32, true),
+    ]))
+}
+
+/// `SELECT a, b, COUNT(a), COUNT(y), SUM(y), MIN(y), MAX(y) ... GROUP BY ROLLUP(a, b)`, ordered
+/// by grouping id, `a` and `b` with NULLs last.
+fn prefix_rollup_count_plan(source: SourceNode, output_schema: &Arc<Schema>) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(source);
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("a"), Expr::column("b")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::Count, Expr::column("a"), "c_a"),
+                    AggregateExpr::new(AggregateFunction::Count, Expr::column("y"), "c_y"),
+                    AggregateExpr::new(AggregateFunction::Sum, Expr::column("y"), "s"),
+                    AggregateExpr::new(AggregateFunction::Min, Expr::column("y"), "mn"),
+                    AggregateExpr::new(AggregateFunction::Max, Expr::column("y"), "mx"),
+                ],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(
+                vec![vec![false, false], vec![false, true], vec![true, true]],
+                "__grouping_id",
+            )),
+            Arc::clone(output_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            aggregate,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("__grouping_id"), false, false),
+                SortExpr::new(Expr::column("a"), false, false),
+                SortExpr::new(Expr::column("b"), false, false),
+            ]),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
+}
+
+fn assert_prefix_rollup_count_schema(batch: &RecordBatch, output_schema: &Arc<Schema>) {
+    let actual = batch.schema().fields().iter().map(|field| field.data_type().clone()).collect::<Vec<_>>();
+    let expected = output_schema.fields().iter().map(|field| field.data_type().clone()).collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+/// `(a, b, grouping id, COUNT(a), COUNT(y), SUM(y), MIN(y), MAX(y))`.
+type PrefixRollupCountRow = (Option<i32>, Option<i32>, u32, i64, i64, Option<i64>, Option<i32>, Option<i32>);
+
+fn prefix_rollup_count_rows(batch: &RecordBatch) -> Vec<PrefixRollupCountRow> {
+    let grouping_ids = batch.column(2).as_any().downcast_ref::<UInt32Array>().unwrap();
+    let sums = int64_array(batch, 5);
+    (0..batch.num_rows())
+        .map(|row| {
+            let int32_value = |index: usize| {
+                let array = int32_array(batch, index);
+                (!array.is_null(row)).then(|| array.value(row))
+            };
+            (
+                int32_value(0),
+                int32_value(1),
+                grouping_ids.value(row),
+                int64_array(batch, 3).value(row),
+                int64_array(batch, 4).value(row),
+                (!sums.is_null(row)).then(|| sums.value(row)),
+                int32_value(6),
+                int32_value(7),
+            )
+        })
+        .collect()
+}
+
+/// SQL ROLLUP result for `prefix_rollup_count_input_batch`.
+fn expected_prefix_rollup_count_rows() -> Vec<PrefixRollupCountRow> {
+    vec![
+        (Some(1), Some(10), 0, 1, 1, Some(5), Some(5), Some(5)),
+        (Some(1), Some(20), 0, 1, 0, None, None, None),
+        (Some(2), Some(10), 0, 1, 1, Some(7), Some(7), Some(7)),
+        (Some(2), None, 0, 1, 1, Some(11), Some(11), Some(11)),
+        (None, Some(10), 0, 0, 1, Some(9), Some(9), Some(9)),
+        (Some(1), None, 1, 2, 1, Some(5), Some(5), Some(5)),
+        (Some(2), None, 1, 2, 2, Some(18), Some(7), Some(11)),
+        (None, None, 1, 0, 1, Some(9), Some(9), Some(9)),
+        (None, None, 3, 4, 4, Some(32), Some(5), Some(11)),
+    ]
 }
 
 fn rollup_avg_rows(batch: &RecordBatch) -> Vec<RollupAvgRow> {
