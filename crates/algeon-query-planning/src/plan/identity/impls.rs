@@ -595,7 +595,7 @@ stable_hash_fields! {
     GraphAlgorithmNode { inputs, spec }
     GraphAlgorithmSpec { algorithm, edge_columns, graph_options, edge_normalize_inserted, params, output_schema }
     GraphEdgeColumnBindings { source, destination, weight, edge_id }
-    GraphConstructionOptions { directed, renumber, policy }
+    GraphConstructionOptions { directed, renumber, policy, distinct_edge_pairs }
     GraphPageRankParams { alpha, epsilon, max_iterations }
     GraphPersonalizedPageRankParams { pagerank, personalization }
     GraphPageRankPersonalizationInput { input, vertex, value }
@@ -632,7 +632,7 @@ stable_hash_fields! {
     GraphForceAtlas2InitialPositionsInput { input, vertex, x, y }
     GraphVertexPairInput { input, first_column, second_column }
     GraphSimilarityParams { vertex_pairs }
-    EdgeNormalizeSpec { edge_columns, add_reverse, dedup, weight_combiner }
+    EdgeNormalizeSpec { edge_columns, add_reverse, dedup, weight_combiner, distinct_edge_pairs }
     GraphDegreesAllParams {}
     GraphInDegreesAllParams {}
     GraphOutDegreesAllParams {}

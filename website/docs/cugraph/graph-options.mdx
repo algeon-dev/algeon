@@ -93,6 +93,22 @@ The optimizer may skip the physical `EdgeNormalize` operator even when the
 selected policy is `python_cugraph`, but only when it can prove the input edge
 source is already canonical for the requested `directed` and edge-column shape.
 
+The planner proves that each `(src, dst)` pair appears once when the edge
+relation groups on `src` and `dst` (`SELECT DISTINCT src, dst` or
+`GROUP BY src, dst`), or reads one complete Parquet file whose footer carries
+the `algeon.graph.simple_directed_edge_topology` certificate. With that proof
+an unweighted `directed => true` call is canonical and `EdgeNormalize` is
+skipped. A weighted `directed => true` call keeps the step, which then has
+nothing to deduplicate.
+
+A `directed => false` call still needs the reversed edges, so `EdgeNormalize`
+stays in the plan and receives the proof. At run time it reads the minimum and
+maximum of `src` and `dst`. When the two ranges do not overlap, as in a
+user-to-item graph whose user ids are offset past the item ids, a reversed
+edge cannot repeat an input edge, and the step appends the reversed edges
+without deduplicating. Overlapping ranges, or a relation without the proof,
+take the full deduplication.
+
 With either construction policy, source and destination nulls are not valid
 graph edges and are dropped before libcugraph receives the edge list. Null
 weights or edge ids only drop rows when the planned algorithm consumes
@@ -139,7 +155,7 @@ FROM cugraph_louvain(
 );
 ```
 
-Look for both fields in the physical plan:
+Look for these fields in the physical plan:
 
 - `construction_policy=python_cugraph` means the SQL call requested
   Python-compatible construction semantics.
@@ -148,6 +164,8 @@ Look for both fields in the physical plan:
 - `construction_policy=python_cugraph` with `edge_normalize_inserted=false`
   means the optimizer proved the input is already canonical for the requested
   Python-compatible semantics.
+- `distinct_edge_pairs=true` means the planner proved that each `(src, dst)`
+  pair appears once.
 
 ## Reuse algorithm results
 

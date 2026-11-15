@@ -831,11 +831,20 @@ pub struct GraphConstructionOptions {
     pub renumber: bool,
     /// Edge-list normalization policy used before graph construction.
     pub policy: GraphConstructionPolicy,
+    /// Whether the planner proved that the edge input holds each
+    /// `(source, destination)` pair at most once. Normalization uses it to
+    /// skip deduplication that cannot remove a row.
+    pub distinct_edge_pairs: bool,
 }
 
 impl Default for GraphConstructionOptions {
     fn default() -> Self {
-        Self { directed: true, renumber: true, policy: GraphConstructionPolicy::PythonCugraph }
+        Self {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::PythonCugraph,
+            distinct_edge_pairs: false,
+        }
     }
 }
 

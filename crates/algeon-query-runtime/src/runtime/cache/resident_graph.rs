@@ -1274,7 +1274,12 @@ mod tests {
         let spec = GraphAlgorithmSpec::with_stable_schema(
             GraphAlgorithm::Bfs,
             GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphConstructionOptions {
+                directed: true,
+                renumber: true,
+                policy: GraphConstructionPolicy::RawLibcugraph,
+                distinct_edge_pairs: false,
+            },
             GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
         );
         descriptor.resident_key(&spec, GraphResidencyOrientation::Forward)

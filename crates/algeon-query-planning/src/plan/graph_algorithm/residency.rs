@@ -281,6 +281,8 @@ impl GraphEdgePreparationKey {
             return Self::None;
         }
         let normalize = EdgeNormalizeSpec::python_cugraph(spec.edge_columns.clone(), &spec.graph_options);
+        // `distinct_edge_pairs` only lets normalization skip a deduplication
+        // that removes no row; the normalized edge set is the same.
         Self::PythonCompatible {
             add_reverse: normalize.add_reverse,
             dedup: normalize.dedup,

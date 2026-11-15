@@ -23,7 +23,12 @@ pub(super) fn bfs_drops_null_edge_rows_before_graph_construction() {
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
     let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
@@ -111,7 +116,12 @@ pub(super) fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")).with_edge_id("edge_id"),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
     let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
@@ -196,7 +206,12 @@ pub(super) fn bfs_null_weight_does_not_drop_reachable_edges() {
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
     let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
@@ -285,7 +300,12 @@ pub(super) fn bfs_include_edge_ids_filters_edges() {
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>).with_edge_id("edge_id"),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
     let graph = builder.add_graph_algorithm(edges, vec![allowed], spec).unwrap();
@@ -384,7 +404,12 @@ pub(super) fn bfs_include_edges_relation_filters_by_source_destination() {
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
     let graph = builder.add_graph_algorithm(edges, vec![allowed], spec).unwrap();
@@ -465,7 +490,12 @@ pub(super) fn bfs_source_vertices_side_input_accepts_multiple_rows() {
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
     let graph = builder.add_graph_algorithm(edges, vec![sources], spec).unwrap();
@@ -545,7 +575,12 @@ pub(super) fn bfs_source_vertices_side_input_rejects_empty_source_set() {
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
     let graph = builder.add_graph_algorithm(edges, vec![sources], spec).unwrap();
@@ -640,7 +675,12 @@ pub(super) fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
     let graph = builder.add_graph_algorithm(edges, vec![sources, targets, allowed], spec).unwrap();
@@ -710,7 +750,12 @@ pub(super) fn bfs_target_predicate_keeps_raw_output_and_target_diagnostics() {
     let spec = GraphAlgorithmSpec::new(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         params,
         Arc::clone(&output_schema),
     );

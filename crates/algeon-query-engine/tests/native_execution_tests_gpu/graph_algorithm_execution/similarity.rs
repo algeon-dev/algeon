@@ -32,7 +32,12 @@ fn similarity_spec_for_pair_columns_and_vertex_type(
     graph_spec_for_vertex_type(
         algorithm,
         GraphEdgeColumnBindings::new("src", "dst", with_weight.then_some("weight")),
-        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::PythonCugraph },
+        GraphConstructionOptions {
+            directed: false,
+            renumber: true,
+            policy: GraphConstructionPolicy::PythonCugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
             SIMILARITY_PAIR_INPUT_ORDINAL,
             first_column,

@@ -88,6 +88,8 @@ pub(super) fn native_graph_spec_for_residency(
             } else {
                 GraphConstructionPolicy::RawLibcugraph
             },
+            // Resident graph keys leave this fact out; see `GraphEdgePreparationKey`.
+            distinct_edge_pairs: false,
         },
         algorithm.definition().default_params(),
     )

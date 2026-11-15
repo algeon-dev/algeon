@@ -34,7 +34,7 @@ use parquet::{
 use query_engine::exec::admit_query_plan;
 use query_planning::{
     admission::AttemptCapabilityEvidence,
-    expr::{Expr, SortExpr, SortSpec},
+    expr::{AggregateSpec, BinaryOp, Expr, LiteralValue, SortExpr, SortSpec},
     mode::StatisticalAggregateExecutionMode,
     plan::{NodeId, PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
     policy::PlanningPolicy,
@@ -770,6 +770,7 @@ fn bfs_vertices_gpu_plan_normalizes_native_schema_before_decode_projection_and_l
                 predicate_row_upper_bounds: Vec::new(),
                 result_options: CugraphResultPlanOptions::new(projection.clone(), limit),
                 edge_normalize_inserted: false,
+                distinct_edge_pairs: false,
                 edge_row_upper_bound: Some(3),
                 edge_vertex_upper_bound: Some(5),
             })
@@ -803,6 +804,7 @@ fn logical_bfs_path_gpu_plan_decodes_the_bounded_path_schema() {
         predicate_row_upper_bounds: vec![Some(1)],
         result_options: CugraphResultPlanOptions::default(),
         edge_normalize_inserted: false,
+        distinct_edge_pairs: false,
         edge_row_upper_bound: Some(3),
         edge_vertex_upper_bound: None,
     })
@@ -950,6 +952,7 @@ fn string_pagerank_plan_restores_subsumed_top_k_order_after_decode() {
         predicate_row_upper_bounds: [].to_vec(),
         result_options: result_options.clone(),
         edge_normalize_inserted: false,
+        distinct_edge_pairs: false,
         edge_row_upper_bound: None,
         edge_vertex_upper_bound: None,
     })
@@ -1013,6 +1016,7 @@ fn memory_cap_remedy_covers_only_the_string_vertex_mapping_nodes() {
         predicate_row_upper_bounds: Vec::new(),
         result_options,
         edge_normalize_inserted: false,
+        distinct_edge_pairs: false,
         edge_row_upper_bound: None,
         edge_vertex_upper_bound: None,
     })
@@ -1071,6 +1075,7 @@ fn memory_cap_remedy_covers_only_the_string_vertex_mapping_nodes() {
         predicate_row_upper_bounds: Vec::new(),
         result_options: CugraphResultPlanOptions::default(),
         edge_normalize_inserted: false,
+        distinct_edge_pairs: false,
         edge_row_upper_bound: Some(3),
         edge_vertex_upper_bound: None,
     })
@@ -1105,6 +1110,7 @@ fn m1_string_algorithms_share_the_int64_codebook_and_vertex_decode_path() {
             predicate_row_upper_bounds: [].to_vec(),
             result_options: CugraphResultPlanOptions::default(),
             edge_normalize_inserted: false,
+            distinct_edge_pairs: false,
             edge_row_upper_bound: Some(3),
             edge_vertex_upper_bound: None,
         })
@@ -1155,6 +1161,7 @@ fn legacy_int32_algorithms_map_int64_and_string_vertices_through_an_int32_codebo
                 predicate_row_upper_bounds: Vec::new(),
                 result_options: CugraphResultPlanOptions::default(),
                 edge_normalize_inserted: false,
+                distinct_edge_pairs: false,
                 edge_row_upper_bound: Some(3),
                 edge_vertex_upper_bound: None,
             };
@@ -1235,6 +1242,7 @@ fn m3_string_selectors_lower_to_encoded_native_side_inputs_and_decode_identity_o
             predicate_row_upper_bounds: [].to_vec(),
             result_options: CugraphResultPlanOptions::default(),
             edge_normalize_inserted: false,
+            distinct_edge_pairs: false,
             edge_row_upper_bound: Some(3),
             edge_vertex_upper_bound: None,
         })
@@ -2297,6 +2305,112 @@ async fn simple_directed_footer_omits_python_edge_normalization_only_for_the_pro
         !exec.edge_normalize_inserted(),
         "the source certificate proves the directed Python normalization is a no-op"
     );
+}
+
+/// The planner's distinct-pair fact reaches the `EdgeNormalize` spec for an
+/// undirected call, whose reverse expansion keeps the step in the plan. A
+/// bound weight does not change the fact; a plain scan proves nothing.
+#[tokio::test]
+async fn distinct_edge_subquery_marks_undirected_edge_normalization_with_distinct_pairs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edges.parquet");
+    let simple_directed_path = dir.path().join("simple_directed_edges.parquet");
+    write_edge_parquet(&path);
+    write_simple_directed_edge_parquet(&simple_directed_path);
+    let mut spec = pagerank_spec();
+    spec.graph_options.directed = false;
+    spec.graph_options.construction_policy = CugraphGraphConstructionPolicy::PythonCugraph;
+
+    for (edges, sql, has_weight, distinct_edge_pairs) in [
+        (&path, "SELECT DISTINCT src, dst FROM edges", false, true),
+        (&path, "SELECT src, dst FROM edges GROUP BY src, dst", false, true),
+        (&simple_directed_path, "SELECT src, dst, weight FROM edges", true, true),
+        (&path, "SELECT src, dst FROM edges", false, false),
+        (&path, "SELECT src, dst, weight FROM edges", true, false),
+    ] {
+        spec.has_weight = has_weight;
+        let edge_source = datafusion_parquet_edge_source_sql(edges, sql).await;
+        let exec = CugraphAlgoExec::try_new(
+            spec.clone(),
+            edge_source,
+            vec![],
+            None,
+            None,
+            AlgeonNativeExecutionConfig::default(),
+        )
+        .expect("undirected edge source should plan");
+        let plan = cugraph_schema_query_plan(&exec.plan_definition()).expect("graph plan should build");
+        let normalize = plan
+            .nodes()
+            .iter()
+            .find_map(|node| match &node.kind {
+                PlanNode::EdgeNormalize(normalize) => Some(&normalize.spec),
+                _ => None,
+            })
+            .expect("an undirected Python-compatible call normalizes its edges");
+        assert_eq!(normalize.distinct_edge_pairs, distinct_edge_pairs, "{sql}");
+    }
+}
+
+/// A lowered native edge producer proves distinct pairs through the plan's
+/// own uniqueness keys, as a DataFusion aggregate does. The source offset sits
+/// below the aggregate, as `SELECT DISTINCT src + 1000 AS src, dst` lowers.
+/// An undirected call keeps `EdgeNormalize` and marks it; a directed call
+/// needs no normalization. A producer without the proof marks nothing.
+#[test]
+fn native_edge_producer_proves_distinct_pairs_through_its_aggregate_keys() {
+    let config = AlgeonNativeExecutionConfig::default();
+    let endpoint_fields = || vec![Field::new("src", DataType::Int64, false), Field::new("dst", DataType::Int64, false)];
+    let distinct = native_edge_source_with_root(vec![100], &config, |builder, source| {
+        let offset = Expr::binary(Expr::column("src"), BinaryOp::Add, Expr::literal(LiteralValue::Int64(1000)));
+        let shifted = builder
+            .add_projection(
+                source,
+                vec![
+                    ProjectionOutput::new(offset, endpoint_fields()[0].clone()),
+                    ProjectionOutput::new(Expr::column("dst"), endpoint_fields()[1].clone()),
+                ],
+            )
+            .unwrap();
+        builder
+            .add_aggregate(
+                shifted,
+                AggregateSpec::new(vec![Expr::column("src"), Expr::column("dst")], Vec::new()),
+                Arc::new(Schema::new(endpoint_fields())),
+            )
+            .unwrap()
+    });
+    let plain = native_edge_source_with_root(vec![100], &config, |builder, source| {
+        builder
+            .add_projection(
+                source,
+                endpoint_fields()
+                    .into_iter()
+                    .map(|field| ProjectionOutput::new(Expr::column(field.name()), field))
+                    .collect(),
+            )
+            .unwrap()
+    });
+    let mut spec = pagerank_spec();
+    spec.has_weight = false;
+    spec.graph_options.construction_policy = CugraphGraphConstructionPolicy::PythonCugraph;
+
+    for (label, directed, edge_source, distinct_edge_pairs) in [
+        ("undirected aggregate", false, Arc::clone(&distinct), Some(true)),
+        ("directed aggregate", true, distinct, None),
+        ("undirected projection", false, plain, Some(false)),
+    ] {
+        spec.graph_options.directed = directed;
+        let exec = CugraphAlgoExec::try_new(spec.clone(), edge_source, vec![], None, None, config.clone())
+            .expect("native edge producer should plan");
+        let plan = cugraph_schema_query_plan(&exec.plan_definition()).expect("graph plan should build");
+        let normalize = plan.nodes().iter().find_map(|node| match &node.kind {
+            PlanNode::EdgeNormalize(normalize) => Some(normalize.spec.distinct_edge_pairs),
+            _ => None,
+        });
+        assert_eq!(normalize, distinct_edge_pairs, "{label}");
+        assert_eq!(exec.edge_normalize_inserted(), distinct_edge_pairs.is_some(), "{label}");
+    }
 }
 
 #[tokio::test]
