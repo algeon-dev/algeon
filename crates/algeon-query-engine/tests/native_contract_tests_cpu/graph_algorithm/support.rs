@@ -4,7 +4,12 @@ pub(super) fn graph_residency_bfs_spec(edge_columns: GraphEdgeColumnBindings) ->
     GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         edge_columns,
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(7, None))),
     )
 }

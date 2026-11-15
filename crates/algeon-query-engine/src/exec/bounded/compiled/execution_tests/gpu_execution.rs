@@ -1,16 +1,19 @@
+use arrow::array::Float64Array;
 #[cfg(feature = "cugraph")]
 use cudf::testing::device_copy::device_to_device_copy_count_for_test;
 use cudf::{DataFrame as CudfDataFrame, testing::run_named_cases};
 #[cfg(feature = "cugraph")]
 use query_planning::plan::{
     GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBetweennessSeeds,
-    GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphPageRankParams,
-    graph_result_schema_for_vertex_type,
+    GraphConstructionPolicy, GraphPageRankParams, graph_result_schema_for_vertex_type,
 };
 use query_planning::{
     admission::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     error::QueryErrorCode,
     pipeline::SortStrategy,
+    plan::{
+        EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, GraphConstructionOptions, GraphEdgeColumnBindings,
+    },
 };
 use query_runtime::{
     observability::{RuntimeObservationPayload, RuntimeTopologyRecord},
@@ -1130,8 +1133,12 @@ fn graph_statistics_sizing_avoids_unused_work_and_counts_distinct_endpoint_union
         Field::new("src", DataType::Int64, false),
         Field::new("dst", DataType::Int64, false),
     ]));
-    let graph_options =
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph };
+    let graph_options = GraphConstructionOptions {
+        directed: true,
+        renumber: true,
+        policy: GraphConstructionPolicy::RawLibcugraph,
+        distinct_edge_pairs: false,
+    };
     let params = GraphAlgorithmParams::PageRank(GraphPageRankParams::default());
     let pagerank = GraphAlgorithmSpec::new(
         GraphAlgorithm::PageRank,
@@ -1691,4 +1698,335 @@ fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() 
     assert!(!rendered.contains("BoundedJoinExecutionFamily"));
     assert!(!rendered.contains("BoundedJoinExecutionPath"));
     assert!(!rendered.contains("bounded_join_execution_path"));
+}
+
+/// One edge row: source, destination, weight and edge id.
+type EdgeRow = (i64, i64, Option<f64>, Option<i64>);
+
+struct EdgeNormalizeCase {
+    directed: bool,
+    distinct_edge_pairs: bool,
+    weighted: bool,
+    edge_ids: bool,
+    vertex_type: DataType,
+    rows: Vec<EdgeRow>,
+}
+
+impl EdgeNormalizeCase {
+    /// An unweighted case ignores the weights in `rows`.
+    fn new(directed: bool, weighted: bool, mut rows: Vec<EdgeRow>) -> Self {
+        if !weighted {
+            rows.iter_mut().for_each(|row| row.2 = None);
+        }
+        Self { directed, distinct_edge_pairs: false, weighted, edge_ids: true, vertex_type: DataType::Int64, rows }
+    }
+
+    /// Drops the edge-id column, and with it the edge ids in `rows`.
+    fn without_edge_ids(mut self) -> Self {
+        self.edge_ids = false;
+        self.rows.iter_mut().for_each(|row| row.3 = None);
+        self
+    }
+
+    fn spec(&self) -> EdgeNormalizeSpec {
+        let mut edge_columns = GraphEdgeColumnBindings::new("src", "dst", self.weighted.then_some("weight"));
+        if self.edge_ids {
+            edge_columns = edge_columns.with_edge_id("edge_id");
+        }
+        EdgeNormalizeSpec::python_cugraph(
+            edge_columns,
+            &GraphConstructionOptions {
+                directed: self.directed,
+                distinct_edge_pairs: self.distinct_edge_pairs,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// The Python-compatible result: reversed rows appended for an undirected
+    /// graph, then for each pair the first or last row of a stable sort by
+    /// source, destination and, for a minimum-weight combiner, weight with
+    /// nulls last.
+    fn expected(&self) -> Vec<EdgeRow> {
+        let spec = self.spec();
+        let mut rows = self.rows.clone();
+        if spec.add_reverse {
+            rows.extend(
+                self.rows.iter().map(|&(source, destination, weight, edge_id)| (destination, source, weight, edge_id)),
+            );
+        }
+        rows.sort_by(|left, right| {
+            (left.0, left.1).cmp(&(right.0, right.1)).then_with(|| {
+                if spec.weight_combiner != EdgeWeightCombiner::MinWeight {
+                    return std::cmp::Ordering::Equal;
+                }
+                match (left.2, right.2) {
+                    (Some(left), Some(right)) => left.partial_cmp(&right).expect("test weights are not NaN"),
+                    (left, right) => left.is_none().cmp(&right.is_none()),
+                }
+            })
+        });
+        let kept = rows
+            .chunk_by(|left, right| (left.0, left.1) == (right.0, right.1))
+            .map(|group| match spec.dedup {
+                EdgeDedupStrategy::KeepFirst => group[0],
+                EdgeDedupStrategy::KeepLast => group[group.len() - 1],
+                EdgeDedupStrategy::None => unreachable!("python_cugraph always deduplicates"),
+            })
+            .collect();
+        sorted_edge_rows(kept)
+    }
+
+    fn execute(&self, runtime: &Arc<suite_backend::Runtime>) -> Vec<EdgeRow> {
+        let mut fields = vec![
+            Field::new("src", self.vertex_type.clone(), false),
+            Field::new("dst", self.vertex_type.clone(), false),
+        ];
+        let vertices = |values: Vec<i64>| -> ArrayRef {
+            match self.vertex_type {
+                DataType::Int32 => Arc::new(Int32Array::from(
+                    values.into_iter().map(|value| i32::try_from(value).unwrap()).collect::<Vec<_>>(),
+                )),
+                _ => Arc::new(Int64Array::from(values)),
+            }
+        };
+        let mut columns = vec![
+            vertices(self.rows.iter().map(|row| row.0).collect()),
+            vertices(self.rows.iter().map(|row| row.1).collect()),
+        ];
+        if self.weighted {
+            fields.push(Field::new("weight", DataType::Float64, true));
+            columns.push(Arc::new(Float64Array::from(self.rows.iter().map(|row| row.2).collect::<Vec<_>>())));
+        }
+        if self.edge_ids {
+            fields.push(Field::new("edge_id", DataType::Int64, false));
+            columns.push(Arc::new(Int64Array::from(self.rows.iter().map(|row| row.3.unwrap()).collect::<Vec<_>>())));
+        }
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), columns).expect("edge literal batch");
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+        let normalize = builder.add_edge_normalize(source, self.spec()).unwrap();
+        let plan = builder.finish_with_host_sink(normalize).unwrap();
+        let context = runtime.acquire_context_for_plan(&plan).expect("edge plan acquires a context");
+        let result = execute_query_plan(&context, &plan).expect("edge normalization should execute");
+        let QueryOutput::HostArrow(output) = result.output() else {
+            panic!("host sink should materialize one RecordBatch");
+        };
+        let vertex_values = |column: usize| -> Vec<i64> {
+            match self.vertex_type {
+                DataType::Int32 => {
+                    int32_values(output, column).into_iter().map(|value| i64::from(value.unwrap())).collect()
+                },
+                _ => int64_values(output, column).into_iter().map(Option::unwrap).collect(),
+            }
+        };
+        let weights = if self.weighted {
+            let array = output.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+            (0..array.len()).map(|row| array.is_valid(row).then(|| array.value(row))).collect()
+        } else {
+            vec![None; output.num_rows()]
+        };
+        let edge_ids =
+            if self.edge_ids { int64_values(output, output.num_columns() - 1) } else { vec![None; output.num_rows()] };
+        sorted_edge_rows(
+            vertex_values(0)
+                .into_iter()
+                .zip(vertex_values(1))
+                .zip(weights)
+                .zip(edge_ids)
+                .map(|(((source, destination), weight), edge_id)| (source, destination, weight, edge_id))
+                .collect(),
+        )
+    }
+
+    fn assert_matches_python_cugraph(&self, runtime: &Arc<suite_backend::Runtime>, label: &str) {
+        assert_eq!(self.execute(runtime), self.expected(), "{label}");
+    }
+}
+
+fn edge_normalize_runtime() -> Arc<suite_backend::Runtime> {
+    shared_runtime(suite_backend::Runtime::new().expect("edge normalization GPU test requires a CUDA runtime"))
+}
+
+fn sorted_edge_rows(mut rows: Vec<EdgeRow>) -> Vec<EdgeRow> {
+    rows.sort_by_key(|row| (row.0, row.1, row.3));
+    rows
+}
+
+/// Ids spanning more than 32 bits, negative ids and the Int64 limits cannot
+/// share one 64-bit key. `(0, 5)` and `(2^32, 5)` stay apart, which a key
+/// that drops source bits above 32 would merge.
+fn edge_normalize_deduplicates_ids_too_wide_to_pack() {
+    let runtime = edge_normalize_runtime();
+    let rows = vec![
+        (i64::MIN, i64::MAX, None, Some(0)),
+        (i64::MAX, i64::MIN, None, Some(1)),
+        (i64::MIN, i64::MAX, None, Some(2)),
+        (0, 5, None, Some(3)),
+        (1_i64 << 32, 5, None, Some(4)),
+        (-1, -1, None, Some(5)),
+        (-(1_i64 << 40), 1_i64 << 40, None, Some(6)),
+    ];
+    EdgeNormalizeCase::new(false, false, rows.clone()).assert_matches_python_cugraph(&runtime, "undirected Int64");
+    EdgeNormalizeCase::new(true, false, rows).assert_matches_python_cugraph(&runtime, "directed Int64");
+    let two_pow_32 = vec![(0, 0, None, Some(0)), (1_i64 << 32, 0, None, Some(1)), (0, 0, None, Some(2))];
+    EdgeNormalizeCase::new(true, false, two_pow_32).assert_matches_python_cugraph(&runtime, "span of exactly 2^32");
+}
+
+/// Int32 ids from `i32::MIN` to `i32::MAX` span `2^32 - 1`, the widest range
+/// that still packs. Their offsets overflow an Int32 subtraction.
+fn edge_normalize_packs_int32_ids_spanning_the_whole_type() {
+    let runtime = edge_normalize_runtime();
+    let rows = vec![
+        (i64::from(i32::MIN), i64::from(i32::MAX), None, Some(0)),
+        (i64::from(i32::MAX), i64::from(i32::MIN), None, Some(1)),
+        (i64::from(i32::MAX), i64::from(i32::MAX), None, Some(2)),
+        (-1, 0, None, Some(3)),
+        (0, -1, None, Some(4)),
+        (i64::from(i32::MIN), i64::from(i32::MAX), None, Some(5)),
+    ];
+    let mut case = EdgeNormalizeCase::new(false, false, rows);
+    case.vertex_type = DataType::Int32;
+    case.assert_matches_python_cugraph(&runtime, "undirected Int32");
+}
+
+/// An undirected graph keeps the minimum weight of each pair after reverse
+/// expansion. Nulls sort after every weight, a pair with only null weights
+/// keeps a null, and equal minimums keep the earlier row.
+fn edge_normalize_keeps_the_first_minimum_weight_with_nulls_last() {
+    let runtime = edge_normalize_runtime();
+    let rows = vec![
+        (1, 2, Some(5.0), Some(0)),
+        (2, 1, Some(3.0), Some(1)),
+        (1, 2, None, Some(2)),
+        (3, 4, None, Some(3)),
+        (4, 3, None, Some(4)),
+        (5, 6, Some(2.0), Some(5)),
+        (6, 5, Some(2.0), Some(6)),
+        (5, 6, Some(2.0), Some(7)),
+        (7, 7, Some(1.0), Some(8)),
+        (8, 9, None, Some(9)),
+        (9, 8, Some(4.0), Some(10)),
+    ];
+    EdgeNormalizeCase::new(false, true, rows).assert_matches_python_cugraph(&runtime, "undirected weighted");
+}
+
+/// A directed weighted graph keeps the last duplicate row in input order.
+fn edge_normalize_keeps_the_last_directed_weighted_row() {
+    let runtime = edge_normalize_runtime();
+    let rows = vec![
+        (1, 2, Some(5.0), Some(0)),
+        (1, 2, Some(1.0), Some(1)),
+        (2, 1, Some(7.0), Some(2)),
+        (1, 2, None, Some(3)),
+        (3, 3, Some(2.0), Some(4)),
+        (3, 3, Some(9.0), Some(5)),
+    ];
+    EdgeNormalizeCase::new(true, true, rows).assert_matches_python_cugraph(&runtime, "directed weighted");
+}
+
+/// Distinct input pairs still need deduplication after reverse expansion when
+/// the source and destination ranges overlap: `(1, 2)` meets the reverse of
+/// `(2, 1)`. In the second input the ranges `[0, 5]` and `[5, 9]` share only
+/// the value 5, and the self loop `(5, 5)` meets its own reverse.
+fn edge_normalize_deduplicates_distinct_pairs_whose_ranges_overlap() {
+    let runtime = edge_normalize_runtime();
+    let crossing = vec![(1, 2, Some(4.0), Some(0)), (2, 1, Some(3.0), Some(1)), (0, 7, Some(1.0), Some(2))];
+    let touching = vec![(0, 5, Some(2.0), Some(0)), (5, 5, None, Some(1)), (3, 9, Some(1.0), Some(2))];
+    for (label, rows) in [("crossing", crossing), ("touching", touching)] {
+        for weighted in [false, true] {
+            let mut case = EdgeNormalizeCase::new(false, weighted, rows.clone());
+            case.distinct_edge_pairs = true;
+            case.assert_matches_python_cugraph(&runtime, &format!("{label} weighted={weighted}"));
+        }
+    }
+}
+
+/// Distinct input pairs whose source and destination ranges are disjoint
+/// normalize to the input plus its reversed rows.
+fn edge_normalize_appends_reverse_edges_to_distinct_pairs_with_disjoint_ranges() {
+    let runtime = edge_normalize_runtime();
+    let rows = vec![
+        (100, 1, Some(2.0), Some(0)),
+        (100, 2, None, Some(1)),
+        (101, 1, Some(1.0), Some(2)),
+        (102, 0, Some(3.0), Some(3)),
+    ];
+    for (directed, weighted) in [(false, false), (false, true), (true, true)] {
+        let mut case = EdgeNormalizeCase::new(directed, weighted, rows.clone());
+        case.distinct_edge_pairs = true;
+        case.assert_matches_python_cugraph(&runtime, &format!("directed={directed} weighted={weighted}"));
+    }
+}
+
+/// Without weight or edge-id columns the packed key is the whole frame. The
+/// duplicates include a repeated pair, a pair that meets a reversed edge and a
+/// self loop, for both vertex types.
+fn edge_normalize_deduplicates_endpoint_only_edges() {
+    let runtime = edge_normalize_runtime();
+    let rows = vec![
+        (3, 1, None, None),
+        (1, 3, None, None),
+        (3, 1, None, None),
+        (2, 2, None, None),
+        (-4, 7, None, None),
+        (7, -4, None, None),
+        (0, 1, None, None),
+    ];
+    for (vertex_type, directed) in
+        [(DataType::Int64, false), (DataType::Int64, true), (DataType::Int32, false), (DataType::Int32, true)]
+    {
+        let mut case = EdgeNormalizeCase::new(directed, false, rows.clone()).without_edge_ids();
+        case.vertex_type = vertex_type.clone();
+        case.assert_matches_python_cugraph(&runtime, &format!("{vertex_type} directed={directed}"));
+    }
+}
+
+fn edge_normalize_returns_no_rows_for_an_empty_input() {
+    let runtime = edge_normalize_runtime();
+    for distinct_edge_pairs in [false, true] {
+        let mut case = EdgeNormalizeCase::new(false, true, Vec::new());
+        case.distinct_edge_pairs = distinct_edge_pairs;
+        case.assert_matches_python_cugraph(&runtime, &format!("distinct_edge_pairs={distinct_edge_pairs}"));
+    }
+}
+
+#[test]
+fn edge_normalize_cases() {
+    run_named_cases(&[
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_deduplicates_ids_too_wide_to_pack",
+            edge_normalize_deduplicates_ids_too_wide_to_pack,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_packs_int32_ids_spanning_the_whole_type",
+            edge_normalize_packs_int32_ids_spanning_the_whole_type,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_keeps_the_first_minimum_weight_with_nulls_last",
+            edge_normalize_keeps_the_first_minimum_weight_with_nulls_last,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_keeps_the_last_directed_weighted_row",
+            edge_normalize_keeps_the_last_directed_weighted_row,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_deduplicates_distinct_pairs_whose_ranges_overlap",
+            edge_normalize_deduplicates_distinct_pairs_whose_ranges_overlap,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_appends_reverse_edges_to_distinct_pairs_with_disjoint_ranges",
+            edge_normalize_appends_reverse_edges_to_distinct_pairs_with_disjoint_ranges,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_deduplicates_endpoint_only_edges",
+            edge_normalize_deduplicates_endpoint_only_edges,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_returns_no_rows_for_an_empty_input",
+            edge_normalize_returns_no_rows_for_an_empty_input,
+        ),
+    ]);
 }

@@ -22,7 +22,12 @@ pub(super) fn betweenness_with_explicit_seeds_records_approximate_metadata() {
     let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
             seeds: Some(GraphBetweennessSeeds::I64(vec![0, 2])),
             ..Default::default()
@@ -80,7 +85,12 @@ pub(super) fn betweenness_k_selects_deterministic_approximate_seed_count() {
     let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
             k: Some(2),
             ..Default::default()
@@ -135,7 +145,12 @@ pub(super) fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
     let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
             exact_vertex_threshold: 1,
             ..Default::default()
@@ -190,7 +205,12 @@ pub(super) fn bounded_exact_betweenness_above_threshold_is_refused_before_graph_
     let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
             exact_vertex_threshold: 1,
             ..Default::default()
@@ -278,6 +298,7 @@ pub(super) fn betweenness_k_resolves_to_sorted_first_vertices() {
                     directed: true,
                     renumber: true,
                     policy: GraphConstructionPolicy::RawLibcugraph,
+                    distinct_edge_pairs: false,
                 },
                 GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
                     k: Some(2),
@@ -349,7 +370,12 @@ pub(super) fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bo
     let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
             exact_vertex_threshold: 3,
             ..Default::default()

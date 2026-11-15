@@ -670,6 +670,7 @@ fn compositional_edge_normalize_plan() -> (QueryPlan, NodeId) {
                 add_reverse: false,
                 dedup: EdgeDedupStrategy::KeepLast,
                 weight_combiner: EdgeWeightCombiner::None,
+                distinct_edge_pairs: false,
             },
         )
         .unwrap();
@@ -783,6 +784,7 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
                 add_reverse: false,
                 dedup: EdgeDedupStrategy::KeepLast,
                 weight_combiner: EdgeWeightCombiner::None,
+                distinct_edge_pairs: false,
             },
         )
         .unwrap();

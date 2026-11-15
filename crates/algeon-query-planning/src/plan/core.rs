@@ -2,13 +2,18 @@
 //! [`PlanNode`]. The DAG is append-only and ends at an explicit
 //! [`ResultSink`]; native execution is GPU-resident until the sink chooses
 //! otherwise.
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    sync::Arc,
+};
 
 use super::{
     AggregateNode, EdgeNormalizeNode, FilterNode, GraphAlgorithmNode, JoinNode, LimitNode, MlAlgorithmNode, NodeRemap,
     PlanFacts, ProjectionNode, ResultSink, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode, VectorAlgorithmNode,
     WindowNode, compact_reachable_nodes,
     graph::{check_node_order, validated_plan_parts},
+    uniqueness::partial_plan_node_is_unique_on,
 };
 use crate::{
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute},
@@ -344,6 +349,13 @@ impl QueryPlan {
     /// node positions are part of the plan contract and must remain stable.
     pub fn nodes(&self) -> &[QueryNode] {
         &self.nodes
+    }
+
+    /// Returns whether the engine-owned output facts prove the root's rows
+    /// distinct on `columns`, by the same derivation as
+    /// [`crate::plan::QueryPlanBuilder::output_is_unique_on`].
+    pub fn root_output_is_unique_on(&self, columns: &BTreeSet<String>) -> bool {
+        partial_plan_node_is_unique_on(&self.nodes, self.root_id(), columns)
     }
 
     /// Returns the node for `id` when it is in range.

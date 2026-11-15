@@ -194,6 +194,7 @@ impl CugraphAlgoExec {
             predicate_row_upper_bounds: vec![None; predicate_sources.len()],
             result_options: result_options.clone(),
             edge_normalize_inserted,
+            distinct_edge_pairs: edge_source_canonical_facts.distinct_edge_pairs(),
             edge_row_upper_bound: input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound,
         })?;
@@ -246,6 +247,10 @@ impl CugraphAlgoExec {
 
     pub(crate) fn edge_normalize_inserted(&self) -> bool {
         cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts)
+    }
+
+    fn distinct_edge_pairs(&self) -> bool {
+        self.edge_source_canonical_facts.distinct_edge_pairs()
     }
 
     pub(crate) fn coverage_algorithm_name(&self) -> &'static str {
@@ -318,6 +323,7 @@ impl CugraphAlgoExec {
             &input_row_bounds,
             &self.result_options,
             self.edge_normalize_inserted(),
+            self.distinct_edge_pairs(),
             &self.native_execution_config,
             task_context,
         )?;
@@ -357,6 +363,7 @@ impl CugraphAlgoExec {
             &prelogical_row_bounds,
             &prepared.result_options,
             prepared.edge_normalize_inserted(),
+            prepared.distinct_edge_pairs(),
             &prepared.native_execution_config,
         )?;
         check_host_staging_cancellation(&cancellation)?;
@@ -416,6 +423,7 @@ impl CugraphAlgoExec {
         let native_spec = native_graph_spec_for_placement_hint(
             &self.spec,
             edge_normalize_inserted,
+            self.distinct_edge_pairs(),
             &self.predicate_sources,
             &self.edge_source.schema(),
         )?
@@ -1128,6 +1136,7 @@ impl CugraphAlgoExec {
             predicate_row_upper_bounds: self.input_row_bounds.predicate_row_upper_bounds().to_vec(),
             result_options: self.result_options.clone(),
             edge_normalize_inserted: self.edge_normalize_inserted(),
+            distinct_edge_pairs: self.distinct_edge_pairs(),
             edge_row_upper_bound: self.input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound: edge_source_graph_vertex_estimate(
                 self.edge_source.as_ref(),
@@ -1173,7 +1182,7 @@ impl DisplayAs for CugraphAlgoExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "CugraphAlgoExec: algorithm={:?}, src_col={}, dst_col={}, weight_col={}, edge_id_col={}, predicate_source_count={}, construction_policy={}, edge_normalize_inserted={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
+                "CugraphAlgoExec: algorithm={:?}, src_col={}, dst_col={}, weight_col={}, edge_id_col={}, predicate_source_count={}, construction_policy={}, edge_normalize_inserted={}, distinct_edge_pairs={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
                 self.spec.algorithm,
                 CUGRAPH_EDGE_SOURCE_COLUMN,
                 CUGRAPH_EDGE_DESTINATION_COLUMN,
@@ -1182,6 +1191,7 @@ impl DisplayAs for CugraphAlgoExec {
                 self.predicate_sources.len(),
                 self.spec.graph_options.construction_policy.as_str(),
                 self.edge_normalize_inserted(),
+                self.distinct_edge_pairs(),
                 self.gpu_result_input_name,
             ),
             DisplayFormatType::TreeRender => {
@@ -1193,6 +1203,7 @@ impl DisplayAs for CugraphAlgoExec {
                 writeln!(f, "predicate_source_count={}", self.predicate_sources.len())?;
                 writeln!(f, "construction_policy={}", self.spec.graph_options.construction_policy.as_str())?;
                 writeln!(f, "edge_normalize_inserted={}", self.edge_normalize_inserted())?;
+                writeln!(f, "distinct_edge_pairs={}", self.distinct_edge_pairs())?;
                 writeln!(f, "output_boundary=device_resident_or_device_to_host")?;
                 writeln!(f, "gpu_result_input={}", self.gpu_result_input_name)
             },

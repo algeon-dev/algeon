@@ -1000,6 +1000,17 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     .await
     .unwrap();
     ctx.sql(
+        "CREATE VIEW unkeyed_aggregate_over_canonical_edges AS \
+         SELECT MAX(src) AS src, MAX(dst) AS dst \
+         FROM canonical_directed_edges \
+         GROUP BY src % 3",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    ctx.sql(
         "CREATE VIEW filtered_reverse_expansion_edges AS \
          SELECT src, dst \
          FROM ( \
@@ -1142,8 +1153,23 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let aggregate_over_canonical_display =
         displayable(aggregate_over_canonical_plan.as_ref()).indent(false).to_string();
     assert!(
-        aggregate_over_canonical_display.contains("edge_normalize_inserted=true"),
-        "non-edge-preserving aggregate must not inherit stale canonical facts:\n{aggregate_over_canonical_display}"
+        aggregate_over_canonical_display.contains("edge_normalize_inserted=false"),
+        "GROUP BY src makes each src, and so each (src, dst) pair, appear once:\n{aggregate_over_canonical_display}"
+    );
+
+    let unkeyed_aggregate_df = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM unkeyed_aggregate_over_canonical_edges)) \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let unkeyed_aggregate_plan = unkeyed_aggregate_df.create_physical_plan().await.unwrap();
+    let unkeyed_aggregate_display = displayable(unkeyed_aggregate_plan.as_ref()).indent(false).to_string();
+    assert!(
+        unkeyed_aggregate_display.contains("edge_normalize_inserted=true"),
+        "an aggregate whose group key is not projected must not inherit stale canonical facts:\n{unkeyed_aggregate_display}"
     );
 
     let filtered_reverse_df = ctx

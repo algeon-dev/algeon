@@ -18,6 +18,13 @@ pub struct EdgeNormalizeSpec {
     pub dedup: EdgeDedupStrategy,
     /// Duplicate-weight conflict policy.
     pub weight_combiner: EdgeWeightCombiner,
+    /// Whether the input holds each `(source, destination)` pair at most
+    /// once, as proven by the planner. Without reverse edges there is then
+    /// nothing to deduplicate. With reverse edges, deduplication still runs
+    /// unless the source and destination value ranges are disjoint, because
+    /// only overlapping ranges let a reversed edge or a self loop repeat a
+    /// pair.
+    pub distinct_edge_pairs: bool,
 }
 
 impl EdgeNormalizeSpec {
@@ -29,7 +36,13 @@ impl EdgeNormalizeSpec {
             (true, true) => (EdgeDedupStrategy::KeepLast, EdgeWeightCombiner::KeepLastInputOrder),
             (false, true) => (EdgeDedupStrategy::KeepFirst, EdgeWeightCombiner::MinWeight),
         };
-        Self { edge_columns, add_reverse: !graph_options.directed, dedup, weight_combiner }
+        Self {
+            edge_columns,
+            add_reverse: !graph_options.directed,
+            dedup,
+            weight_combiner,
+            distinct_edge_pairs: graph_options.distinct_edge_pairs,
+        }
     }
 }
 

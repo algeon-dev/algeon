@@ -43,6 +43,7 @@ pub(super) fn cugraph_execution_config_after_staging(
     input_row_bounds: &CugraphInputRowBounds,
     result_options: &CugraphResultPlanOptions,
     edge_normalize_inserted: bool,
+    distinct_edge_pairs: bool,
     default_execution_config: &AlgeonNativeExecutionConfig,
     task_context: &TaskContext,
 ) -> Result<(AlgeonNativeExecutionConfig, QueryPlan)> {
@@ -67,6 +68,7 @@ pub(super) fn cugraph_execution_config_after_staging(
         input_row_bounds,
         result_options,
         edge_normalize_inserted,
+        distinct_edge_pairs,
         execution_config,
         task_context,
     )
@@ -80,6 +82,7 @@ fn compile_cugraph_admission_ticket(
     input_row_bounds: &CugraphInputRowBounds,
     result_options: &CugraphResultPlanOptions,
     edge_normalize_inserted: bool,
+    distinct_edge_pairs: bool,
     execution_config: AlgeonNativeExecutionConfig,
     task_context: &TaskContext,
 ) -> Result<(AlgeonNativeExecutionConfig, QueryPlan)> {
@@ -95,6 +98,7 @@ fn compile_cugraph_admission_ticket(
         predicate_row_upper_bounds: input_row_bounds.predicate_row_upper_bounds().to_vec(),
         result_options: result_options.clone(),
         edge_normalize_inserted,
+        distinct_edge_pairs,
         edge_row_upper_bound,
         edge_vertex_upper_bound: edge_source_graph_vertex_estimate(
             edge_source,
@@ -165,6 +169,7 @@ fn compile_cugraph_admission_ticket(
     Ok((execution_config, graph_execution_plan))
 }
 
+#[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
 pub(super) fn validate_cugraph_graph_owner_preflight(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
@@ -172,6 +177,7 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
     input_row_bounds: &CugraphInputRowBounds,
     result_options: &CugraphResultPlanOptions,
     edge_normalize_inserted: bool,
+    distinct_edge_pairs: bool,
     execution_config: &AlgeonNativeExecutionConfig,
 ) -> Result<()> {
     if execution_config.query_admission_source().is_none() {
@@ -184,6 +190,7 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
         predicate_row_upper_bounds: input_row_bounds.predicate_row_upper_bounds().to_vec(),
         result_options: result_options.clone(),
         edge_normalize_inserted,
+        distinct_edge_pairs,
         edge_row_upper_bound: input_row_bounds.edge_row_upper_bound(),
         edge_vertex_upper_bound: edge_source_graph_vertex_estimate(
             edge_source,

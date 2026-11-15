@@ -6,7 +6,12 @@ fn graph_residency_descriptor_sees_through_edge_projection() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::PageRank,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
     );
 
@@ -141,7 +146,12 @@ fn graph_residency_descriptor_ignores_unconsumed_weight_without_python_normaliza
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(7, None))),
     );
 
@@ -184,7 +194,12 @@ fn planned_resident_graph_key_matches_cached_execution_or_bypasses() {
     let pagerank = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::PageRank,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
     );
     let pagerank_descriptor = graph_keyable_descriptor(&plan, &pagerank);
@@ -206,7 +221,12 @@ fn planned_resident_graph_key_matches_cached_execution_or_bypasses() {
     let bfs_include_edges = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<String>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(include_edges_params)),
     );
     let include_edges_descriptor =
@@ -320,7 +340,12 @@ fn graph_residency_descriptor_bypasses_unstable_identity_and_scan_limit() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<String>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(7, None))),
     );
 

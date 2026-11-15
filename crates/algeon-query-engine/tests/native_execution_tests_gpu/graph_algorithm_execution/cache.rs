@@ -28,7 +28,12 @@ pub(super) fn source_alias_residency_does_not_preserve_graph_residency_descripto
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
     let mut builder = QueryPlanBuilder::new();

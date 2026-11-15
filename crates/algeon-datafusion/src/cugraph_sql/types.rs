@@ -262,6 +262,7 @@ impl CugraphGraphOptions {
             directed: self.directed,
             renumber: self.renumber,
             policy: self.construction_policy.to_native(),
+            distinct_edge_pairs: false,
         }
     }
 

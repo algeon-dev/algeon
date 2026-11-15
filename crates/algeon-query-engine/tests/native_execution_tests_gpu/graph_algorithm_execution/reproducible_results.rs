@@ -20,7 +20,12 @@ fn run_vertex_keyed_algorithm(
     let spec = int32_graph_spec(
         algorithm,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions {
+            directed,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            distinct_edge_pairs: false,
+        },
         params,
     );
     let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();

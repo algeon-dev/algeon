@@ -45,6 +45,7 @@ pub(super) struct CugraphPlanDefinition {
     pub(super) predicate_row_upper_bounds: Vec<Option<u64>>,
     pub(super) result_options: CugraphResultPlanOptions,
     pub(super) edge_normalize_inserted: bool,
+    pub(super) distinct_edge_pairs: bool,
     pub(super) edge_row_upper_bound: Option<u64>,
     pub(super) edge_vertex_upper_bound: Option<u64>,
 }
@@ -181,6 +182,7 @@ pub(super) fn cugraph_query_plan_with_vertex_mapping(
         predicate_row_upper_bounds,
         result_options,
         edge_normalize_inserted,
+        distinct_edge_pairs,
         edge_row_upper_bound,
         edge_vertex_upper_bound,
     } = definition.clone();
@@ -247,6 +249,7 @@ pub(super) fn cugraph_query_plan_with_vertex_mapping(
     let graph_spec = native_graph_spec(
         &execution_spec,
         edge_normalize_inserted,
+        distinct_edge_pairs,
         graph_predicates.len(),
         bfs_path_output_rows,
         native_vertex_type,
@@ -342,6 +345,7 @@ pub(super) fn bind_predicate_gpu_inputs(
 pub(super) fn native_graph_spec(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
+    distinct_edge_pairs: bool,
     predicate_count: usize,
     bfs_path_output_rows: Option<u64>,
     vertex_type: &DataType,
@@ -374,6 +378,7 @@ pub(super) fn native_graph_spec(
                     },
                 }
             },
+            distinct_edge_pairs,
         },
         params,
         output_schema,
@@ -383,12 +388,21 @@ pub(super) fn native_graph_spec(
 pub(super) fn native_graph_spec_for_placement_hint(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
+    distinct_edge_pairs: bool,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
     edge_schema: &SchemaRef,
 ) -> Option<GraphAlgorithmSpec> {
     let vertex_type = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN).ok()?.data_type();
-    matches!(vertex_type, DataType::Int32 | DataType::Int64)
-        .then(|| native_graph_spec(spec, edge_normalize_inserted, predicate_sources.len(), None, vertex_type))
+    matches!(vertex_type, DataType::Int32 | DataType::Int64).then(|| {
+        native_graph_spec(
+            spec,
+            edge_normalize_inserted,
+            distinct_edge_pairs,
+            predicate_sources.len(),
+            None,
+            vertex_type,
+        )
+    })
 }
 
 fn bfs_path_output_row_bound(
@@ -797,6 +811,7 @@ mod tests {
             predicate_row_upper_bounds,
             result_options,
             edge_normalize_inserted: false,
+            distinct_edge_pairs: false,
             edge_row_upper_bound: None,
             edge_vertex_upper_bound: None,
         };
@@ -856,6 +871,7 @@ mod tests {
             predicate_row_upper_bounds: Vec::new(),
             result_options: CugraphResultPlanOptions::default(),
             edge_normalize_inserted: false,
+            distinct_edge_pairs: false,
             edge_row_upper_bound: Some(5),
             edge_vertex_upper_bound: Some(11),
         };

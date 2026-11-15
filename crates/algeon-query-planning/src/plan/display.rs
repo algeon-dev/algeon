@@ -215,7 +215,7 @@ impl QueryNode {
             ),
             PlanNode::EdgeNormalize(node) => writeln!(
                 f,
-                "{padding}{} EdgeNormalize input={} src_col={} dst_col={} weight_col={} edge_id_col={} add_reverse={} dedup={} weight_combiner={}",
+                "{padding}{} EdgeNormalize input={} src_col={} dst_col={} weight_col={} edge_id_col={} add_reverse={} dedup={} weight_combiner={} distinct_edge_pairs={}",
                 self.id,
                 node.input,
                 node.spec.edge_columns.source,
@@ -225,6 +225,7 @@ impl QueryNode {
                 node.spec.add_reverse,
                 node.spec.dedup,
                 node.spec.weight_combiner,
+                node.spec.distinct_edge_pairs,
             ),
             PlanNode::GraphAlgorithm(node) => writeln!(
                 f,

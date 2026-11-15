@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use datafusion::physical_expr::PhysicalExpr;
 use query_planning::plan::edge_plan_has_simple_directed_edge_topology;
@@ -13,12 +13,19 @@ use crate::native::{ParquetReadStrategyConfig, datafusion_local_parquet_scan_has
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct CugraphEdgeCanonicalFacts {
     add_reverse_present: bool,
-    dedup_present: bool,
+    /// The edge relation holds each `(src, dst)` pair at most once. Every
+    /// source of this fact proves it from the endpoint columns alone, so it
+    /// also holds when a weight column is bound.
+    distinct_edge_pairs: bool,
 }
 
 impl CugraphEdgeCanonicalFacts {
+    pub(super) fn distinct_edge_pairs(self) -> bool {
+        self.distinct_edge_pairs
+    }
+
     fn satisfies_python_options(self, spec: &CugraphAlgorithmSpec) -> bool {
-        self.dedup_present && !spec.has_weight && (spec.graph_options.directed || self.add_reverse_present)
+        self.distinct_edge_pairs && !spec.has_weight && (spec.graph_options.directed || self.add_reverse_present)
     }
 }
 
@@ -65,17 +72,23 @@ pub(super) fn cugraph_edge_canonical_facts(
             source_reads,
         )
     {
-        return CugraphEdgeCanonicalFacts { dedup_present: true, ..Default::default() };
+        return CugraphEdgeCanonicalFacts { distinct_edge_pairs: true, ..Default::default() };
     }
 
+    // Native sources take their unique keys from DataFusion table
+    // constraints. The footer certificate is a separate proof and does not
+    // populate them.
     if let Some(native_plan) = super::admission::lowered_native_edge_plan(plan)
-        && edge_plan_has_simple_directed_edge_topology(
+        && (edge_plan_has_simple_directed_edge_topology(
             native_plan,
             CUGRAPH_EDGE_SOURCE_COLUMN,
             CUGRAPH_EDGE_DESTINATION_COLUMN,
-        )
+        ) || native_plan.root_output_is_unique_on(&BTreeSet::from([
+            CUGRAPH_EDGE_SOURCE_COLUMN.to_owned(),
+            CUGRAPH_EDGE_DESTINATION_COLUMN.to_owned(),
+        ])))
     {
-        return CugraphEdgeCanonicalFacts { dedup_present: true, ..Default::default() };
+        return CugraphEdgeCanonicalFacts { distinct_edge_pairs: true, ..Default::default() };
     }
 
     CugraphEdgeCanonicalFacts::default()
@@ -132,7 +145,7 @@ pub(super) fn aggregate_edge_dedup_facts(
         return CugraphEdgeCanonicalFacts::default();
     }
 
-    CugraphEdgeCanonicalFacts { dedup_present: true, add_reverse_present: input_facts.add_reverse_present }
+    CugraphEdgeCanonicalFacts { distinct_edge_pairs: true, add_reverse_present: input_facts.add_reverse_present }
 }
 
 pub(super) fn union_has_reverse_edge_expansion(union: &UnionExec, spec: &CugraphAlgorithmSpec) -> bool {
