@@ -11,7 +11,8 @@ use super::GraphPredicateInput;
 pub struct GraphPageRankParams {
     /// Finite damping factor in [0, 1]; the default is 0.85.
     pub alpha: f64,
-    /// Positive convergence tolerance; the default is 1e-5.
+    /// Non-negative convergence tolerance; the default is 1e-5. Zero runs
+    /// exactly `max_iterations` iterations.
     pub epsilon: f64,
     /// Positive iteration cap; the default is 100.
     pub max_iterations: u32,

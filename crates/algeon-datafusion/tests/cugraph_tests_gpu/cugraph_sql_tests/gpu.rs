@@ -1350,6 +1350,13 @@ fn gpu_cases_1() {
                 .expect("case runtime")
                 .block_on(cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end())
         }),
+        ("cugraph_sql_gpu_pagerank_epsilon_zero_runs_every_iteration", || {
+            TestRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("case runtime")
+                .block_on(cugraph_sql_gpu_pagerank_epsilon_zero_runs_every_iteration())
+        }),
     ]);
 }
 
@@ -1918,6 +1925,29 @@ async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absen
     assert_eq!(algeon.code(), ErrorCode::RapidsInvalidInput);
     assert_eq!(algeon.fact_value("algorithm"), Some("jaccard"));
     assert_eq!(algeon.fact_value("input_role"), Some("vertex_pairs"));
+}
+
+async fn cugraph_sql_gpu_pagerank_epsilon_zero_runs_every_iteration() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    // Undirected, these edges form a 4-cycle. The uniform start vector is its
+    // PageRank fixed point, so the default tolerance stops below the cap and
+    // only a zero tolerance reaches it.
+    register_directed_bfs_edges(&ctx, "cycle_edges");
+
+    for (epsilon, expected) in [("", "converged=true"), (", epsilon => 0", "converged=false,iterations=7")] {
+        let sql = format!(
+            "SELECT vertex, value FROM cugraph_pagerank(\
+               edges => (SELECT src, dst FROM cycle_edges), directed => false, max_iterations => 7{epsilon})"
+        );
+        let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
+        let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4, "{sql}");
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
+        assert_eq!(metrics.graph_runtime_rows.len(), 1, "{sql}");
+        let metadata = &metrics.graph_runtime_rows[0].algorithm_metadata;
+        assert!(metadata.contains(expected), "{sql}: {metadata}");
+    }
 }
 
 async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {

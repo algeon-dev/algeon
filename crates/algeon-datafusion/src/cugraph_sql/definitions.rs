@@ -571,8 +571,7 @@ const ARG_KATZ_ALPHA: CugraphArgumentDefinition = value_arg(
 // libcugraph accepts epsilon = 0, but eigenvector, Katz and HITS test a sum of
 // absolute differences against a bound proportional to epsilon. At zero that
 // test never passes, so the call burns `max_iterations` of GPU work and then
-// fails. PageRank shares the descriptor; at zero it runs every iteration
-// without converging.
+// fails.
 const ARG_EPSILON: CugraphArgumentDefinition = value_arg(
     "epsilon",
     CugraphArgumentType::Float64,
@@ -581,6 +580,18 @@ const ARG_EPSILON: CugraphArgumentDefinition = value_arg(
     Some(CugraphValueRange::MinExclusiveF64(0.0)),
     EMPTY_ALLOWED,
     "positive convergence tolerance",
+);
+// PageRank stops when the summed absolute score change is below epsilon and
+// returns its scores when it does not converge. No change is below zero, so
+// zero runs exactly `max_iterations` iterations.
+const ARG_PAGERANK_EPSILON: CugraphArgumentDefinition = value_arg(
+    "epsilon",
+    CugraphArgumentType::Float64,
+    false,
+    CugraphDefaultValue::Native(CugraphNativeDefault::Epsilon),
+    Some(CugraphValueRange::MinInclusiveF64(0.0)),
+    EMPTY_ALLOWED,
+    "convergence tolerance; 0 runs all max_iterations iterations",
 );
 const ARG_MAX_ITERATIONS: CugraphArgumentDefinition = value_arg(
     "max_iterations",
@@ -1013,8 +1024,15 @@ const fn match_value(definition: CugraphArgumentDefinition) -> CugraphValueDefin
     }
 }
 
-const PAGERANK_ARGUMENTS: &[CugraphArgumentDefinition] =
-    &[ARG_EDGES, ARG_DIRECTED, ARG_RENUMBER, ARG_CONSTRUCTION_POLICY, ARG_ALPHA, ARG_EPSILON, ARG_MAX_ITERATIONS];
+const PAGERANK_ARGUMENTS: &[CugraphArgumentDefinition] = &[
+    ARG_EDGES,
+    ARG_DIRECTED,
+    ARG_RENUMBER,
+    ARG_CONSTRUCTION_POLICY,
+    ARG_ALPHA,
+    ARG_PAGERANK_EPSILON,
+    ARG_MAX_ITERATIONS,
+];
 const PERSONALIZED_PAGERANK_ARGUMENTS: &[CugraphArgumentDefinition] = &[
     ARG_EDGES,
     ARG_DIRECTED,
@@ -1022,7 +1040,7 @@ const PERSONALIZED_PAGERANK_ARGUMENTS: &[CugraphArgumentDefinition] = &[
     ARG_CONSTRUCTION_POLICY,
     ARG_PERSONALIZATION,
     ARG_ALPHA,
-    ARG_EPSILON,
+    ARG_PAGERANK_EPSILON,
     ARG_MAX_ITERATIONS,
 ];
 const BFS_ARGUMENTS: &[CugraphArgumentDefinition] = &[

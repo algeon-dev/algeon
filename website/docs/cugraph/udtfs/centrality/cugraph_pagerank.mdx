@@ -47,7 +47,7 @@ Every `edge_id` column must have the integer type of `src` and `dst`; string-key
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `alpha` | `number` | `0.85` | min 0; max 1 | PageRank damping factor in [0, 1] |
-| `epsilon` | `number` | `0.00001` | &gt; 0 | positive convergence tolerance |
+| `epsilon` | `number` | `0.00001` | min 0 | convergence tolerance; 0 runs all max_iterations iterations |
 | `max_iterations` | `integer` | `100` | min 1; max 4294967295 | maximum iteration count, at least 1 |
 
 ### Graph construction options
