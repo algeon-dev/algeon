@@ -2,9 +2,10 @@ use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
 use algeon_datafusion::{
     cugraph_sql::{
-        CUGRAPH_BFS_FUNCTION, CUGRAPH_ECG_FUNCTION, CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION,
-        CUGRAPH_PAGERANK_FUNCTION, CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION, CUGRAPH_SSSP_FUNCTION,
-        CugraphSqlConfig,
+        CUGRAPH_BFS_FUNCTION, CUGRAPH_ECG_FUNCTION, CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_HITS_FUNCTION,
+        CUGRAPH_KATZ_CENTRALITY_FUNCTION, CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_PAGERANK_FUNCTION,
+        CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION, CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION,
+        CUGRAPH_SSSP_FUNCTION, CugraphSqlConfig,
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
@@ -330,6 +331,25 @@ async fn cugraph_community_descriptors_state_the_native_ranges() {
     let louvain = describe(&ctx, CUGRAPH_LOUVAIN_FUNCTION).await.options_schema;
     assert_eq!(advertised(&louvain, "threshold", "minimum"), Some(0.0));
     assert_eq!(advertised(&louvain, "threshold", "maximum"), None);
+}
+
+/// PageRank returns its scores when it does not converge, so `epsilon => 0`
+/// requests exactly `max_iterations` iterations. Eigenvector centrality, Katz
+/// centrality and HITS fail a call that does not converge, and at zero their
+/// convergence test never passes. The descriptors must say so.
+#[tokio::test]
+async fn cugraph_epsilon_admits_zero_only_for_pagerank() {
+    let ctx = cugraph_context();
+    for function in [CUGRAPH_PAGERANK_FUNCTION, CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION] {
+        let schema = describe(&ctx, function).await.options_schema;
+        assert_eq!(advertised(&schema, "epsilon", "minimum"), Some(0.0), "{function}");
+        assert_eq!(advertised(&schema, "epsilon", "exclusiveMinimum"), None, "{function}");
+    }
+    for function in [CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_KATZ_CENTRALITY_FUNCTION, CUGRAPH_HITS_FUNCTION] {
+        let schema = describe(&ctx, function).await.options_schema;
+        assert_eq!(advertised(&schema, "epsilon", "exclusiveMinimum"), Some(0.0), "{function}");
+        assert_eq!(advertised(&schema, "epsilon", "minimum"), None, "{function}");
+    }
 }
 
 /// libcugraph ignores Leiden's `theta`, so the SQL surface does not offer it.
