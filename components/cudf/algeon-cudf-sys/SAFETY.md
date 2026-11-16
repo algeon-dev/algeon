@@ -19,10 +19,11 @@ Callers must still keep every owned input alive until the documented operation
 and any submitted GPU work finish. Parent/child or retained-resource lifetime
 rules in the relevant C header are part of the ABI contract.
 
-`cudf_ordered_unique_indices_ex` borrows an INT32 row permutation whose indices
-are valid for its input table. The safe prepared-sort API owns that permutation.
-The operation returns owning indices into the original table; its boundary
-predicate compares adjacent positions through the borrowed permutation.
+`cudf_ordered_unique_indices_ex` and `cudf_ordered_unique_indices_by_value_ex`
+borrow an INT32 row permutation whose indices are valid for their input table.
+The safe prepared-sort API owns that permutation. Both operations return owning
+indices into the original table and compare rows through the borrowed
+permutation.
 
 `cudf_column_view_slice_ex` returns an owning view handle that borrows the
 source column storage, including its children. Retain the source storage until

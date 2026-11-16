@@ -140,23 +140,70 @@ impl DataFramePreparedSort {
         ctx: Exec<'_>,
     ) -> Result<DataFrame> {
         let operation = "dataframe::prepared_sort::materialize_drop_consecutive_duplicates";
+        self.materialize_ordered_selection(opts.subset, ctx, operation, |input, row_order, keys, execution| {
+            stream_compaction::ordered_unique_indices_impl(input, row_order, keys, opts.keep, execution)
+        })
+    }
+
+    /// Materialize one row for each run of equal keys in the prepared order.
+    /// Equal keys must already be adjacent in that order, and null and NaN keys
+    /// compare equal.
+    ///
+    /// Within a run, rows rank by `value`, which must not be a nested column,
+    /// in the order of a stable ascending sort with nulls last. NaN ranks
+    /// above every number and below null, `-0.0` ties with `0.0`, and tied
+    /// rows keep their prepared order.
+    /// [`DuplicateKeepOption::KeepFirst`] keeps the first row of that ranking
+    /// and [`DuplicateKeepOption::KeepLast`] the last; other keep options are
+    /// rejected. For a stable prepared sort, the rows equal those of preparing
+    /// the sort with `value` as an extra last key, ascending with nulls last,
+    /// and calling [`Self::materialize_drop_consecutive_duplicates`]. The
+    /// prepared row order is released before gathering retained payload rows.
+    pub fn materialize_drop_consecutive_duplicates_by_value(
+        self,
+        opts: DropDuplicatesOptions,
+        value: &str,
+        ctx: Exec<'_>,
+    ) -> Result<DataFrame> {
+        let operation = "dataframe::prepared_sort::materialize_drop_consecutive_duplicates_by_value";
+        let value_index = resolve_column_names(&self.input.columns, &[value], operation)?[0];
+        self.materialize_ordered_selection(opts.subset, ctx, operation, |input, row_order, keys, execution| {
+            stream_compaction::ordered_unique_indices_by_value_impl(
+                input,
+                row_order,
+                keys,
+                value_index,
+                opts.keep,
+                execution,
+            )
+        })
+    }
+
+    /// Gathers the rows `select` picks from the input in the prepared order.
+    /// An empty `subset` selects with every column as a key.
+    fn materialize_ordered_selection(
+        self,
+        subset: Vec<String>,
+        ctx: Exec<'_>,
+        operation: &'static str,
+        select: impl FnOnce(&TableView<'_>, &ColumnView<'_>, &[usize], StreamCompactionExecution<'_>) -> Result<Column>,
+    ) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(&self.input.domain)?;
         let execution = ResolvedExecution::with_output_domain(
             Arc::clone(&output_domain),
             [&self.input.domain, self.sorted_order.as_column().execution_domain()],
             operation,
         )?;
-        let subset = if opts.subset.is_empty() { self.input.column_names_owned() } else { opts.subset };
+        let subset = if subset.is_empty() { self.input.column_names_owned() } else { subset };
         let subset_refs = subset.iter().map(String::as_str).collect::<Vec<_>>();
         let key_indices = resolve_column_names(&self.input.columns, &subset_refs, operation)?;
         let selected = {
             let input = self.input.build_table_view()?;
             let row_order = self.sorted_order.view()?;
-            let selected = stream_compaction::ordered_unique_indices_impl(
+            let selected = select(
                 &input,
                 &row_order,
                 &key_indices,
-                opts.keep,
                 StreamCompactionExecution::new(&output_domain, execution.exec_options(), operation),
             )?;
             Series::from_column(selected)?

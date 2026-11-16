@@ -448,6 +448,105 @@ fn test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties() {
     }
 }
 
+/// Asserts that selecting by `weight` within each run of `keys` keeps the rows
+/// that sorting by `keys` and then `weight` keeps, for both weight widths.
+fn assert_unique_by_value_matches_weight_as_last_sort_key(
+    keys: &[&str],
+    key_columns: &[(&str, Vec<i64>)],
+    weights: &[Option<f64>],
+) {
+    let ids = (0..i32::try_from(weights.len()).unwrap()).collect::<Vec<_>>();
+    let stable = SortOptions::new().with_stable(true);
+    let narrowed = weights.iter().map(|weight| weight.map(|value| value as f32)).collect::<Vec<_>>();
+    for weight in [series_opt("weight", weights).unwrap(), series_opt("weight", &narrowed).unwrap()] {
+        let mut columns = key_columns
+            .iter()
+            .map(|(name, values)| (name.to_string(), series(*name, values).unwrap()))
+            .collect::<Vec<_>>();
+        columns.push(("weight".to_string(), weight));
+        columns.push(("id".to_string(), series("id", &ids).unwrap()));
+        let df = DataFrame::from_series(columns).unwrap();
+        let mut sort_by = keys.to_vec();
+        sort_by.push("weight");
+        for keep in [DuplicateKeepOption::KeepFirst, DuplicateKeepOption::KeepLast] {
+            let dedup = DropDuplicatesOptions::builder().subset(keys).keep(keep).build();
+            let expected = df
+                .on(Exec::RETAINED)
+                .prepare_sort_values(sort_by.clone(), stable.clone())
+                .unwrap()
+                .materialize_drop_consecutive_duplicates(dedup.clone(), Exec::RETAINED)
+                .unwrap();
+            let actual = df
+                .on(Exec::RETAINED)
+                .prepare_sort_values(keys, stable.clone())
+                .unwrap()
+                .materialize_drop_consecutive_duplicates_by_value(dedup, "weight", Exec::RETAINED)
+                .unwrap();
+            assert_eq!(actual.column_names(), df.column_names());
+            assert_i32_column_eq(&actual, &expected, "id");
+        }
+    }
+}
+
+fn test_prepared_sort_unique_by_value_keeps_the_rows_of_the_value_as_last_sort_key() {
+    let (nan, inf) = (f64::NAN, f64::INFINITY);
+    let runs: &[&[Option<f64>]] = &[
+        &[Some(2.0), Some(1.0), Some(1.0), Some(3.0), Some(3.0)],
+        &[None, Some(5.0), None],
+        &[None, None, None],
+        &[Some(nan), Some(inf), Some(nan), Some(-inf)],
+        &[Some(nan), None, Some(nan), None],
+        &[Some(0.0), Some(-0.0), Some(0.0)],
+        &[Some(-0.0), Some(0.0), Some(-0.0)],
+        &[Some(3.0), Some(1.0), Some(2.0)],
+        &[Some(3.0), Some(2.0), Some(1.0)],
+        &[Some(1.0)],
+    ];
+    // Runs interleave in the input, and their (src, dst) order differs from
+    // their listing order, so the prepared order is not the input order.
+    let (mut src, mut dst, mut weights) = (Vec::new(), Vec::new(), Vec::new());
+    for position in 0..5 {
+        for (run, values) in runs.iter().enumerate().rev() {
+            if let Some(&weight) = values.get(position) {
+                src.push(i64::try_from(run % 4).unwrap());
+                dst.push(i64::try_from(run / 4).unwrap());
+                weights.push(weight);
+            }
+        }
+    }
+    assert_unique_by_value_matches_weight_as_last_sort_key(&["src", "dst"], &[("src", src), ("dst", dst)], &weights);
+
+    // Two interleaved runs of 2^19 rows each span many reduction tiles. Each
+    // holds its least weight and its nulls at several positions, none of
+    // them first or last in the run.
+    let rows = 1_usize << 20;
+    let key = (0..rows).map(|row| i64::try_from(row % 2).unwrap()).collect::<Vec<_>>();
+    let weights =
+        (0..rows).map(|row| (row % 4099 != 7).then(|| ((row + 500) * 7919 % 1000) as f64)).collect::<Vec<_>>();
+    assert_unique_by_value_matches_weight_as_last_sort_key(&["key"], &[("key", key)], &weights);
+
+    assert_unique_by_value_matches_weight_as_last_sort_key(&["key"], &[("key", Vec::new())], &[]);
+
+    let df = DataFrame::from_series([
+        ("key", series("key", &[0i64, 0]).unwrap()),
+        ("weight", series("weight", &[1.0f64, 0.0]).unwrap()),
+    ])
+    .unwrap();
+    for keep in [DuplicateKeepOption::KeepAny, DuplicateKeepOption::KeepNone] {
+        let err = df
+            .on(Exec::RETAINED)
+            .prepare_sort_values(["key"], SortOptions::new().with_stable(true))
+            .unwrap()
+            .materialize_drop_consecutive_duplicates_by_value(
+                DropDuplicatesOptions::builder().subset(&["key"][..]).keep(keep).build(),
+                "weight",
+                Exec::RETAINED,
+            )
+            .expect_err("only first and last retention rank rows by value");
+        assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument, "{keep:?}");
+    }
+}
+
 fn test_prepared_sort_unique_gathers_only_retained_payload_under_cap() {
     let rows = 262_144usize;
     let mut columns = vec![
@@ -760,6 +859,10 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "dataframe_sort_values_tests::test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties",
         test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties,
+    ),
+    (
+        "dataframe_sort_values_tests::test_prepared_sort_unique_by_value_keeps_the_rows_of_the_value_as_last_sort_key",
+        test_prepared_sort_unique_by_value_keeps_the_rows_of_the_value_as_last_sort_key,
     ),
     (
         "dataframe_sort_values_tests::test_prepared_sort_unique_gathers_only_retained_payload_under_cap",

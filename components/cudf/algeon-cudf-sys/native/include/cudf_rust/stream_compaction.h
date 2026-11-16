@@ -84,6 +84,24 @@ cudf_status_t cudf_ordered_unique_indices_ex(cudf_table_view_handle input,
                                     cudf_column_handle* out,
                                     cudf_exec_options_t const* options);
 
+/// Return one row index for each run of equal key rows in a retained order.
+/// `row_order` must be a non-null INT32 permutation of the input row indices,
+/// and equal key rows must be adjacent in that order. Within a run, the rows
+/// are ranked by column `value_column`, which must not be nested, as
+/// libcudf's stable ascending sort with nulls last ranks them, ties in their
+/// order in `row_order`. `keep` must be KEEP_FIRST, which returns the first
+/// row of that ranking, or KEEP_LAST, which returns the last. Indices are
+/// returned in run order.
+/// All input handles and execution resources must remain alive through completion.
+cudf_status_t cudf_ordered_unique_indices_by_value_ex(cudf_table_view_handle input,
+                                                      cudf_column_view_handle row_order,
+                                                      int const* keys,
+                                                      int num_keys,
+                                                      int value_column,
+                                                      cudf_duplicate_keep_option_t keep,
+                                                      cudf_column_handle* out,
+                                                      cudf_exec_options_t const* options);
+
 #ifdef __cplusplus
 }
 #endif

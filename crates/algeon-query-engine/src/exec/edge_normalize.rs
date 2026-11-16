@@ -32,7 +32,9 @@ use super::{
 /// rows pack both columns over the union of the two ranges, because a reversed
 /// row holds a destination value in the source column. Other inputs sort the
 /// endpoint columns through libcudf's row comparator. `MinWeight` inputs sort
-/// the key or the endpoint columns together with the weight through it.
+/// the same columns, and a pass over each run of equal keys in the sorted
+/// order selects the row that the weight, as a further sort key, would place
+/// first or last.
 ///
 /// Peak device memory stays at or below that of the row-comparator sort of
 /// the expanded rows. For `n` rows after reverse expansion, that sort holds the
@@ -41,9 +43,12 @@ use super::{
 /// packed path drops the endpoint columns before sorting. With payload
 /// columns, its radix sort holds the 8-byte key and libcudf's 28-byte
 /// temporaries for an 8-byte key (index map, key copy, identity map and CUB's
-/// alternate key and index buffers). Without payload columns, the key is
-/// sorted by value: the key, its sorted copy and CUB's alternate key buffer
-/// take 24 bytes per row, and unpacking peaks at 32 (the kept keys, both
+/// alternate key and index buffers). Selecting the kept rows, by key alone or
+/// by weight, holds the key or endpoint columns, the 4-byte sorted order and
+/// a 4-byte kept-row map (16 or 24 bytes per row), plus CUB tile states of
+/// under one byte per row. Without payload columns, the key is sorted by
+/// value: the key, its sorted copy and CUB's alternate key buffer take 24
+/// bytes per row, and unpacking peaks at 32 (the kept keys, both
 /// endpoint columns and one 8-byte intermediate). Packing the input rows alone
 /// holds their endpoint columns and two 8-byte intermediates (32 bytes per
 /// row). Packing them with their reversed rows peaks at 24 bytes per expanded
@@ -392,7 +397,9 @@ fn unpacked_edge_rows(
 ///
 /// A frame that holds only one key column has identical duplicate rows, so
 /// it is sorted by value and collapsed with no row-index map or gather.
-/// Other frames sort an index map and gather the kept rows.
+/// Other frames sort an index map by `keys` and gather the kept rows. For
+/// `MinWeight`, a pass over each run of equal keys in that map selects the
+/// row that the weight would place first or last as the extra sort key.
 fn drop_duplicate_edges(
     frame: &DataFrame,
     spec: &EdgeNormalizeSpec,
@@ -429,14 +436,14 @@ fn drop_duplicate_edges(
         let sorted = frame.on(overrides).sort_values(keys, stable).map_err(sort_error)?;
         return sorted.on(overrides).drop_consecutive_duplicates(options).map_err(dedup_error);
     }
-    let mut sort_by = keys.to_vec();
-    if spec.weight_combiner == EdgeWeightCombiner::MinWeight
-        && let Some(weight) = spec.edge_columns.weight.as_deref()
-    {
-        sort_by.push(weight);
+    let prepared = frame.on(overrides).prepare_sort_values(keys, stable).map_err(sort_error)?;
+    match spec.edge_columns.weight.as_deref() {
+        Some(weight) if spec.weight_combiner == EdgeWeightCombiner::MinWeight => {
+            prepared.materialize_drop_consecutive_duplicates_by_value(options, weight, overrides)
+        },
+        _ => prepared.materialize_drop_consecutive_duplicates(options, overrides),
     }
-    let prepared = frame.on(overrides).prepare_sort_values(sort_by, stable).map_err(sort_error)?;
-    prepared.materialize_drop_consecutive_duplicates(options, overrides).map_err(dedup_error)
+    .map_err(dedup_error)
 }
 
 fn payload_columns(spec: &EdgeNormalizeSpec) -> impl Iterator<Item = &str> {

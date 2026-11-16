@@ -7,6 +7,7 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/detail/row_operator/equality.cuh>
+#include <cudf/detail/row_operator/lexicographic.cuh>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
 
@@ -14,6 +15,7 @@
 #include <rmm/exec_policy.hpp>
 #include <cuda/iterator>
 #include <thrust/copy.h>
+#include <thrust/reduce.h>
 
 #include <memory>
 #include <vector>
@@ -36,6 +38,38 @@ struct ordered_unique_boundary {
     return keep == CUDF_DUPLICATE_KEEP_OPTION_KEEP_NONE
       ? first && (position + 1 == size || !equal(order[position], order[position + 1]))
       : first;
+  }
+};
+
+template <typename RowEqual>
+struct ordered_key_equal {
+  RowEqual equal;
+
+  __device__ __noinline__ bool operator()(cudf::size_type left, cudf::size_type right) const
+  {
+    return equal(left, right);
+  }
+};
+
+// thrust::reduce_by_key combines the rows of a run in `row_order` order, with `left` before
+// `right`. Keeping the left row unless the right one ranks strictly lower is associative and
+// selects the row a stable sort places first; keeping the right row unless the left one ranks
+// strictly higher selects the row it places last.
+template <typename RowLess>
+struct ordered_value_extremum {
+  cudf::size_type size;
+  bool keep_last;
+  RowLess less;
+
+  __device__ __noinline__ cudf::size_type operator()(cudf::size_type left,
+                                                     cudf::size_type right) const
+  {
+    // thrust::reduce_by_key can pass operands that are not input values (rapidsai/cudf#9156,
+    // NVIDIA/thrust#1525); libcudf's arg-min operators bound them before reading rows.
+    if (left < 0 || left >= size) { return right; }
+    if (right < 0 || right >= size) { return left; }
+    if (keep_last) { return less(right, left) ? left : right; }
+    return less(right, left) ? right : left;
   }
 };
 }  // namespace
@@ -97,6 +131,94 @@ extern "C" cudf_status_t cudf_ordered_unique_indices_ex(cudf_table_view_handle i
       : select(comparator.equal_to<false>(cudf::nullate::DYNAMIC{cudf::has_nested_nulls(key_view)}, cudf::null_equality::EQUAL));
     auto result = std::make_unique<cudf::column>(cudf::data_type{cudf::type_id::INT32}, selected_size,
                                                 std::move(selected).release(), rmm::device_buffer{}, 0);
+    *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+extern "C" cudf_status_t cudf_ordered_unique_indices_by_value_ex(cudf_table_view_handle input,
+                                                                 cudf_column_view_handle row_order,
+                                                                 int const* keys,
+                                                                 int num_keys,
+                                                                 int value_column,
+                                                                 cudf_duplicate_keep_option_t keep,
+                                                                 cudf_column_handle* out,
+                                                                 cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  CUDF_RUST_NULL_CHECK(row_order, "row_order is null");
+  if (num_keys < 0) {
+    set_error("num_keys must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_keys > 0) { CUDF_RUST_NULL_CHECK(keys, "keys is null"); }
+  if (keep != CUDF_DUPLICATE_KEEP_OPTION_KEEP_FIRST &&
+      keep != CUDF_DUPLICATE_KEEP_OPTION_KEEP_LAST) {
+    set_error("keep must be KEEP_FIRST or KEEP_LAST");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  CUDF_RUST_TRY
+  {
+    auto const& view  = *reinterpret_cast<cudf::table_view*>(input);
+    auto const& order = *reinterpret_cast<cudf::column_view*>(row_order);
+    if (order.type().id() != cudf::type_id::INT32 || order.has_nulls() ||
+        order.size() != view.num_rows()) {
+      set_error("row_order must be a non-null INT32 permutation of the input rows");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto const value_view = cudf::table_view{{view.column(value_column)}};
+    if (cudf::detail::has_nested_columns(value_view)) {
+      set_error("value_column must not be a nested type");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto exec         = std::unique_ptr<cudf_exec_context>{};
+    auto const status = cudf_resolve_required_exec_options(options, &exec);
+    if (status != CUDF_SUCCESS) { return status; }
+    if (view.num_rows() == 0 || num_keys == 0) {
+      auto result = cudf::make_numeric_column(cudf::data_type{cudf::type_id::INT32},
+                                              0,
+                                              cudf::mask_state::UNALLOCATED,
+                                              exec->stream,
+                                              *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      return CUDF_SUCCESS;
+    }
+    auto const key_view       = view.select(std::vector<cudf::size_type>(keys, keys + num_keys));
+    auto const key_comparator = cudf::detail::row::equality::self_comparator(
+      cudf::detail::row::equality::preprocessed_table::create(key_view, exec->stream, *exec->mr));
+    auto const value_order      = std::vector{cudf::order::ASCENDING};
+    auto const value_null_order = std::vector{cudf::null_order::AFTER};
+    auto const value_comparator = cudf::detail::row::lexicographic::self_comparator(
+      value_view, value_order, value_null_order, exec->stream, *exec->mr);
+    auto const less =
+      value_comparator.less<false>(cudf::nullate::DYNAMIC{cudf::has_nested_nulls(value_view)});
+    auto selected     = rmm::device_uvector<cudf::size_type>(order.size(), exec->stream, *exec->mr);
+    auto const select = [&](auto equal) {
+      auto const end = thrust::reduce_by_key(
+        rmm::exec_policy(exec->stream, *exec->mr),
+        order.begin<cudf::size_type>(),
+        order.end<cudf::size_type>(),
+        order.begin<cudf::size_type>(),
+        cuda::make_discard_iterator(),
+        selected.begin(),
+        ordered_key_equal<decltype(equal)>{equal},
+        ordered_value_extremum<decltype(less)>{
+          view.num_rows(), keep == CUDF_DUPLICATE_KEEP_OPTION_KEEP_LAST, less});
+      return static_cast<cudf::size_type>(end.second - selected.begin());
+    };
+    auto const key_nulls = cudf::nullate::DYNAMIC{cudf::has_nested_nulls(key_view)};
+    auto const selected_size =
+      cudf::detail::has_nested_columns(key_view)
+        ? select(key_comparator.equal_to<true>(key_nulls, cudf::null_equality::EQUAL))
+        : select(key_comparator.equal_to<false>(key_nulls, cudf::null_equality::EQUAL));
+    auto result = std::make_unique<cudf::column>(cudf::data_type{cudf::type_id::INT32},
+                                                 selected_size,
+                                                 std::move(selected).release(),
+                                                 rmm::device_buffer{},
+                                                 0);
     *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     return CUDF_SUCCESS;
   }
