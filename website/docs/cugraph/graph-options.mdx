@@ -106,8 +106,10 @@ stays in the plan and receives the proof. At run time it reads the minimum and
 maximum of `src` and `dst`. When the two ranges do not overlap, as in a
 user-to-item graph whose user ids are offset past the item ids, a reversed
 edge cannot repeat an input edge, and the step appends the reversed edges
-without deduplicating. Overlapping ranges, or a relation without the proof,
-take the full deduplication.
+without deduplicating. Overlapping ranges take the full deduplication of the
+input and reversed edges. A relation without the proof whose ranges do not
+overlap deduplicates its input edges first and then appends the reversed copies
+of the kept edges, which sorts half as many rows.
 
 With either construction policy, source and destination nulls are not valid
 graph edges and are dropped before libcugraph receives the edge list. Null

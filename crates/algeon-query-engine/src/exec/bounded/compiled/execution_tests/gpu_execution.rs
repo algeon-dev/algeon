@@ -1855,10 +1855,13 @@ fn sorted_edge_rows(mut rows: Vec<EdgeRow>) -> Vec<EdgeRow> {
     rows
 }
 
-/// Ids spanning more than 32 bits, negative ids and the Int64 limits cannot
-/// share one 64-bit key. `(0, 5)` and `(2^32, 5)` stay apart, which a key
-/// that drops source bits above 32 would merge.
-fn edge_normalize_deduplicates_ids_too_wide_to_pack() {
+/// Both columns of the first input span the whole Int64 range, which needs
+/// 128 bits directed and undirected, and sort on the endpoint columns. In the
+/// second input the source spans `2^32 + 1` values and the destination one
+/// value, and the directed rows pack into a 33-bit source field: `(0, 0)` and
+/// `(2^32, 0)` stay apart, which a key that drops source bits above 32 would
+/// merge.
+fn edge_normalize_deduplicates_full_range_ids_and_a_33_bit_source() {
     let runtime = edge_normalize_runtime();
     let rows = vec![
         (i64::MIN, i64::MAX, None, Some(0)),
@@ -1872,7 +1875,7 @@ fn edge_normalize_deduplicates_ids_too_wide_to_pack() {
     EdgeNormalizeCase::new(false, false, rows.clone()).assert_matches_python_cugraph(&runtime, "undirected Int64");
     EdgeNormalizeCase::new(true, false, rows).assert_matches_python_cugraph(&runtime, "directed Int64");
     let two_pow_32 = vec![(0, 0, None, Some(0)), (1_i64 << 32, 0, None, Some(1)), (0, 0, None, Some(2))];
-    EdgeNormalizeCase::new(true, false, two_pow_32).assert_matches_python_cugraph(&runtime, "span of exactly 2^32");
+    EdgeNormalizeCase::new(true, false, two_pow_32).assert_matches_python_cugraph(&runtime, "33-bit source");
 }
 
 /// Int32 ids from `i32::MIN` to `i32::MAX` span `2^32 - 1`, the widest range
@@ -1984,6 +1987,155 @@ fn edge_normalize_deduplicates_endpoint_only_edges() {
     }
 }
 
+/// Each column spans few bits, but the columns lie far apart. In the Int64
+/// input the sources, offset by `10^10`, span 26 bits and the destinations 28
+/// bits; the Int32 columns span 10 and 12 bits at opposite ends of the type.
+/// `(u, 2^27)` and `(u + 2, 0)`, and their Int32 counterparts, stay apart,
+/// which a key shifting the source by the source width would merge.
+fn edge_normalize_packs_far_apart_ranges_per_column() {
+    let runtime = edge_normalize_runtime();
+    let user = 10_000_000_000_i64;
+    let (last_user, last_item) = (user + (1 << 26) - 1, (1_i64 << 28) - 1);
+    let int64_rows = vec![
+        (user, 0, Some(2.0), Some(0)),
+        (last_user, last_item, Some(1.0), Some(1)),
+        (user, 1 << 27, None, Some(2)),
+        (user + 2, 0, Some(4.0), Some(3)),
+        (user, 0, Some(1.0), Some(4)),
+        (last_user, 0, None, Some(5)),
+        (user, last_item, Some(3.0), Some(6)),
+        (last_user, last_item, Some(1.0), Some(7)),
+    ];
+    let (low, high) = (i64::from(i32::MIN), i64::from(i32::MAX));
+    let int32_rows = vec![
+        (low, high, Some(1.0), Some(0)),
+        (low + 1023, high - 4095, None, Some(1)),
+        (low, high, Some(1.0), Some(2)),
+        (low, high - 3071, Some(5.0), Some(3)),
+        (low + 1, high - 4095, Some(2.0), Some(4)),
+        (low + 1023, high - 4095, Some(2.0), Some(5)),
+    ];
+    for (vertex_type, rows) in [(DataType::Int64, int64_rows), (DataType::Int32, int32_rows)] {
+        for (directed, weighted) in [(true, false), (true, true), (false, false), (false, true)] {
+            let mut case = EdgeNormalizeCase::new(directed, weighted, rows.clone());
+            case.vertex_type = vertex_type.clone();
+            let label = format!("{vertex_type} directed={directed} weighted={weighted}");
+            case.assert_matches_python_cugraph(&runtime, &label);
+        }
+    }
+}
+
+/// A 40-bit source beside a 24-bit destination fills a 64-bit key, and the
+/// keys of `base + 2^39` set bit 63. Beside a 25-bit destination the rows
+/// sort on the endpoint columns. A 65-bit key would push the top source bit
+/// of `(base + 2^39, 0)` out and merge the row with `(base, 0)`.
+fn edge_normalize_packs_field_widths_summing_to_64_bits() {
+    let runtime = edge_normalize_runtime();
+    let base = 1_i64 << 50;
+    for destination_bits in [24, 25] {
+        let last = (1_i64 << destination_bits) - 1;
+        let rows = vec![
+            (base, 0, None, Some(0)),
+            (base + (1 << 39), 0, None, Some(1)),
+            (base + (1 << 40) - 1, last, None, Some(2)),
+            (base, last, None, Some(3)),
+            (base + (1 << 39), 0, None, Some(4)),
+            (base, 1 << (destination_bits - 1), None, Some(5)),
+        ];
+        for directed in [true, false] {
+            let label = format!("destination_bits={destination_bits} directed={directed}");
+            EdgeNormalizeCase::new(directed, false, rows.clone()).assert_matches_python_cugraph(&runtime, &label);
+        }
+    }
+}
+
+/// A single-valued column takes 0 bits. Beside it a 63-bit destination packs
+/// with a shift of 63, and a 64-bit source packs with a shift of 0 and offsets
+/// up to `2^64 - 1`. A 64-bit destination would shift by 64 and sorts on the
+/// endpoint columns.
+fn edge_normalize_packs_single_valued_columns() {
+    let runtime = edge_normalize_runtime();
+    let negative_destinations = vec![
+        (7, i64::MIN, None, Some(0)),
+        (7, -1, None, Some(1)),
+        (7, i64::MIN, None, Some(2)),
+        (7, i64::MIN + (1 << 62), None, Some(3)),
+    ];
+    let full_range_sources = vec![
+        (i64::MIN, 3, None, Some(0)),
+        (i64::MAX, 3, None, Some(1)),
+        (0, 3, None, Some(2)),
+        (i64::MAX, 3, None, Some(3)),
+        (-1, 3, None, Some(4)),
+    ];
+    let full_range_destinations = vec![
+        (7, i64::MIN, None, Some(0)),
+        (7, i64::MAX, None, Some(1)),
+        (7, i64::MIN, None, Some(2)),
+        (7, 0, None, Some(3)),
+    ];
+    let cases = [
+        ("63-bit destination", negative_destinations.clone(), true),
+        ("63-bit destination", negative_destinations, false),
+        ("64-bit source", full_range_sources, true),
+        ("64-bit destination", full_range_destinations, true),
+    ];
+    for (label, rows, directed) in cases {
+        let label = format!("{label} directed={directed}");
+        EdgeNormalizeCase::new(directed, false, rows).assert_matches_python_cugraph(&runtime, &label);
+    }
+}
+
+/// With disjoint ranges and no distinct-pair proof, the input rows are
+/// deduplicated before the reversed rows are appended. Each pair keeps the
+/// first minimum weight with nulls last, or the last row when unweighted, and
+/// its reversed pair keeps the reversed copy of that row. The narrow ranges
+/// pack. The wide ones, at `i64::MIN` and `i64::MAX`, need 73 bits and sort on
+/// the endpoint columns.
+fn edge_normalize_deduplicates_input_rows_before_appending_reversed_rows() {
+    let runtime = edge_normalize_runtime();
+    let rows = |source: i64, destination: i64, extra: (i64, i64)| {
+        vec![
+            (source, destination, Some(5.0), Some(0)),
+            (source, destination, Some(3.0), Some(1)),
+            (source, destination, None, Some(2)),
+            (source, destination, Some(3.0), Some(3)),
+            (source + 1, destination, None, Some(4)),
+            (source + 1, destination, None, Some(5)),
+            (source + 1, destination + 1, Some(2.0), Some(6)),
+            (source, destination + 1, None, Some(7)),
+            (source, destination + 1, Some(4.0), Some(8)),
+            (extra.0, extra.1, Some(1.0), Some(9)),
+        ]
+    };
+    let narrow = rows(100, 10, (102, 8));
+    let wide = rows(i64::MIN, i64::MAX - 1, (i64::MIN + (1 << 40), i64::MAX - (1 << 31)));
+    for (label, rows) in [("narrow", narrow), ("wide", wide)] {
+        for weighted in [false, true] {
+            let label = format!("{label} weighted={weighted}");
+            EdgeNormalizeCase::new(false, weighted, rows.clone()).assert_matches_python_cugraph(&runtime, &label);
+        }
+    }
+}
+
+/// Ranges that share one value overlap, and the rows are deduplicated with
+/// their reversed rows included: the repeated self loop `(5, 5)` meets its
+/// own reverse and keeps one row.
+fn edge_normalize_deduplicates_ranges_that_share_one_value() {
+    let runtime = edge_normalize_runtime();
+    let rows = vec![
+        (0, 5, Some(2.0), Some(0)),
+        (5, 5, None, Some(1)),
+        (5, 5, Some(1.0), Some(2)),
+        (3, 9, Some(1.0), Some(3)),
+        (0, 5, Some(1.0), Some(4)),
+    ];
+    for weighted in [false, true] {
+        let label = format!("weighted={weighted}");
+        EdgeNormalizeCase::new(false, weighted, rows.clone()).assert_matches_python_cugraph(&runtime, &label);
+    }
+}
+
 fn edge_normalize_returns_no_rows_for_an_empty_input() {
     let runtime = edge_normalize_runtime();
     for distinct_edge_pairs in [false, true] {
@@ -1997,8 +2149,8 @@ fn edge_normalize_returns_no_rows_for_an_empty_input() {
 fn edge_normalize_cases() {
     run_named_cases(&[
         (
-            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_deduplicates_ids_too_wide_to_pack",
-            edge_normalize_deduplicates_ids_too_wide_to_pack,
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_deduplicates_full_range_ids_and_a_33_bit_source",
+            edge_normalize_deduplicates_full_range_ids_and_a_33_bit_source,
         ),
         (
             "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_packs_int32_ids_spanning_the_whole_type",
@@ -2023,6 +2175,26 @@ fn edge_normalize_cases() {
         (
             "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_deduplicates_endpoint_only_edges",
             edge_normalize_deduplicates_endpoint_only_edges,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_packs_far_apart_ranges_per_column",
+            edge_normalize_packs_far_apart_ranges_per_column,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_packs_field_widths_summing_to_64_bits",
+            edge_normalize_packs_field_widths_summing_to_64_bits,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_packs_single_valued_columns",
+            edge_normalize_packs_single_valued_columns,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_deduplicates_input_rows_before_appending_reversed_rows",
+            edge_normalize_deduplicates_input_rows_before_appending_reversed_rows,
+        ),
+        (
+            "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_deduplicates_ranges_that_share_one_value",
+            edge_normalize_deduplicates_ranges_that_share_one_value,
         ),
         (
             "exec::bounded::compiled::execution_tests::gpu_execution::edge_normalize_returns_no_rows_for_an_empty_input",
