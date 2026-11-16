@@ -643,6 +643,94 @@ fn test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use() {
     assert_eq!(err.operation(), "Graph::park");
 }
 
+/// Builds a multigraph under a `cap`-byte allocation limit and returns its decompressed edges in
+/// CSR order with the construction's peak allocation. Weights are returned as their bit patterns.
+fn construct_capped_edges<V: CugraphElement>(
+    sources: &[V],
+    destinations: &[V],
+    weights: Option<&[f64]>,
+    renumber: bool,
+    cap: usize,
+) -> (Vec<(i64, i64, Option<u64>)>, u64) {
+    const OPERATION: &str = "capped_graph_construction";
+    let device = DeviceId::current().expect("CUDA device");
+    let upstream = DeviceMemoryResource::cuda_async_on(device, None, Some(0)).expect("CUDA async resource");
+    let budget = upstream.budget_tracking_limit(cap).expect("construction allocation cap");
+    let runtime = Arc::new(Runtime::builder().with_memory_resource(budget.clone()).build().expect("runtime"));
+    let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
+    let entered = handle.enter(OPERATION).expect("entered context");
+    let graph = {
+        let source = DeviceArray::from_slice(&entered, sources).expect("source array");
+        let destination = DeviceArray::from_slice(&entered, destinations).expect("destination array");
+        let weight = weights.map(|weights| DeviceArray::from_slice(&entered, weights).expect("weight array"));
+        let source_view = source.view().expect("source view");
+        let destination_view = destination.view().expect("destination view");
+        let weight_view = weight.as_ref().map(|weight| weight.view().expect("weight view"));
+        let mut builder = GraphBuilder::new(&source_view, &destination_view)
+            .properties(GraphProperties { is_symmetric: false, is_multigraph: true })
+            .renumber_flag(renumber);
+        if let Some(weight_view) = &weight_view {
+            builder = builder.weights(weight_view);
+        }
+        builder.build::<Forward>(&entered).expect("graph must fit its construction cap")
+    };
+    let construction_peak = budget.budget_tracking_usage().expect("construction usage").peak_bytes;
+    let mut raw_edgelist = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: the graph and entered handle remain alive until the returned edgelist is copied and freed.
+    unsafe {
+        let status = cugraph_decompress_to_edgelist(
+            entered.handle_ptr(),
+            graph.as_ptr(&entered, OPERATION).expect("graph handle"),
+            to_bool_t(false),
+            &mut raw_edgelist,
+            &mut error,
+        );
+        check_error(status, error, entered.device(), OPERATION).expect("decompress graph");
+    }
+    // SAFETY: successful decompression transfers the result to this owner until all host copies complete.
+    let _edgelist =
+        unsafe { DecompressedEdgelist::from_raw(raw_edgelist, entered.device(), entered.runtime_bound_lease()) }
+            .expect("owned edgelist");
+    let read_column =
+        |getter: unsafe extern "C" fn(*mut cugraph_edgelist_t) -> *mut cugraph_type_erased_device_array_view_t,
+         expected_dtype| {
+            // SAFETY: these views borrow the live edgelist; its owner outlives every host copy.
+            let view = unsafe {
+                RawDeviceArrayView::from_borrowed(
+                    getter(raw_edgelist),
+                    Some(entered.device()),
+                    OPERATION,
+                    "edgelist column",
+                )
+            }
+            .expect("edgelist column view");
+            assert_eq!(view.dtype().expect("column dtype"), expected_dtype);
+            view.to_host_vec(&entered).expect("host column")
+        };
+    let read_vertices = |getter| {
+        let bytes = read_column(getter, V::data_type());
+        match V::data_type() {
+            DataType::Int32 => bytes.as_chunks::<4>().0.iter().map(|id| i64::from(i32::from_ne_bytes(*id))).collect(),
+            DataType::Int64 => bytes.as_chunks::<8>().0.iter().map(|id| i64::from_ne_bytes(*id)).collect::<Vec<_>>(),
+            other => panic!("unexpected vertex type {other:?}"),
+        }
+    };
+    let source = read_vertices(cugraph_edgelist_get_sources);
+    let destination = read_vertices(cugraph_edgelist_get_destinations);
+    let weight = weights.map(|_| {
+        let bytes = read_column(cugraph_edgelist_get_edge_weights, DataType::Float64);
+        bytes.as_chunks::<8>().0.iter().map(|weight| u64::from_ne_bytes(*weight)).collect::<Vec<_>>()
+    });
+    let edges = source
+        .into_iter()
+        .zip(destination)
+        .enumerate()
+        .map(|(edge, (source, destination))| (source, destination, weight.as_ref().map(|weight| weight[edge])))
+        .collect::<Vec<_>>();
+    (edges, construction_peak)
+}
+
 #[test]
 fn test_weighted_graph_frugal_quarters_preserve_edges_under_cap() {
     fn construct_edges(
@@ -651,74 +739,14 @@ fn test_weighted_graph_frugal_quarters_preserve_edges_under_cap() {
         weights: &[f64],
         cap: usize,
     ) -> (Vec<(i64, i64, u64)>, u64) {
-        let device = DeviceId::current().expect("CUDA device");
-        let upstream = DeviceMemoryResource::cuda_async_on(device, None, Some(0)).expect("CUDA async resource");
-        let budget = upstream.budget_tracking_limit(cap).expect("construction allocation cap");
-        let runtime = Arc::new(Runtime::builder().with_memory_resource(budget.clone()).build().expect("runtime"));
-        let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
-        let entered = handle.enter("weighted_frugal_quarters").expect("entered context");
-        let graph = {
-            let source = DeviceArray::from_slice(&entered, sources).expect("source array");
-            let destination = DeviceArray::from_slice(&entered, destinations).expect("destination array");
-            let weight = DeviceArray::from_slice(&entered, weights).expect("weight array");
-            let source_view = source.view().expect("source view");
-            let destination_view = destination.view().expect("destination view");
-            let weight_view = weight.view().expect("weight view");
-            GraphBuilder::new(&source_view, &destination_view)
-                .weights(&weight_view)
-                .properties(GraphProperties { is_symmetric: false, is_multigraph: true })
-                .renumber()
-                .build::<Forward>(&entered)
-                .expect("weighted graph must fit its construction cap")
-        };
-        let construction_peak = budget.budget_tracking_usage().expect("construction usage").peak_bytes;
-        let mut raw_edgelist = ptr::null_mut();
-        let mut error = ptr::null_mut();
-        // SAFETY: the graph and entered handle remain alive until the returned edgelist is copied and freed.
-        unsafe {
-            let status = cugraph_decompress_to_edgelist(
-                entered.handle_ptr(),
-                graph.as_ptr(&entered, "weighted_frugal_quarters").expect("graph handle"),
-                to_bool_t(false),
-                &mut raw_edgelist,
-                &mut error,
-            );
-            check_error(status, error, entered.device(), "weighted_frugal_quarters").expect("decompress graph");
-        }
-        // SAFETY: successful decompression transfers the result to this owner until all host copies complete.
-        let _edgelist =
-            unsafe { DecompressedEdgelist::from_raw(raw_edgelist, entered.device(), entered.runtime_bound_lease()) }
-                .expect("owned edgelist");
-        let read_column =
-            |getter: unsafe extern "C" fn(*mut cugraph_edgelist_t) -> *mut cugraph_type_erased_device_array_view_t,
-             expected_dtype| {
-                // SAFETY: these views borrow the live edgelist; its owner outlives every host copy.
-                let view = unsafe {
-                    RawDeviceArrayView::from_borrowed(
-                        getter(raw_edgelist),
-                        Some(entered.device()),
-                        "weighted_frugal_quarters",
-                        "edgelist column",
-                    )
-                }
-                .expect("edgelist column view");
-                assert_eq!(view.dtype().expect("column dtype"), expected_dtype);
-                view.to_host_vec(&entered).expect("host column")
-            };
-        let source = read_column(cugraph_edgelist_get_sources, DataType::Int64);
-        let destination = read_column(cugraph_edgelist_get_destinations, DataType::Int64);
-        let weight = read_column(cugraph_edgelist_get_edge_weights, DataType::Float64);
-        let edges = source
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .zip(destination.as_chunks::<8>().0.iter())
-            .zip(weight.as_chunks::<8>().0.iter())
-            .map(|((source, destination), weight)| {
-                (i64::from_ne_bytes(*source), i64::from_ne_bytes(*destination), u64::from_ne_bytes(*weight))
-            })
-            .collect::<Vec<_>>();
-        (edges, construction_peak)
+        let (edges, peak) = construct_capped_edges(sources, destinations, Some(weights), true, cap);
+        (
+            edges
+                .into_iter()
+                .map(|(source, destination, weight)| (source, destination, weight.expect("weight")))
+                .collect(),
+            peak,
+        )
     }
 
     fn source_for_row(row: usize, skewed: bool) -> i64 {
@@ -768,4 +796,61 @@ fn test_weighted_graph_frugal_quarters_preserve_edges_under_cap() {
         assert!(peak <= cap as u64);
         eprintln!("weighted graph construction skewed={skewed}, peak={peak}, cap={cap}");
     }
+}
+
+#[test]
+fn test_graph_construction_keeps_stable_csr_order_with_and_without_frugal_sort() {
+    // Single-GPU construction takes the memory-frugal sort when the edge count exceeds
+    // effective memory / (2 * vertex bytes + value bytes) / 4, where an unweighted graph counts an
+    // edge_t of the vertex width as its value. Effective memory is the cap minus current usage, so a
+    // cap below 4 * element bytes * ROWS forces that branch and 512 MiB rules it out.
+    const ROWS: usize = 1 << 20;
+    const MIB: usize = 1 << 20;
+
+    fn check_vertex_width<V: CugraphElement>(to_vertex: fn(i64) -> V, vertex_bytes: usize) {
+        for skewed in [false, true] {
+            // Coprime strides leave the input unsorted and repeat about 30K (source, destination)
+            // pairs. The skewed input gives seven of every eight rows source 0.
+            let sources = (0..ROWS)
+                .map(|row| if skewed && row % 8 != 7 { 0 } else { (row * 37 % 997) as i64 })
+                .collect::<Vec<_>>();
+            let destinations = (0..ROWS).map(|row| (row * 101 % 1021) as i64).collect::<Vec<_>>();
+            // Each weight is its input row, so parallel edges must keep their input order.
+            let weights = (0..ROWS).map(|row| row as f64).collect::<Vec<_>>();
+            let mut rows = (0..ROWS).collect::<Vec<_>>();
+            rows.sort_by_key(|&row| (sources[row], destinations[row]));
+            let device_sources = sources.iter().copied().map(to_vertex).collect::<Vec<_>>();
+            let device_destinations = destinations.iter().copied().map(to_vertex).collect::<Vec<_>>();
+            for weighted in [false, true] {
+                let expected = rows
+                    .iter()
+                    .map(|&row| (sources[row], destinations[row], weighted.then(|| (row as f64).to_bits())))
+                    .collect::<Vec<_>>();
+                let element_bytes = 2 * vertex_bytes + if weighted { 8 } else { vertex_bytes };
+                for cap in [512 * MIB, 4 * element_bytes * ROWS - MIB] {
+                    let (edges, peak) = construct_capped_edges(
+                        &device_sources,
+                        &device_destinations,
+                        weighted.then_some(weights.as_slice()),
+                        false,
+                        cap,
+                    );
+                    let mismatch = edges.iter().zip(&expected).position(|(edge, expected)| edge != expected);
+                    assert!(
+                        edges.len() == ROWS && mismatch.is_none(),
+                        "vertex_bytes={vertex_bytes} weighted={weighted} skewed={skewed} cap={cap}: {} edges, first \
+                         mismatch at {mismatch:?}",
+                        edges.len()
+                    );
+                    eprintln!(
+                        "graph construction vertex_bytes={vertex_bytes} weighted={weighted} skewed={skewed}, \
+                         peak={peak}, cap={cap}"
+                    );
+                }
+            }
+        }
+    }
+
+    check_vertex_width(|id| i32::try_from(id).expect("vertex id fits i32"), 4);
+    check_vertex_width(|id| id, 8);
 }
