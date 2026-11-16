@@ -2354,7 +2354,8 @@ async fn distinct_edge_subquery_marks_undirected_edge_normalization_with_distinc
 
 /// A lowered native edge producer proves distinct pairs through the plan's
 /// own uniqueness keys, as a DataFusion aggregate does. The source offset sits
-/// below the aggregate, as `SELECT DISTINCT src + 1000 AS src, dst` lowers.
+/// below the aggregate, as `SELECT DISTINCT src + 1000 AS src, dst` lowers, or
+/// above it, as `SELECT src + 1000 AS src, dst ... GROUP BY src, dst` lowers.
 /// An undirected call keeps `EdgeNormalize` and marks it; a directed call
 /// needs no normalization. A producer without the proof marks nothing.
 #[test]
@@ -2380,6 +2381,28 @@ fn native_edge_producer_proves_distinct_pairs_through_its_aggregate_keys() {
             )
             .unwrap()
     });
+    // Nullable endpoints, as in a Parquet schema that marks every column optional.
+    let offset_above = native_edge_source_with_root(vec![100], &config, |builder, source| {
+        let nullable_fields =
+            || vec![Field::new("src", DataType::Int64, true), Field::new("dst", DataType::Int64, true)];
+        let grouped = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(vec![Expr::column("src"), Expr::column("dst")], Vec::new()),
+                Arc::new(Schema::new(nullable_fields())),
+            )
+            .unwrap();
+        let offset = Expr::binary(Expr::column("src"), BinaryOp::Add, Expr::literal(LiteralValue::Int64(1000)));
+        builder
+            .add_projection(
+                grouped,
+                vec![
+                    ProjectionOutput::new(offset.alias("src"), nullable_fields()[0].clone()),
+                    ProjectionOutput::new(Expr::column("dst"), nullable_fields()[1].clone()),
+                ],
+            )
+            .unwrap()
+    });
     let plain = native_edge_source_with_root(vec![100], &config, |builder, source| {
         builder
             .add_projection(
@@ -2398,6 +2421,7 @@ fn native_edge_producer_proves_distinct_pairs_through_its_aggregate_keys() {
     for (label, directed, edge_source, distinct_edge_pairs) in [
         ("undirected aggregate", false, Arc::clone(&distinct), Some(true)),
         ("directed aggregate", true, distinct, None),
+        ("undirected offset above aggregate", false, offset_above, Some(true)),
         ("undirected projection", false, plain, Some(false)),
     ] {
         spec.graph_options.directed = directed;

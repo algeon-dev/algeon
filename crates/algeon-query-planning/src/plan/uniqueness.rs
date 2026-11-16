@@ -188,15 +188,19 @@ fn identity_source_column<'a>(expr: &'a Expr, input_schema: Option<&SchemaRef>) 
 }
 
 /// The input column whose distinct values `expr` preserves one to one: a
-/// column, an alias or representation cast of one, or `column + 0` on a
-/// non-nullable integer. Adding a non-zero literal is excluded because
-/// wrapping arithmetic could map two inputs to one output.
+/// column, an alias or representation cast of one, or an integer column plus
+/// or minus a non-null literal of its own type, possibly aliased. Integer `+`
+/// and `-` wrap
+/// (`website/docs/reference/native-evaluation-semantics.mdx#checked-operations`),
+/// so a fixed offset is a bijection on the type's values and keeps null as null.
 fn unique_source_column<'a>(expr: &'a Expr, input_schema: Option<&SchemaRef>) -> Option<&'a str> {
     if let Some(column) = identity_source_column(expr, input_schema) {
         return Some(column);
     }
-    let Expr::Binary { left, op: BinaryOp::Add, right, .. } = expr else {
-        return None;
+    let (left, right) = match expr {
+        Expr::Alias { expr, .. } => return unique_source_column(expr, input_schema),
+        Expr::Binary { left, op: BinaryOp::Add | BinaryOp::Subtract, right, .. } => (left, right),
+        _ => return None,
     };
     let (column, literal) = match (left.as_ref(), right.as_ref()) {
         (Expr::Column(column), Expr::Literal(literal)) | (Expr::Literal(literal), Expr::Column(column)) => {
@@ -204,23 +208,9 @@ fn unique_source_column<'a>(expr: &'a Expr, input_schema: Option<&SchemaRef>) ->
         },
         _ => return None,
     };
-    let field = input_schema?.field_with_name(column.name()).ok()?;
-    let source_type = field.data_type();
-    (!field.is_nullable()
-        && source_type.is_integer()
-        && literal.data_type() == *source_type
-        && matches!(
-            literal,
-            LiteralValue::Int8(0)
-                | LiteralValue::Int16(0)
-                | LiteralValue::Int32(0)
-                | LiteralValue::Int64(0)
-                | LiteralValue::UInt8(0)
-                | LiteralValue::UInt16(0)
-                | LiteralValue::UInt32(0)
-                | LiteralValue::UInt64(0)
-        ))
-    .then_some(column.name())
+    let source_type = input_schema?.field_with_name(column.name()).ok()?.data_type();
+    (source_type.is_integer() && literal.data_type() == *source_type && !matches!(literal, LiteralValue::Null(_)))
+        .then_some(column.name())
 }
 
 #[cfg(test)]
@@ -232,7 +222,7 @@ mod tests {
     use super::*;
     use crate::{
         expr::{AggregateSpec, ColumnRef, SortExpr},
-        plan::{JoinKey, JoinOutputColumn, JoinSpec, QueryPlanBuilder, WindowSpec},
+        plan::{JoinKey, JoinOutputColumn, JoinSpec, ProjectionOutput, QueryPlanBuilder, WindowSpec},
         source::LocalParquetSource,
     };
 
@@ -261,14 +251,58 @@ mod tests {
     }
 
     #[test]
-    fn integer_addition_requires_non_nullable_identity_without_overflow() {
-        let non_nullable = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
-        let nullable = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, true)]));
-        let add =
-            |literal| Expr::binary(Expr::column("value"), BinaryOp::Add, Expr::literal(LiteralValue::Int64(literal)));
-        assert_eq!(unique_source_column(&add(0), Some(&non_nullable)), Some("value"));
-        assert_eq!(unique_source_column(&add(1), Some(&non_nullable)), None);
-        assert_eq!(unique_source_column(&add(0), Some(&nullable)), None);
+    fn integer_offset_of_a_grouped_key_keeps_the_key() {
+        let column = || Expr::column("value");
+        let int64 = |value| Expr::literal(LiteralValue::Int64(value));
+        for nullable in [false, true] {
+            let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, nullable)]));
+            for (label, expr, unique) in [
+                ("column + literal", Expr::binary(column(), BinaryOp::Add, int64(1_000_000_000)), true),
+                ("literal + column", Expr::binary(int64(i64::MAX), BinaryOp::Add, column()), true),
+                ("column - literal", Expr::binary(column(), BinaryOp::Subtract, int64(7)), true),
+                ("literal - column", Expr::binary(int64(-7), BinaryOp::Subtract, column()), true),
+                ("column * literal", Expr::binary(column(), BinaryOp::Multiply, int64(2)), false),
+                (
+                    "literal of another width",
+                    Expr::binary(column(), BinaryOp::Add, Expr::literal(LiteralValue::Int32(1))),
+                    false,
+                ),
+                (
+                    "null literal",
+                    Expr::binary(column(), BinaryOp::Add, Expr::literal(LiteralValue::Null(DataType::Int64))),
+                    false,
+                ),
+            ] {
+                let mut builder = QueryPlanBuilder::new();
+                let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+                    "/tmp/values.parquet",
+                    Arc::clone(&schema),
+                    vec!["value".to_owned()],
+                )));
+                let grouped = builder
+                    .add_aggregate(
+                        source,
+                        AggregateSpec::new(vec![Expr::column("value")], Vec::new()),
+                        Arc::clone(&schema),
+                    )
+                    .unwrap();
+                let shifted = builder
+                    .add_projection(
+                        grouped,
+                        vec![ProjectionOutput::new(
+                            expr.alias("shifted"),
+                            Field::new("shifted", DataType::Int64, nullable),
+                        )],
+                    )
+                    .unwrap();
+
+                assert_eq!(
+                    builder.output_is_unique_on(shifted, &BTreeSet::from(["shifted".to_owned()])),
+                    unique,
+                    "{label}, nullable={nullable}"
+                );
+            }
+        }
     }
 
     #[test]
