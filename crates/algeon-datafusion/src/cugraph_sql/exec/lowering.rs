@@ -6,7 +6,8 @@ use query_planning::{
     error::{QueryError, QueryErrorKind},
     expr::Expr,
     plan::{
-        GraphBfsPathOutput, GraphSimilarityParams, GraphVertexPairInput, QueryPlan, graph_result_schema_for_vertex_type,
+        GraphBfsPathOutput, GraphSimilarityParams, GraphVertexPairInput, QueryPlan,
+        graph_result_schema_for_vertex_type, graph_unreachable_vertex_sentinel,
     },
 };
 
@@ -495,13 +496,12 @@ fn bfs_unreachable_distance_sentinel(edge_schema: &SchemaRef) -> Result<i64> {
     let source_field = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN).map_err(|_| {
         plan("cuGraph BFS output normalization could not find canonical source column 'src' in edge schema")
     })?;
-    match source_field.data_type() {
-        DataType::Int32 => Ok(i64::from(i32::MAX)),
-        DataType::Int64 => Ok(i64::MAX),
-        other => Err(plan(format!(
-            "cuGraph BFS output normalization requires Int32 or Int64 source vertices, found {other:?}"
-        ))),
-    }
+    graph_unreachable_vertex_sentinel(source_field.data_type()).ok_or_else(|| {
+        plan(format!(
+            "cuGraph BFS output normalization requires Int32 or Int64 source vertices, found {:?}",
+            source_field.data_type()
+        ))
+    })
 }
 
 pub(super) fn native_algorithm(algorithm: CugraphAlgorithm) -> GraphAlgorithm {

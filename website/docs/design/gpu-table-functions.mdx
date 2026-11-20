@@ -81,6 +81,10 @@ stream and memory resource. Before graph construction, a read lease orders
 consumer access after the producer's work. The import checks the selected
 column types, active ranges and null contract. Graph construction then
 creates its own representation, including renumbering when requested.
+Before the export, the graph node casts Int64 vertex id columns whose values
+fit Int32 to Int32, one column at a time, and releases each Int64 column once
+its Int32 copy exists; the rule is in
+[Vertex id width](../cugraph/graph-options.mdx#vertex-id-width).
 The `python_cugraph` construction path can first copy edge columns into owned
 cuDF storage for normalization. These steps can allocate and copy within
 VRAM. Their precise semantics are covered by
@@ -90,7 +94,8 @@ For PageRank, the native result object owns its vertex and score arrays.
 `to_dataframe(runtime)` copies those arrays into independently owned cuDF
 columns on the same GPU. The result can then outlive the cuGraph result
 object. Result-schema normalization supplies the SQL-facing `vertex` and
-`value` columns, and the native consumer can apply its filter, join or
+`value` columns, widening the vertex column of a graph built with Int32 ids
+to the declared type, and the native consumer can apply its filter, join or
 aggregate to the resulting `GpuDataFrame`.
 
 The PageRank result copy consumes device-memory bandwidth and temporarily

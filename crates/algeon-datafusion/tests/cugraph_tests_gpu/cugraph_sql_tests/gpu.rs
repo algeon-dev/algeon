@@ -975,6 +975,75 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     fs::remove_dir_all(dir).ok();
 }
 
+/// A resident graph key names the vertex type of the graph it caches. BFS
+/// from a source inside the Int32 range caches a graph built from Int32 ids,
+/// and a repeat checks it out. A source above the Int32 range keeps the call
+/// on Int64 ids, so it builds its own graph without checking out the Int32
+/// one and fails as an absent source does on an Int64 graph.
+#[tokio::test]
+async fn cugraph_sql_resident_graph_key_names_the_narrowed_vertex_type() {
+    const CACHE_CAP_BYTES: u64 = 16 * 1024 * 1024;
+
+    let dir = unique_temp_dir("algeon-datafusion-cugraph-narrowed-graph-key");
+    let path = dir.join("graph_edges.parquet");
+    write_tiny_directed_edges(&path);
+    let profile = AlgeonGpuDeviceProfile::new(0)
+        .with_default_query_limit_bytes(128 * 1024 * 1024)
+        .with_cache_cap_bytes(CACHE_CAP_BYTES);
+    let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
+    let backend = AlgeonGpuBackend::builder().devices([device]).build().unwrap();
+    let state = backend
+        .install_on(
+            SessionStateBuilder::new()
+                .with_config(SessionConfig::new().with_target_partitions(1))
+                .with_default_features(),
+        )
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("graph_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+
+    let run_bfs = |source_vertex: i64| {
+        let backend = &backend;
+        let ctx = &ctx;
+        async move {
+            let sql = format!(
+                "SELECT vertex, distance FROM cugraph_bfs(edges => (SELECT src, dst FROM graph_edges), \
+                 source_vertex => {source_vertex})"
+            );
+            let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+            let completion = attempt.completion();
+            let mut stream = attempt.sql(ctx, &sql).await.unwrap();
+            let mut outcome = Ok(0);
+            while let Some(batch) = stream.next().await {
+                outcome = match (outcome, batch) {
+                    (Ok(rows), Ok(batch)) => Ok(rows + batch.num_rows()),
+                    (Ok(_), Err(error)) => Err(error.to_string()),
+                    (failed, _) => failed,
+                };
+            }
+            completion.await;
+            let caches = backend.diagnostics().unwrap().caches;
+            let [cache] = caches.as_slice() else {
+                panic!("one cache-enabled device must expose one cache report: {caches:#?}");
+            };
+            (outcome, cache.graph.insertions, cache.graph.lookup_hits)
+        }
+    };
+
+    let (rows, insertions, hits) = run_bfs(0).await;
+    assert_eq!((rows, insertions), (Ok(6), 1), "the first in-range call caches one graph");
+    let (rows, insertions, repeat_hits) = run_bfs(0).await;
+    assert_eq!((rows, insertions, repeat_hits), (Ok(6), 1, hits + 1), "the repeat checks the graph out");
+    let (outcome, insertions, wide_hits) = run_bfs(1 << 32).await;
+    assert_eq!((insertions, wide_hits), (1, repeat_hits), "the Int32 graph's key does not name an Int64 graph");
+    let error = outcome.expect_err("a source absent from the graph must fail");
+    assert!(error.contains("BFS sources contain a vertex that is not in the graph"), "{error}");
+    fs::remove_dir_all(dir).ok();
+}
+
 // Per-algorithm Python-oracle GPU tests for PageRank, BFS, and Louvain
 // previously lived here. They have been subsumed by the registry-driven
 // `tests/cugraph/cugraph_parity.rs` harness, which reads local oracle JSON

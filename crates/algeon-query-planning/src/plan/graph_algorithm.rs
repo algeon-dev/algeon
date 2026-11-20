@@ -32,7 +32,7 @@ pub use definition::{
     EmptyGraphEdgeInputAction, EmptyGraphInputPolicy, EmptyGraphSideInputPolicy, GRAPH_OPERATION_REGISTRY,
     GraphAlgorithm, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings,
     GraphOperationDefinition, GraphOutputSchemaKind, GraphSourceVertexRequirement, GraphVertexIdTypeSupport,
-    GraphWeightPolicy,
+    GraphWeightPolicy, graph_unreachable_vertex_sentinel,
 };
 pub use layout::{
     GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2Params, GraphForceAtlas2VertexAttributesInput,
@@ -157,6 +157,80 @@ impl GraphAlgorithmParams {
             _ => Box::new(std::iter::empty()),
         }
     }
+
+    /// Side-input columns that execution reads in the graph's vertex dtype,
+    /// as `(side-input ordinal, column)`: vertex ids, and the BFS edge ids
+    /// compared with the edge-id column, which shares that dtype.
+    pub fn vertex_dtype_side_input_columns(&self) -> Vec<(usize, &str)> {
+        fn predicate(input: &GraphPredicateInput) -> (usize, &str) {
+            (input.input, input.column.as_str())
+        }
+        match self {
+            Self::Bfs(params) => {
+                let predicates = &params.predicates;
+                let mut columns = [
+                    &params.source_vertices,
+                    &predicates.include_vertices,
+                    &predicates.exclude_vertices,
+                    &predicates.target_vertices,
+                    &predicates.include_edge_ids,
+                ]
+                .into_iter()
+                .flatten()
+                .map(predicate)
+                .collect::<Vec<_>>();
+                if let Some(edges) = &predicates.include_edges {
+                    columns.push((edges.input, edges.source.as_str()));
+                    columns.push((edges.input, edges.destination.as_str()));
+                    columns.extend(edges.edge_id.as_deref().map(|edge_id| (edges.input, edge_id)));
+                }
+                columns
+            },
+            Self::PersonalizedPageRank(params) => {
+                vec![(params.personalization.input, params.personalization.vertex.as_str())]
+            },
+            Self::Similarity(params) => vec![
+                (params.vertex_pairs.input, params.vertex_pairs.first_column.as_str()),
+                (params.vertex_pairs.input, params.vertex_pairs.second_column.as_str()),
+            ],
+            Self::Sssp(GraphSsspParams { source_vertex: GraphSsspSource::Input(input), .. }) => vec![predicate(input)],
+            Self::BetweennessCentrality(GraphBetweennessCentralityParams {
+                seeds: Some(GraphBetweennessSeeds::Input { input, .. }),
+                ..
+            })
+            | Self::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
+                seeds: Some(GraphBetweennessSeeds::Input { input, .. }),
+                ..
+            }) => vec![predicate(input)],
+            Self::ForceAtlas2(params) => params
+                .vertex_attributes
+                .iter()
+                .map(|input| (input.input, input.vertex.as_str()))
+                .chain(params.initial_positions.iter().map(|input| (input.input, input.vertex.as_str())))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Vertex ids written as literals in the parameters, which execution
+    /// converts to the graph's vertex dtype.
+    pub fn vertex_id_literals(&self) -> Vec<i64> {
+        match self {
+            // The scalar source is converted even when a source-vertices
+            // relation supplies the traversal sources.
+            Self::Bfs(params) => vec![params.source_vertex],
+            Self::Sssp(GraphSsspParams { source_vertex: GraphSsspSource::I64(vertex), .. }) => vec![*vertex],
+            Self::BetweennessCentrality(GraphBetweennessCentralityParams {
+                seeds: Some(GraphBetweennessSeeds::I64(seeds)),
+                ..
+            })
+            | Self::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
+                seeds: Some(GraphBetweennessSeeds::I64(seeds)),
+                ..
+            }) => seeds.clone(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Native graph algorithm specification.
@@ -213,6 +287,26 @@ impl GraphAlgorithmSpec {
     ) -> Self {
         let output_schema = algorithm.definition().result_schema_for_params(&params);
         Self::new(algorithm, edge_columns, graph_options, params, output_schema)
+    }
+
+    /// This spec with the result columns that hold vertex ids retyped to
+    /// `vertex_type`. Other result columns keep their type.
+    pub fn with_output_vertex_type(&self, vertex_type: &ArrowDataType) -> Self {
+        let vertex_columns = self.algorithm.definition().vertex_output_columns();
+        let fields = self
+            .output_schema
+            .fields()
+            .iter()
+            .map(|field| {
+                if vertex_columns.contains(&field.name().as_str()) {
+                    Arc::new(field.as_ref().clone().with_data_type(vertex_type.clone()))
+                } else {
+                    Arc::clone(field)
+                }
+            })
+            .collect::<Vec<_>>();
+        let output_schema = Arc::new(Schema::new_with_metadata(fields, self.output_schema.metadata().clone()));
+        Self { output_schema, ..self.clone() }
     }
 
     /// Unique key emitted by this exact algorithm parameterization, when proven.

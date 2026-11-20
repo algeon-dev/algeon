@@ -25,6 +25,7 @@ pub(in crate::exec) mod statistics;
 mod structure;
 mod traversal;
 mod validation;
+mod vertex_width;
 
 use bounded_betweenness::{RuntimeGraphSpecResolution, resolve_runtime_graph_spec_for_execution};
 use centrality::{
@@ -54,6 +55,9 @@ use structure::{
 };
 use traversal::{execute_bfs, execute_sssp};
 use validation::{EdgeColumnRole, validate_edge_column};
+#[cfg(test)]
+pub(in crate::exec) use vertex_width::narrow_id_columns;
+use vertex_width::{narrow_graph_vertex_ids, restore_declared_vertex_type};
 
 pub(in crate::exec) fn graph_empty_input_prevalidated(
     context: &ExecutionContext,
@@ -99,11 +103,18 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
         let spec = runtime_spec.spec_or(&node.spec);
         let executor = graph_algorithm_executor(spec.algorithm)?;
         let inputs = GraphAlgorithmExecutionInputs { edge_list: input, side_inputs };
+        let (narrowed_spec, inputs) = narrow_graph_vertex_ids(context, spec, inputs)?;
         // This is the first call that can enter the native graph algorithm.
         // Earlier staging and runtime-spec resolution must not classify an
         // attempt as physical graph execution.
         metrics.record_graph_claim_calibration_algorithm_started(node_id, spec.algorithm);
-        match executor(context, spec, inputs) {
+        let outcome = match &narrowed_spec {
+            Some(narrowed_spec) => {
+                executor(context, narrowed_spec, inputs).and_then(|result| restore_declared_vertex_type(result, spec))
+            },
+            None => executor(context, spec, inputs),
+        };
+        match outcome {
             Ok(result) => result,
             Err(error) => {
                 record_graph_claim_peak_on_error(

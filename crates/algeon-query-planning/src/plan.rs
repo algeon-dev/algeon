@@ -64,7 +64,8 @@ pub use graph_algorithm::{
     GraphVertexIdTypeSupport, GraphVertexPairInput, GraphWccParams, GraphWeightPolicy, ResidentGraphKey,
     edge_plan_has_simple_directed_edge_topology, graph_residency_descriptor_for_edge_plan,
     graph_residency_descriptor_for_local_parquet_source, graph_result_schema_for_params,
-    graph_result_schema_for_vertex_type, planned_resident_graph_key, stable_graph_result_schema,
+    graph_result_schema_for_vertex_type, graph_unreachable_vertex_sentinel, planned_resident_graph_key,
+    stable_graph_result_schema,
 };
 #[doc(hidden)]
 pub use identity::DeferredGraphExecutionScopeIdentity;
