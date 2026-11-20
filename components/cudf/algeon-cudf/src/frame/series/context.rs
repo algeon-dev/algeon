@@ -33,7 +33,7 @@ use crate::{
         reduction::{self, ReduceAgg, ScanAgg, ScanType},
         replace::{self, FillPolicy},
         search::contains_impl,
-        sorting::{SortExecution, SortKeyConfig, SortOptions, sort_table_impl},
+        sorting::{NullOrder, SortExecution, SortKeyConfig, SortOptions, sort_table_impl, top_k_with_ties_mask_impl},
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
         strings::{self, StringSliceOptions, StripSide},
         unary::{self, UnaryOperator},
@@ -217,6 +217,28 @@ impl Series {
         )?;
         let mut cols = sorted.into_columns()?;
         Series::from_column(cols.remove(0))
+    }
+
+    pub(super) fn top_k_with_ties_mask_with_context(
+        &self,
+        k: usize,
+        options: &SortOptions,
+        ctx: Exec<'_>,
+        operation: &'static str,
+    ) -> Result<Series> {
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
+        let (orders, null_orders) = options.resolve(1, operation)?;
+        let null_order = null_orders.map_or(NullOrder::After, |null_orders| null_orders[0]);
+        let cv = self.column.view()?;
+        let exec_options = output_domain.enter_execution()?;
+        let mask = top_k_with_ties_mask_impl(
+            &cv,
+            k,
+            orders[0],
+            null_order,
+            SortExecution::new(&output_domain, exec_options.options(), operation),
+        )?;
+        Series::from_column(mask)
     }
 
     pub(super) fn to_datetime_with_context(

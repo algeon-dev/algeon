@@ -791,4 +791,27 @@ impl SeriesOps<'_> {
     pub fn sort_values(&self, options: SortOptions) -> Result<Series> {
         self.series.sort_values_with_context(options, self.ctx, "series::sort_values")
     }
+
+    /// `BOOL8` mask of the rows that [`sort_values`](Self::sort_values) with `options` places
+    /// among its first `k`, plus every row equal to the `k`-th (SQL `FETCH FIRST k ROWS WITH
+    /// TIES`).
+    ///
+    /// Equality is the sort's: nulls equal each other, every NaN equals every other NaN and
+    /// sorts after all other values, and `-0.0` equals `0.0`. The mask has no nulls. A `k` at
+    /// or above the length selects every row, and `k == 0` selects none. `options.stable`
+    /// has no effect.
+    ///
+    /// The series must have a fixed-width dtype ([`TypeId::is_fixed_width`]); another dtype
+    /// fails with [`ErrorCode::UnsupportedDtype`](crate::ErrorCode::UnsupportedDtype).
+    /// `options` holds at most one direction and one null placement, like a one-key
+    /// `sort_values`.
+    ///
+    /// # Cost
+    /// Null rows are compacted away first when present. The `k` best of the rest come from
+    /// libcudf's `top_k`, a partial selection for integral, decimal, boolean and temporal
+    /// values and a full single-column sort for floating point, which also reads its
+    /// boundary value back to the host. The mask is one comparison pass over the series.
+    pub fn top_k_with_ties_mask(&self, k: usize, options: &SortOptions) -> Result<Series> {
+        self.series.top_k_with_ties_mask_with_context(k, options, self.ctx, "series::top_k_with_ties_mask")
+    }
 }

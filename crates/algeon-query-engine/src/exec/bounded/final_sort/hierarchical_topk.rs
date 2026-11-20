@@ -557,7 +557,9 @@ impl FinalSortExecutor<'_, '_, '_> {
         )
     }
 
-    /// Sorts the frame produced by `frame_for_sort` and truncates it to `keep_rows`.
+    /// Sorts the frame produced by `frame_for_sort` and truncates it to `keep_rows`; the sort
+    /// first drops the rows whose first key cannot reach the first `keep_rows`
+    /// (`topk_candidate`).
     ///
     /// `frame_for_sort` runs under the sort's budget token; a slice or concatenation is
     /// attributed to that stage. The truncation uses a second token. A sort failure gains the
@@ -594,6 +596,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                 sort_topk_candidate_with_budget(
                     self.sort,
                     frame,
+                    keep_rows,
                     &work_token,
                     memory_boundary,
                     self.execution.metrics(),

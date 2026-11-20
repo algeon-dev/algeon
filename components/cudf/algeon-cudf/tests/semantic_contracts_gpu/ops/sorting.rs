@@ -1,5 +1,8 @@
+use std::cmp::Ordering;
+
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, SortOptions,
+    DataFrame, DataType, ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, Series,
+    SortOptions, TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::{DropDuplicatesOptions, InfoDetail},
     ops::{sorting, stream_compaction::DuplicateKeepOption},
@@ -704,7 +707,147 @@ fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
     );
 }
 
+/// Host model of a one-key cuDF sort: nulls equal each other and sit where `nulls_first`
+/// places them, NaNs equal each other and sort after every other value, and `-0.0 == 0.0`.
+fn top_k_reference_order(left: Option<f64>, right: Option<f64>, descending: bool, nulls_first: bool) -> Ordering {
+    match (left, right) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => {
+            if nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        },
+        (Some(_), None) => {
+            if nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        },
+        (Some(left), Some(right)) => {
+            let ascending = match (left.is_nan(), right.is_nan()) {
+                (true, true) => Ordering::Equal,
+                (true, false) => Ordering::Greater,
+                (false, true) => Ordering::Less,
+                (false, false) => left.partial_cmp(&right).unwrap(),
+            };
+            if descending { ascending.reverse() } else { ascending }
+        },
+    }
+}
+
+/// Rows that sort no later than the `k`-th row of the host model.
+fn top_k_with_ties_reference(values: &[Option<f64>], k: usize, descending: bool, nulls_first: bool) -> Vec<bool> {
+    if k == 0 {
+        return vec![false; values.len()];
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|left, right| top_k_reference_order(*left, *right, descending, nulls_first));
+    let Some(&boundary) = sorted.get(k - 1) else {
+        return vec![true; values.len()];
+    };
+    values
+        .iter()
+        .map(|value| top_k_reference_order(*value, boundary, descending, nulls_first) != Ordering::Greater)
+        .collect()
+}
+
+fn assert_top_k_with_ties_matches_reference(series: &Series, values: &[Option<f64>], label: &str) {
+    for descending in [false, true] {
+        for nulls_first in [false, true] {
+            let options = SortOptions::new().with_descending(vec![descending]).with_nulls_first(vec![nulls_first]);
+            for k in 0..=values.len() + 1 {
+                let mask = series.on(Exec::RETAINED).top_k_with_ties_mask(k, &options).unwrap();
+                assert_eq!(mask.null_count(), 0, "{label}: k={k} descending={descending} nulls_first={nulls_first}");
+                assert_eq!(
+                    mask.to_vec_strict::<bool>().unwrap(),
+                    top_k_with_ties_reference(values, k, descending, nulls_first),
+                    "{label}: k={k} descending={descending} nulls_first={nulls_first} values={values:?}",
+                );
+            }
+        }
+    }
+}
+
+/// Every `k`, direction and null placement against the host model, for an integral key (the
+/// partial-selection path when it has no nulls) and a floating-point key with NaN of both
+/// signs, infinities and both zeros (the single-column sort path). The null keys hold three
+/// nulls, so `k` runs below, at and above the null count.
+fn test_top_k_with_ties_mask_matches_one_key_sort_order() {
+    let integers = [Some(5i64), Some(3), None, Some(5), Some(1), None, Some(3), Some(3), Some(9), None, Some(-2)];
+    let as_f64 =
+        |values: &[Option<i64>]| values.iter().map(|value| value.map(|value| value as f64)).collect::<Vec<_>>();
+    let integer_series = series_opt("k", &integers).unwrap();
+    assert_top_k_with_ties_matches_reference(&integer_series, &as_f64(&integers), "int64 with nulls");
+    let dense_integers = integers.iter().flatten().map(|value| Some(*value)).collect::<Vec<_>>();
+    let dense_series = series_opt("k", &dense_integers).unwrap();
+    assert_eq!(dense_series.null_count(), 0);
+    assert_top_k_with_ties_matches_reference(&dense_series, &as_f64(&dense_integers), "int64 without nulls");
+
+    let floats = [
+        Some(3.0),
+        Some(f64::NAN),
+        Some(f64::NEG_INFINITY),
+        Some(0.0),
+        Some(-0.0),
+        None,
+        Some(2.0),
+        Some(-f64::NAN),
+        Some(f64::INFINITY),
+        Some(2.0),
+        None,
+        Some(-0.0),
+        Some(1.0),
+        None,
+        Some(f64::INFINITY),
+    ];
+    let float_series = series_opt("v", &floats).unwrap();
+    assert_top_k_with_ties_matches_reference(&float_series, &floats, "float64 with nulls");
+    let dense_floats = floats.iter().flatten().map(|value| Some(*value)).collect::<Vec<_>>();
+    let dense_series = series_opt("v", &dense_floats).unwrap();
+    assert_top_k_with_ties_matches_reference(&dense_series, &dense_floats, "float64 without nulls");
+}
+
+/// Decimal, timestamp, duration and boolean keys order like their integral values.
+fn test_top_k_with_ties_mask_accepts_every_fixed_width_family() {
+    let integers = [Some(4i64), None, Some(-7), Some(4), Some(12), Some(0), None, Some(-7)];
+    let values = integers.iter().map(|value| value.map(|value| value as f64)).collect::<Vec<_>>();
+    let base = series_opt("k", &integers).unwrap();
+    let decimal = base.on(Exec::RETAINED).astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
+    let timestamp = base.on(Exec::RETAINED).to_datetime(Some(TimestampResolution::Milliseconds)).unwrap();
+    let duration = base.on(Exec::RETAINED).astype(TypeId::DurationSeconds).unwrap();
+    for (label, series) in [("decimal64", &decimal), ("timestamp_ms", &timestamp), ("duration_s", &duration)] {
+        assert_top_k_with_ties_matches_reference(series, &values, label);
+    }
+    let booleans = [Some(true), Some(false), None, Some(true), Some(false), Some(false)];
+    let boolean_values = booleans.iter().map(|value| value.map(f64::from)).collect::<Vec<_>>();
+    let boolean = series_opt("b", &booleans).unwrap();
+    assert_top_k_with_ties_matches_reference(&boolean, &boolean_values, "bool8");
+}
+
+fn test_top_k_with_ties_mask_rejects_variable_width_keys() {
+    let labels = series("s", &["b", "a", "c"]).unwrap();
+    let error = labels.on(Exec::RETAINED).top_k_with_ties_mask(1, &SortOptions::new()).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(error.operation(), "series::top_k_with_ties_mask");
+    assert_eq!(error_context_value(&error, "reason").as_deref(), Some("requires_fixed_width_type"));
+}
+
 pub(super) const CASES: &[(&str, fn())] = &[
+    (
+        "series_top_k_with_ties_mask_tests::test_top_k_with_ties_mask_matches_one_key_sort_order",
+        test_top_k_with_ties_mask_matches_one_key_sort_order,
+    ),
+    (
+        "series_top_k_with_ties_mask_tests::test_top_k_with_ties_mask_accepts_every_fixed_width_family",
+        test_top_k_with_ties_mask_accepts_every_fixed_width_family,
+    ),
+    (
+        "series_top_k_with_ties_mask_tests::test_top_k_with_ties_mask_rejects_variable_width_keys",
+        test_top_k_with_ties_mask_rejects_variable_width_keys,
+    ),
     ("dataframe_sort_values_tests::test_sort_values_single_column_ascending", test_sort_values_single_column_ascending),
     (
         "dataframe_sort_values_tests::test_sort_values_single_column_descending",

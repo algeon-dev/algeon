@@ -30,7 +30,7 @@ use std::{ptr, sync::Arc};
 use self::errors::{sort_key_count_limit_error, sort_option_count_mismatch_error};
 use crate::{
     core::{
-        column::Column,
+        column::{Column, ColumnView, fixed_width_type_required_error},
         error::{self, FACT_KEYS_COUNT, Result},
         table::{Table, TableView},
     },
@@ -289,6 +289,54 @@ pub(crate) fn sorted_order_impl(
             ("execution_authority", "retained_domain".to_string()),
         ])
     })?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
+}
+
+/// Mask of the rows a one-key sort of `input` places among its first `k`, plus every row
+/// equal to the `k`-th; see [`SeriesOps::top_k_with_ties_mask`](crate::SeriesOps::top_k_with_ties_mask).
+/// `null_order` is the output placement, as in [`SortOptions`].
+pub(crate) fn top_k_with_ties_mask_impl(
+    input: &ColumnView<'_>,
+    k: usize,
+    order: Order,
+    null_order: NullOrder,
+    execution: SortExecution<'_>,
+) -> Result<Column> {
+    let operation = execution.operation;
+    let type_id = input.data_type()?.id();
+    if !type_id.is_fixed_width() {
+        return Err(fixed_width_type_required_error(
+            operation,
+            "top-k with ties requires a fixed-width column",
+            type_id,
+            "sort the column instead, or select a numeric, boolean, temporal or decimal key",
+        ));
+    }
+    // `k` at or above the row count selects every row; the clamp keeps it in `size_type`.
+    let rows = input.len()?;
+    let k = i32::try_from(k.min(rows)).expect("a cuDF column has at most i32::MAX rows");
+    let cudf_null_order = cudf_null_order_for_output_placement(order, null_order);
+    let mut out = ptr::null_mut();
+    // SAFETY: `input` is a live borrowed view, `out` is a valid out-pointer, and
+    // `exec_options` comes from the resolved output domain for this call.
+    let status = unsafe {
+        cudf_sys::cudf_top_k_with_ties_mask_ex(
+            input.raw_handle(),
+            k,
+            order as cudf_sys::cudf_order_t,
+            cudf_null_order as cudf_sys::cudf_null_order_t,
+            &mut out,
+            execution.exec_options,
+        )
+    };
+    error::check_status_in(status, operation).map_err(|err| {
+        err.with_details([
+            ("k", k.to_string()),
+            ("rows", rows.to_string()),
+            ("execution_authority", "retained_domain".to_string()),
+        ])
+    })?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
 }
 

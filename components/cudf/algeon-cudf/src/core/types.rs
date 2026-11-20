@@ -234,6 +234,12 @@ impl TypeId {
         matches!(self, TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128)
     }
 
+    /// Returns `true` for the types libcudf calls fixed-width: numeric, `Bool8`, timestamp,
+    /// duration and decimal. Dictionary, string, list and struct types are not.
+    pub fn is_fixed_width(self) -> bool {
+        self.is_numeric() || self.is_boolean() || self.is_timestamp() || self.is_duration() || self.is_decimal()
+    }
+
     pub(crate) fn timestamp_resolution(self) -> Option<TimestampResolution> {
         match self {
             TypeId::TimestampDays => Some(TimestampResolution::Days),

@@ -175,7 +175,9 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
         "query_engine.final_sort.materialize" => {
             assert_eq!(event.boundary, "final_sort");
         },
-        "query_engine.final_sort.topk_prepare" | "query_engine.final_sort.topk_materialize" => {
+        "query_engine.final_sort.topk_prefilter"
+        | "query_engine.final_sort.topk_prepare"
+        | "query_engine.final_sort.topk_materialize" => {
             assert!(matches!(
                 event.boundary.as_str(),
                 "final_sort_topk_chunk" | "final_sort_topk_stream_chunk" | "final_sort_topk_merge"

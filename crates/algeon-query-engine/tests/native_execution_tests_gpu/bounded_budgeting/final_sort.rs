@@ -55,6 +55,12 @@ fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
             && event.operation != "query_engine.final_sort.materialize"),
         "selective ORDER BY LIMIT should not run full final sort before top-k"
     );
+    // Distinct keys: the first-key reduction keeps exactly skip + fetch rows of the 4096.
+    let prefilter = budgeted_events(metrics, "query_engine.final_sort.topk_prefilter");
+    assert!(
+        prefilter.iter().any(|event| event.boundary == "final_sort_topk_stream_chunk" && event.output_rows == Some(10)),
+        "the candidate should sort only the rows its first key can place in the top 10: {prefilter:?}"
+    );
     assert_final_sort_prepare_budget_event(
         metrics,
         "query_engine.final_sort.topk_prepare",
