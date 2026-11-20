@@ -750,7 +750,7 @@ impl ContractGraph<'_> {
         let Some(PlanNode::Limit(limit)) = self.plan.node(limit_node_id).map(|node| &node.kind) else {
             return SortStrategy::FullSort;
         };
-        let Some(PlanNode::Sort(sort)) = self.plan.node(sort_node_id).map(|node| &node.kind) else {
+        let Some(PlanNode::Sort(_)) = self.plan.node(sort_node_id).map(|node| &node.kind) else {
             return SortStrategy::FullSort;
         };
         // Finite top-k planning needs a fetch bound (`topk_candidate_rows`
@@ -759,20 +759,10 @@ impl ContractGraph<'_> {
         if limit.spec.fetch.is_none() {
             return SortStrategy::FullSort;
         }
-        if limit.input != sort_node_id || !self.sort_input_allows_limit_fusion(sort.input) {
+        if limit.input != sort_node_id {
             return SortStrategy::FullSort;
         }
         SortStrategy::FusedTopK { limit_task: consumer.id(), limit_node: limit_node_id }
-    }
-
-    /// A directly GPU-resident sort input is already one whole frame, so fusing
-    /// the limit into a top-k over it saves nothing and loses the plain sort
-    /// path's retry behaviour.
-    fn sort_input_allows_limit_fusion(&self, sort_input: NodeId) -> bool {
-        !matches!(
-            self.plan.node(sort_input).map(|node| &node.kind),
-            Some(PlanNode::Source(source)) if matches!(source.as_ref(), SourceNode::GpuResident(_))
-        )
     }
 
     /// A unary stage re-stages whatever its input carries, so its output can

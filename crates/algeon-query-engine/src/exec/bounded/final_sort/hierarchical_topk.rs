@@ -505,7 +505,8 @@ impl FinalSortExecutor<'_, '_, '_> {
     }
 
     /// Candidate for one row range of a retained frame, sliced on the coordinator stream under
-    /// the sort's token.
+    /// the sort's token. A range covering the whole frame reads the frame in place: the
+    /// candidate only reads its input, and a slice would copy every column.
     fn topk_slice_attempt(&mut self, input: &CommittedPartial, slice: TopKSliceAttempt) -> Result<CommittedPartial> {
         const BOUNDARY: &str = "final_sort_topk_chunk";
         self.sort_and_limit_topk_candidate(
@@ -514,6 +515,9 @@ impl FinalSortExecutor<'_, '_, '_> {
             slice.keep_rows,
             TopKWorkTokenFailureMode::Direct,
             |work_token| {
+                if slice.offset == 0 && slice.length == input.frame.num_rows() {
+                    return Ok(input.frame.clone());
+                }
                 input
                     .frame
                     .frame()

@@ -83,6 +83,83 @@ fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// `gpu_resident_source -> sort -> limit`, the shape of a graph function's result ranked by
+/// SQL, returns the rows of the full sort at the limit's offset and reaches them through the
+/// fused top-k: the candidate keeps the rows tied on the first key's boundary and never runs
+/// the full sort.
+#[test]
+fn bounded_native_resident_sort_limit_returns_the_full_sort_prefix_through_the_topk() {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 512 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    const ROWS: i64 = 4096;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Int64, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let vertices = (0..ROWS).map(|row| (row * 2731) % ROWS).collect::<Vec<_>>();
+    let values = vertices.iter().map(|vertex| (vertex % 97) as f64 / 7.0).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vertices)), Arc::new(Float64Array::from(values.clone()))],
+    )
+    .unwrap();
+    let sort = SortSpec::new(vec![
+        SortExpr::new(Expr::column("value"), true, false),
+        SortExpr::new(Expr::column("vertex"), false, false),
+    ]);
+    let run = |limit: Option<LimitSpec>| {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("ranks", Arc::clone(&schema))));
+        let sort = builder.add_sort(source, sort.clone()).unwrap();
+        let root = limit.map_or(sort, |limit| builder.add_limit(sort, limit).unwrap());
+        let plan = builder.finish_with_host_sink(root).unwrap();
+        let admitted = context.admit_plan(&plan).unwrap();
+        let runtime = Arc::new(admitted.runtime().unwrap());
+        let mut inputs = GpuResidentInputMap::new();
+        inputs.insert(
+            "ranks".to_string(),
+            GpuResultHandle::new(
+                &admitted,
+                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+                Arc::clone(&schema),
+            )
+            .unwrap(),
+        );
+        let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
+        let QueryOutput::HostArrow(output) = result.output() else {
+            panic!("host sink should materialize one RecordBatch");
+        };
+        let rows =
+            int64_array(output, 0).values().iter().copied().zip(float64_array(output, 1).values().iter().copied());
+        let rows = rows.collect::<Vec<_>>();
+        let metrics = result.metrics().clone();
+        admitted.finish();
+        (rows, metrics)
+    };
+
+    let (full, _) = run(None);
+    let (limited, metrics) = run(Some(LimitSpec::new(2, 10)));
+    assert_eq!(limited, full[2..12]);
+    assert!(
+        metrics.budgeted_execution_events.iter().all(|event| event.operation != "query_engine.final_sort.prepare"),
+        "a resident sort with a fetch limit should not run the full sort"
+    );
+    // Every row tied with the 12th value on the first key survives the reduction.
+    let boundary = full[11].1;
+    let survivors = values.iter().filter(|value| **value >= boundary).count() as u64;
+    assert!(survivors > 12 && survivors < ROWS as u64 / 4);
+    let prefilter = budgeted_events(&metrics, "query_engine.final_sort.topk_prefilter");
+    assert!(
+        prefilter.iter().any(|event| event.boundary == "final_sort_topk_chunk" && event.output_rows == Some(survivors)),
+        "the candidate should keep only the rows tied with the boundary: {prefilter:?}"
+    );
+}
+
 #[test]
 fn bounded_native_full_sort_without_limit_fits_a_cap_below_input_plus_output() {
     let rows = 1 << 20;
