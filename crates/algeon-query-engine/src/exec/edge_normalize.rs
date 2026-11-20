@@ -17,23 +17,40 @@ use super::{
 ///
 /// Deduplication is skipped where it cannot remove a row: when the spec
 /// declares distinct pairs and either no reverse edges are added or the source
-/// and destination value ranges are disjoint. Otherwise the rows are sorted.
-/// When both endpoint columns are Int32 or Int64 and their values span at most
-/// `2^32` together, each edge is packed into one `UInt64` key, and a key-only
-/// sort takes libcudf's radix path. Other inputs, and `MinWeight` inputs,
-/// sort through libcudf's row comparator.
+/// and destination value ranges are disjoint. With disjoint ranges and no such
+/// declaration, the input rows are deduplicated and the reversed copies of the
+/// kept rows are appended. No reversed edge can then equal an input edge. The
+/// reversed rows of a pair `(v, u)` are the copies of the input rows of
+/// `(u, v)` in the same order, and the kept reversed row is the copy of the
+/// kept input row. Other undirected inputs are deduplicated after the reversed
+/// rows are appended.
 ///
-/// Peak device memory stays at or below the row-comparator path's. For `n`
-/// rows after reverse expansion, that path holds the 16-byte endpoint
-/// columns, the 4-byte kept-row map and their 16-byte copies during its final
-/// gather (36 bytes per row before payload columns). The packed path drops
-/// the endpoint columns before sorting. With payload columns, its radix sort
-/// holds the 8-byte key and libcudf's 28-byte temporaries for an 8-byte key
-/// (index map, key copy, identity map and CUB's alternate key and index
-/// buffers). Without payload columns, the key is sorted by value: the key, its
-/// sorted copy and CUB's alternate key buffer take 24 bytes per row, and
-/// unpacking peaks at 32 (the kept keys, both endpoint columns and one 8-byte
-/// intermediate).
+/// When both endpoint columns are Int32 or Int64, the rows to deduplicate are
+/// packed into one `UInt64` key per edge if the key fits in 64 bits
+/// ([`EdgeKeyPacking`]), and a key-only sort takes libcudf's radix path. Input
+/// rows pack each column over its own value range. Rows that include reversed
+/// rows pack both columns over the union of the two ranges, because a reversed
+/// row holds a destination value in the source column. Other inputs sort the
+/// endpoint columns through libcudf's row comparator. `MinWeight` inputs sort
+/// the key or the endpoint columns together with the weight through it.
+///
+/// Peak device memory stays at or below that of the row-comparator sort of
+/// the expanded rows. For `n` rows after reverse expansion, that sort holds the
+/// 16-byte endpoint columns, the 4-byte kept-row map and their 16-byte copies
+/// during its final gather (36 bytes per row before payload columns). The
+/// packed path drops the endpoint columns before sorting. With payload
+/// columns, its radix sort holds the 8-byte key and libcudf's 28-byte
+/// temporaries for an 8-byte key (index map, key copy, identity map and CUB's
+/// alternate key and index buffers). Without payload columns, the key is
+/// sorted by value: the key, its sorted copy and CUB's alternate key buffer
+/// take 24 bytes per row, and unpacking peaks at 32 (the kept keys, both
+/// endpoint columns and one 8-byte intermediate). Packing the input rows alone
+/// holds their endpoint columns and two 8-byte intermediates (32 bytes per
+/// row). Packing them with their reversed rows peaks at 24 bytes per expanded
+/// row while it concatenates the two keys. Deduplicating only the `n / 2`
+/// input rows of an undirected graph halves each count above per row of `n`.
+/// The append that follows holds the at most `n / 2` kept rows and the
+/// concatenated output, 48 bytes per kept row or at most 24 per row of `n`.
 pub(super) fn execute_edge_normalize(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -64,33 +81,15 @@ pub(super) fn execute_edge_normalize(
 
     // Each stage replaces `input`, so the previous stage's columns are freed
     // when no other owner holds them.
-    if spec.dedup == EdgeDedupStrategy::None || spec.distinct_edge_pairs && !spec.add_reverse {
-        if spec.add_reverse {
-            let expanded = with_reverse_edges(input.frame(), spec, node_id, overrides)?;
-            advance(&mut input, expanded)?;
-        }
-    } else {
-        let ranges = endpoint_ranges(input.frame(), spec, node_id, overrides)?;
-        if spec.distinct_edge_pairs && ranges.as_ref().is_some_and(EndpointRanges::are_disjoint) {
-            let expanded = with_reverse_edges(input.frame(), spec, node_id, overrides)?;
-            advance(&mut input, expanded)?;
-        } else if let Some(packing) = ranges.and_then(EndpointRanges::packing) {
-            let source = spec.edge_columns.source.as_str();
-            let keyed = packed_edge_rows(input.frame(), spec, &packing, node_id, overrides)?;
-            advance(&mut input, keyed)?;
-            let deduplicated = drop_duplicate_edges(input.frame(), spec, &[source], node_id, overrides)?;
-            advance(&mut input, deduplicated)?;
-            let unpacked = unpacked_edge_rows(input.frame(), spec, &packing, node_id, overrides)?;
-            advance(&mut input, unpacked)?;
-        } else {
-            if spec.add_reverse {
-                let expanded = with_reverse_edges(input.frame(), spec, node_id, overrides)?;
-                advance(&mut input, expanded)?;
-            }
-            let endpoints = [spec.edge_columns.source.as_str(), spec.edge_columns.destination.as_str()];
-            let deduplicated = drop_duplicate_edges(input.frame(), spec, &endpoints, node_id, overrides)?;
-            advance(&mut input, deduplicated)?;
-        }
+    match EdgeNormalization::choose(spec, || endpoint_ranges(input.frame(), spec, node_id, overrides))? {
+        EdgeNormalization::AppendReverse => append_reverse_edges(&mut input, spec, node_id, overrides)?,
+        EdgeNormalization::DeduplicateInput(packing) => {
+            deduplicate_edges(&mut input, spec, packing.as_ref(), false, node_id, overrides)?;
+            append_reverse_edges(&mut input, spec, node_id, overrides)?;
+        },
+        EdgeNormalization::DeduplicateExpanded(packing) => {
+            deduplicate_edges(&mut input, spec, packing.as_ref(), true, node_id, overrides)?;
+        },
     }
 
     metrics.add_operator_time(timer.elapsed());
@@ -104,6 +103,79 @@ pub(super) fn execute_edge_normalize(
 fn advance(input: &mut GpuDataFrame, next: DataFrame) -> Result<()> {
     *input = GpuDataFrame::try_new_with_source_residency(next, input)?;
     Ok(())
+}
+
+/// The steps that normalize the edge rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeNormalization {
+    /// No row repeats a pair. The reversed rows are appended when the spec
+    /// adds them.
+    AppendReverse,
+    /// The input rows are deduplicated, then the reversed copies of the kept
+    /// rows are appended when the spec adds them.
+    DeduplicateInput(Option<EdgeKeyPacking>),
+    /// The reversed rows are appended, then all rows are deduplicated.
+    DeduplicateExpanded(Option<EdgeKeyPacking>),
+}
+
+impl EdgeNormalization {
+    /// Chooses the steps for `spec`. `read_ranges` runs only when the choice
+    /// depends on the endpoint ranges.
+    fn choose(spec: &EdgeNormalizeSpec, read_ranges: impl FnOnce() -> Result<Option<EndpointRanges>>) -> Result<Self> {
+        if spec.dedup == EdgeDedupStrategy::None || spec.distinct_edge_pairs && !spec.add_reverse {
+            return Ok(Self::AppendReverse);
+        }
+        Ok(match read_ranges()? {
+            None if spec.add_reverse => Self::DeduplicateExpanded(None),
+            None => Self::DeduplicateInput(None),
+            Some(ranges) if !spec.add_reverse => Self::DeduplicateInput(ranges.packing()),
+            Some(ranges) if !ranges.are_disjoint() => Self::DeduplicateExpanded(ranges.union_packing()),
+            Some(_) if spec.distinct_edge_pairs => Self::AppendReverse,
+            Some(ranges) => Self::DeduplicateInput(ranges.packing()),
+        })
+    }
+}
+
+fn append_reverse_edges(
+    input: &mut GpuDataFrame,
+    spec: &EdgeNormalizeSpec,
+    node_id: NodeId,
+    overrides: Exec<'_>,
+) -> Result<()> {
+    if !spec.add_reverse {
+        return Ok(());
+    }
+    let expanded = with_reverse_edges(input.frame(), spec, node_id, overrides)?;
+    advance(input, expanded)
+}
+
+/// Keeps one row per pair of `input`, after appending the reversed rows when
+/// `reverse` is set. A `packing` sorts the packed keys instead of the
+/// endpoint columns.
+fn deduplicate_edges(
+    input: &mut GpuDataFrame,
+    spec: &EdgeNormalizeSpec,
+    packing: Option<&EdgeKeyPacking>,
+    reverse: bool,
+    node_id: NodeId,
+    overrides: Exec<'_>,
+) -> Result<()> {
+    let Some(packing) = packing else {
+        if reverse {
+            let expanded = with_reverse_edges(input.frame(), spec, node_id, overrides)?;
+            advance(input, expanded)?;
+        }
+        let endpoints = [spec.edge_columns.source.as_str(), spec.edge_columns.destination.as_str()];
+        let deduplicated = drop_duplicate_edges(input.frame(), spec, &endpoints, node_id, overrides)?;
+        return advance(input, deduplicated);
+    };
+    let keyed = packed_edge_rows(input.frame(), spec, packing, reverse, node_id, overrides)?;
+    advance(input, keyed)?;
+    let deduplicated =
+        drop_duplicate_edges(input.frame(), spec, &[spec.edge_columns.source.as_str()], node_id, overrides)?;
+    advance(input, deduplicated)?;
+    let unpacked = unpacked_edge_rows(input.frame(), spec, packing, node_id, overrides)?;
+    advance(input, unpacked)
 }
 
 /// Inclusive value ranges of the source and destination columns.
@@ -120,15 +192,17 @@ impl EndpointRanges {
         self.source.1 < self.destination.0 || self.destination.1 < self.source.0
     }
 
-    fn packing(self) -> Option<EdgeKeyPacking> {
-        let low = self.source.0.min(self.destination.0);
-        let high = self.source.1.max(self.destination.1);
-        let bits = u64::BITS - high.abs_diff(low).leading_zeros();
-        (bits <= EdgeKeyPacking::MAX_ENDPOINT_BITS).then_some(EdgeKeyPacking {
-            vertex_type: self.vertex_type,
-            low,
-            bits,
-        })
+    /// The key of rows whose source and destination columns hold values of
+    /// their own ranges.
+    fn packing(&self) -> Option<EdgeKeyPacking> {
+        EdgeKeyPacking::new(self.vertex_type, self.source, self.destination)
+    }
+
+    /// The key of rows that include reversed rows, whose source column also
+    /// holds destination values.
+    fn union_packing(&self) -> Option<EdgeKeyPacking> {
+        let union = (self.source.0.min(self.destination.0), self.source.1.max(self.destination.1));
+        EdgeKeyPacking::new(self.vertex_type, union, union)
     }
 }
 
@@ -174,58 +248,83 @@ fn endpoint_ranges(
     Ok(Some(EndpointRanges { vertex_type, source, destination }))
 }
 
-/// Packs an edge into one `UInt64` key: the source offset from `low` in the
-/// high `bits` and the destination offset in the low `bits`. Both offsets are
-/// below `2^bits`, so key order is `(source, destination)` order and equal
-/// keys are equal pairs.
+/// Packs an edge into one `UInt64` key,
+/// `(source - source_low) << destination_bits | (destination - destination_low)`.
+/// Each low is the minimum of the values its field holds, and the two field
+/// widths sum to at most 64 bits. Both offsets fit their fields, so key order
+/// is `(source, destination)` order and equal keys are equal pairs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EdgeKeyPacking {
     vertex_type: DataType,
-    low: i64,
-    bits: u32,
+    source_low: i64,
+    destination_low: i64,
+    destination_bits: u32,
 }
 
 impl EdgeKeyPacking {
-    const MAX_ENDPOINT_BITS: u32 = 32;
-
-    fn key(&self, high: &str, low: &str) -> Expr {
-        self.offset(high)
-            .binary_op_with_type(lit(u64::from(self.bits)), BinaryOperator::ShiftLeft, TypeId::UInt64)
-            .binary_op_with_type(self.offset(low), BinaryOperator::BitwiseOr, TypeId::UInt64)
+    /// A field of `w` bits holds a range whose maximum minus minimum is below
+    /// `2^w`, and a single value takes 0 bits. The destination field stays
+    /// below 64 bits: a 64-bit field would shift by 64, which C++ leaves
+    /// undefined and which overflows the Rust mask. A 64-bit source field
+    /// leaves a 0-bit destination field and a shift of 0.
+    fn new(vertex_type: DataType, source: (i64, i64), destination: (i64, i64)) -> Option<Self> {
+        let width = |(low, high): (i64, i64)| u64::BITS - high.abs_diff(low).leading_zeros();
+        let (source_bits, destination_bits) = (width(source), width(destination));
+        (source_bits + destination_bits <= u64::BITS && destination_bits < u64::BITS).then_some(Self {
+            vertex_type,
+            source_low: source.0,
+            destination_low: destination.0,
+            destination_bits,
+        })
     }
 
-    /// libcudf evaluates the subtraction in the common type of its operands
-    /// and the `UInt64` output, modulo `2^64`. The offset is below `2^32`, so
-    /// the result is exact for Int32 and Int64 vertex ids.
-    fn offset(&self, column: &str) -> Expr {
-        col(column).binary_op_with_type(lit(self.low), BinaryOperator::Sub, TypeId::UInt64)
+    /// libcudf evaluates each step in the common type of its operands and its
+    /// `UInt64` output (`get_common_type` in the compiled binary operations).
+    /// That type is `UInt64` for Int32 or Int64 columns and `UInt64` literals,
+    /// and each step is exact modulo `2^64`; the key itself is below `2^64`.
+    /// Adding the destination before subtracting `destination_low` gives each
+    /// step one computed operand, and a step holds two 8-byte columns.
+    fn key(&self, source: &str, destination: &str) -> Expr {
+        col(source)
+            .binary_op_with_type(lit(self.source_low.cast_unsigned()), BinaryOperator::Sub, TypeId::UInt64)
+            .binary_op_with_type(lit(u64::from(self.destination_bits)), BinaryOperator::ShiftLeft, TypeId::UInt64)
+            .binary_op_with_type(col(destination), BinaryOperator::Add, TypeId::UInt64)
+            .binary_op_with_type(lit(self.destination_low.cast_unsigned()), BinaryOperator::Sub, TypeId::UInt64)
     }
 
     fn source(&self, key: &str) -> Expr {
-        self.vertex(col(key).binary_op_with_type(
-            lit(u64::from(self.bits)),
+        let offset = col(key).binary_op_with_type(
+            lit(u64::from(self.destination_bits)),
             BinaryOperator::ShiftRightUnsigned,
-            TypeId::Int64,
-        ))
+            TypeId::UInt64,
+        );
+        self.vertex(offset, self.source_low)
     }
 
     fn destination(&self, key: &str) -> Expr {
-        let mask = (1_u64 << self.bits) - 1;
-        self.vertex(col(key).binary_op_with_type(lit(mask), BinaryOperator::BitwiseAnd, TypeId::Int64))
+        let mask = (1_u64 << self.destination_bits) - 1;
+        let offset = col(key).binary_op_with_type(lit(mask), BinaryOperator::BitwiseAnd, TypeId::UInt64);
+        self.vertex(offset, self.destination_low)
     }
 
-    fn vertex(&self, offset: Expr) -> Expr {
-        offset.binary_op_with_type(lit(self.low), BinaryOperator::Add, self.vertex_type)
+    /// The `UInt64` offset of a value from `low` plus `low`, modulo `2^64`, is
+    /// the value modulo `2^64`. libcudf writes it to the Int32 or Int64 output
+    /// with a C++20 conversion, which is modulo the output width and restores
+    /// the value.
+    fn vertex(&self, offset: Expr, low: i64) -> Expr {
+        offset.binary_op_with_type(lit(low.cast_unsigned()), BinaryOperator::Add, self.vertex_type)
     }
 }
 
-/// The edge rows, reversed rows appended when the spec adds them, with the
+/// The edge rows, reversed rows appended when `reverse` is set, with the
 /// packed key in place of both endpoint columns. The key keeps the source
-/// column's name; payload columns follow it unchanged. Row `i` corresponds to
-/// row `i` of [`with_reverse_edges`].
+/// column's name; payload columns follow it unchanged. With `reverse`, row
+/// `i` corresponds to row `i` of [`with_reverse_edges`].
 fn packed_edge_rows(
     frame: &DataFrame,
     spec: &EdgeNormalizeSpec,
     packing: &EdgeKeyPacking,
+    reverse: bool,
     node_id: NodeId,
     overrides: Exec<'_>,
 ) -> Result<DataFrame> {
@@ -243,7 +342,7 @@ fn packed_edge_rows(
     // one provenance, and the input frame can have another.
     let forward = packing.key(source, destination).eval_in(frame, overrides).map_err(pack_error)?;
     let mut columns = Vec::new();
-    if spec.add_reverse {
+    if reverse {
         let reverse = packing.key(destination, source).eval_in(frame, overrides).map_err(pack_error)?;
         columns.push((source.to_owned(), Series::concat(&[&forward, &reverse], overrides).map_err(pack_error)?));
         for payload in payload_columns(spec) {
@@ -434,3 +533,6 @@ fn reverse_edges(frame: &DataFrame, spec: &EdgeNormalizeSpec, node_id: NodeId) -
         .with_fact("node_id", node_id)
     })
 }
+
+#[cfg(test)]
+mod tests;

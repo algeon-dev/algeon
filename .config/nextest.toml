@@ -272,6 +272,7 @@ binary(/_cpu$/)
     | prepared
     | source_chunk::metadata::tests
     | exec::(retry::tests
+    | edge_normalize::tests
     | nvtx::tests
     | operators::(tests
     | projection::tests
