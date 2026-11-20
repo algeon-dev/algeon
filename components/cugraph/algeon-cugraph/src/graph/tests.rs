@@ -34,9 +34,11 @@ use cugraph_sys::{
 use super::*;
 use crate::{
     array::{DeviceArray, RawDeviceArrayView},
+    centrality::PageRankParams,
     cuda::fail_next_fatal_device_resource_destroy,
     error::ErrorKind,
     handle::ResourceHandle,
+    params::{IterationCount, NonNegativeF64},
 };
 
 #[derive(Debug)]
@@ -643,6 +645,16 @@ fn test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use() {
     assert_eq!(err.operation(), "Graph::park");
 }
 
+/// A resource handle whose runtime allocates through a `cap`-byte budget, returned with that budget
+/// so a test can read the peak allocation.
+fn capped_resource_handle(cap: usize) -> (ResourceHandle, DeviceMemoryResource) {
+    let device = DeviceId::current().expect("CUDA device");
+    let upstream = DeviceMemoryResource::cuda_async_on(device, None, Some(0)).expect("CUDA async resource");
+    let budget = upstream.budget_tracking_limit(cap).expect("allocation cap");
+    let runtime = Arc::new(Runtime::builder().with_memory_resource(budget.clone()).build().expect("runtime"));
+    (ResourceHandle::for_runtime(runtime).expect("resource handle"), budget)
+}
+
 /// Builds a multigraph under a `cap`-byte allocation limit and returns its decompressed edges in
 /// CSR order with the construction's peak allocation. Weights are returned as their bit patterns.
 fn construct_capped_edges<V: CugraphElement>(
@@ -653,11 +665,7 @@ fn construct_capped_edges<V: CugraphElement>(
     cap: usize,
 ) -> (Vec<(i64, i64, Option<u64>)>, u64) {
     const OPERATION: &str = "capped_graph_construction";
-    let device = DeviceId::current().expect("CUDA device");
-    let upstream = DeviceMemoryResource::cuda_async_on(device, None, Some(0)).expect("CUDA async resource");
-    let budget = upstream.budget_tracking_limit(cap).expect("construction allocation cap");
-    let runtime = Arc::new(Runtime::builder().with_memory_resource(budget.clone()).build().expect("runtime"));
-    let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
+    let (handle, budget) = capped_resource_handle(cap);
     let entered = handle.enter(OPERATION).expect("entered context");
     let graph = {
         let source = DeviceArray::from_slice(&entered, sources).expect("source array");
@@ -853,4 +861,206 @@ fn test_graph_construction_keeps_stable_csr_order_with_and_without_frugal_sort()
 
     check_vertex_width(|id| i32::try_from(id).expect("vertex id fits i32"), 4);
     check_vertex_width(|id| id, 8);
+}
+
+/// Builds a renumbered directed multigraph under a `cap`-byte allocation limit and returns the
+/// out-degrees API rows `(vertex, out_degree)`, which follow the internal vertex order, with the
+/// construction's peak allocation.
+fn capped_renumbered_out_degrees<V: CugraphElement>(
+    sources: &[V],
+    destinations: &[V],
+    vertices: Option<&[V]>,
+    cap: usize,
+) -> (Vec<(i64, i64)>, u64) {
+    let (handle, budget) = capped_resource_handle(cap);
+    let entered = handle.enter("capped_renumbered_out_degrees").expect("entered context");
+    let source = DeviceArray::from_slice(&entered, sources).expect("source array");
+    let destination = DeviceArray::from_slice(&entered, destinations).expect("destination array");
+    let vertex = vertices.map(|vertices| DeviceArray::from_slice(&entered, vertices).expect("vertex array"));
+    let source_view = source.view().expect("source view");
+    let destination_view = destination.view().expect("destination view");
+    let vertex_view = vertex.as_ref().map(|vertex| vertex.view().expect("vertex view"));
+    let mut builder = GraphBuilder::new(&source_view, &destination_view)
+        .properties(GraphProperties { is_symmetric: false, is_multigraph: true })
+        .renumber();
+    if let Some(vertex_view) = &vertex_view {
+        builder = builder.vertices(vertex_view);
+    }
+    let mut graph = builder.build::<Forward>(&entered).expect("graph must fit its construction cap");
+    let construction_peak = budget.budget_tracking_usage().expect("construction usage").peak_bytes;
+    let degrees = graph.out_degrees_all(&entered).expect("out-degrees");
+    let vertex_ids = degrees.vertex_ids().expect("vertex ids").to_vec_i64(&entered).expect("host vertex ids");
+    let out_degrees = degrees.out_degrees().expect("out-degrees").to_vec_i64(&entered).expect("host out-degrees");
+    (vertex_ids.into_iter().zip(out_degrees).collect(), construction_peak)
+}
+
+#[test]
+fn test_renumbering_orders_vertices_by_major_degree_with_and_without_frugal_uniques() {
+    // Single-GPU renumbering counts each vertex's major degree from the sorted edge majors and
+    // numbers vertices by descending count, which the degrees API exposes as its row order. Above
+    // (effective memory / vertex bytes) * 0.03 / 2 majors the count runs on each half of the majors
+    // and merges the halves. Effective memory is the cap minus current usage, so for 2^20 edges a
+    // 2 GiB cap rules that branch out and a 128 MiB cap forces it at both vertex widths.
+    const ROWS: usize = 1 << 20;
+    const MIB: usize = 1 << 20;
+    const SOURCE_IDS: usize = 997;
+    const DESTINATION_IDS: usize = 5003;
+    const VERTEX_IDS: usize = 6000;
+
+    // The first half spreads sources over 997 IDs. In the second half three of every four rows
+    // repeat 61 sources against 13 destinations, so neither half alone ranks the sources by their
+    // total degree. IDs from 997 up are only destinations.
+    let (sources, destinations): (Vec<i64>, Vec<i64>) = (0..ROWS)
+        .map(|row| {
+            let (source, destination) = if row >= ROWS / 2 && row % 4 != 0 {
+                (row / 4 % 61, SOURCE_IDS + row % 13)
+            } else {
+                (row * 37 % SOURCE_IDS, row * 101 % DESTINATION_IDS)
+            };
+            (source as i64, destination as i64)
+        })
+        .unzip();
+    let mut out_degrees = vec![0_i64; VERTEX_IDS];
+    let mut touched = vec![false; VERTEX_IDS];
+    for (&source, &destination) in sources.iter().zip(&destinations) {
+        out_degrees[source as usize] += 1;
+        touched[source as usize] = true;
+        touched[destination as usize] = true;
+    }
+    let edge_vertices = (0..VERTEX_IDS as i64).filter(|&vertex| touched[vertex as usize]).collect::<Vec<_>>();
+    // Out of order, with the isolated IDs 5003 to 5999 that no edge names.
+    let supplied_vertices = (0..VERTEX_IDS).map(|index| (index * 7919 % VERTEX_IDS) as i64).collect::<Vec<_>>();
+    let narrow = |ids: &[i64]| ids.iter().map(|&id| i32::try_from(id).expect("vertex id fits i32")).collect::<Vec<_>>();
+
+    for vertex_bytes in [4, 8] {
+        for vertices in [None, Some(supplied_vertices.as_slice())] {
+            let mut expected_vertices = vertices.map_or_else(|| edge_vertices.clone(), <[i64]>::to_vec);
+            expected_vertices.sort_unstable();
+            for cap in [2048 * MIB, 128 * MIB] {
+                let (rows, peak) = if vertex_bytes == 4 {
+                    let vertices = vertices.map(narrow);
+                    capped_renumbered_out_degrees(&narrow(&sources), &narrow(&destinations), vertices.as_deref(), cap)
+                } else {
+                    capped_renumbered_out_degrees(&sources, &destinations, vertices, cap)
+                };
+                let context = format!("vertex_bytes={vertex_bytes} supplied={} cap={cap}", vertices.is_some());
+                let mut returned_vertices = rows.iter().map(|&(vertex, _)| vertex).collect::<Vec<_>>();
+                returned_vertices.sort_unstable();
+                assert_eq!(returned_vertices, expected_vertices, "{context}: renumbered vertex set");
+                let wrong_degree = rows.iter().find(|&&(vertex, degree)| degree != out_degrees[vertex as usize]);
+                assert_eq!(wrong_degree, None, "{context}: (vertex, out-degree) disagrees with the host count");
+                let unordered = rows.windows(2).position(|pair| pair[0].1 < pair[1].1);
+                assert_eq!(unordered, None, "{context}: internal order must have non-increasing out-degree");
+                eprintln!("renumbered graph construction {context}, peak={peak}");
+            }
+        }
+    }
+}
+
+/// Host PageRank with cuGraph's update: a dangling vertex spreads its score over every vertex.
+fn host_pagerank(edges: &[(i64, i64)], num_vertices: usize, alpha: f64) -> Vec<f64> {
+    let mut out_degrees = vec![0_usize; num_vertices];
+    for &(source, _) in edges {
+        out_degrees[source as usize] += 1;
+    }
+    let mut scores = vec![1.0 / num_vertices as f64; num_vertices];
+    for _ in 0..10_000 {
+        let dangling_sum =
+            (0..num_vertices).filter(|&vertex| out_degrees[vertex] == 0).map(|vertex| scores[vertex]).sum::<f64>();
+        let mut next = vec![(alpha * dangling_sum + 1.0 - alpha) / num_vertices as f64; num_vertices];
+        for &(source, destination) in edges {
+            next[destination as usize] += alpha * scores[source as usize] / out_degrees[source as usize] as f64;
+        }
+        let change = next.iter().zip(&scores).map(|(next, score)| (next - score).abs()).sum::<f64>();
+        scores = next;
+        if change < 1e-13 {
+            break;
+        }
+    }
+    scores
+}
+
+#[test]
+fn test_transposed_out_degrees_and_pagerank_match_host_for_symmetric_and_directed_graphs() {
+    // A transposed graph stores destinations as majors, so out-degrees are its minor degrees.
+    // Only a symmetric graph may read them from the major offsets; the directed graph below has
+    // out-degrees far from its in-degrees.
+    const ROWS: usize = 1 << 16;
+    const NUM_VERTICES: usize = 1021;
+
+    // Seven of every eight rows start at one of 31 sources; IDs 997 and up have no out-edges.
+    let directed = (0..ROWS)
+        .map(|row| {
+            let source = if row % 8 == 7 { row * 37 % 997 } else { row % 31 };
+            (source as i64, (row * 101 % NUM_VERTICES) as i64)
+        })
+        .filter(|(source, destination)| source != destination)
+        .collect::<Vec<_>>();
+    let symmetric = directed.iter().flat_map(|&(source, destination)| [(source, destination), (destination, source)]);
+    let symmetric = symmetric.collect::<Vec<_>>();
+
+    let params = PageRankParams {
+        epsilon: NonNegativeF64::new(1e-6).expect("epsilon"),
+        max_iterations: IterationCount::new(1000).expect("iterations"),
+        ..PageRankParams::default()
+    };
+    for (edges, is_symmetric) in [(directed, false), (symmetric, true)] {
+        let mut in_degrees = vec![0_i64; NUM_VERTICES];
+        let mut out_degrees = vec![0_i64; NUM_VERTICES];
+        for &(source, destination) in &edges {
+            out_degrees[source as usize] += 1;
+            in_degrees[destination as usize] += 1;
+        }
+        let expected_scores = host_pagerank(&edges, NUM_VERTICES, params.alpha.get());
+
+        let (handle, _budget) = capped_resource_handle(1024 << 20);
+        let entered = handle.enter("transposed_out_degrees").expect("entered context");
+        let (sources, destinations): (Vec<i64>, Vec<i64>) = edges.iter().copied().unzip();
+        let source = DeviceArray::from_slice(&entered, &sources).expect("source array");
+        let destination = DeviceArray::from_slice(&entered, &destinations).expect("destination array");
+        let source_view = source.view().expect("source view");
+        let destination_view = destination.view().expect("destination view");
+        let mut graph = GraphBuilder::new(&source_view, &destination_view)
+            .properties(GraphProperties { is_symmetric, is_multigraph: true })
+            .renumber()
+            .build::<Transposed>(&entered)
+            .expect("graph");
+
+        let out_only = graph.out_degrees_all(&entered).expect("out-degrees");
+        let vertices = out_only.vertex_ids().expect("vertex ids").to_vec_i64(&entered).expect("host vertex ids");
+        let out_only = out_only.out_degrees().expect("out-degrees").to_vec_i64(&entered).expect("host out-degrees");
+        let mut sorted_vertices = vertices.clone();
+        sorted_vertices.sort_unstable();
+        assert_eq!(sorted_vertices, (0..NUM_VERTICES as i64).collect::<Vec<_>>(), "symmetric={is_symmetric}");
+        let wrong_out =
+            vertices.iter().zip(&out_only).find(|&(&vertex, &degree)| degree != out_degrees[vertex as usize]);
+        assert_eq!(wrong_out, None, "symmetric={is_symmetric}: (vertex, out-degree) from out_degrees_all");
+
+        let both = graph.degrees_all(&entered).expect("degrees");
+        let vertices = both.vertex_ids().expect("vertex ids").to_vec_i64(&entered).expect("host vertex ids");
+        let ins = both.in_degrees().expect("in-degrees").to_vec_i64(&entered).expect("host in-degrees");
+        let outs = both.out_degrees().expect("out-degrees").to_vec_i64(&entered).expect("host out-degrees");
+        let wrong = (0..vertices.len()).find(|&row| {
+            let vertex = vertices[row] as usize;
+            ins[row] != in_degrees[vertex] || outs[row] != out_degrees[vertex]
+        });
+        assert_eq!(wrong, None, "symmetric={is_symmetric}: degrees_all row disagrees with the host counts");
+
+        let result = graph.pagerank(&entered, &params).expect("pagerank");
+        assert!(result.converged().expect("converged"), "symmetric={is_symmetric}: PageRank must converge");
+        let vertices = result.vertex_ids().expect("vertex ids").to_vec_i64(&entered).expect("host vertex ids");
+        let scores = result.scores().expect("scores").to_vec_f64(&entered).expect("host scores");
+        let worst = vertices
+            .iter()
+            .zip(&scores)
+            .map(|(&vertex, &score)| (vertex, (score - expected_scores[vertex as usize]).abs()))
+            .max_by(|left, right| left.1.total_cmp(&right.1))
+            .expect("scores");
+        assert!(
+            worst.1 < 1e-5,
+            "symmetric={is_symmetric}: vertex {} differs from host PageRank by {}",
+            worst.0,
+            worst.1
+        );
+    }
 }

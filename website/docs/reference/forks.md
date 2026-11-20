@@ -113,6 +113,14 @@ Features:
   over two columns. With 8-byte vertex IDs the key reuses the minor column and
   peak device memory drops; the memory-frugal path for 4-byte IDs keeps the
   merge sort.
+- Single-GPU renumbering takes each vertex's degree from the run lengths of
+  the sorted edge majors, which it already sorts to find the vertex set. The
+  binary search and atomic increment per edge are gone, and caller-supplied
+  vertex lists take the same path.
+- On a symmetric graph without an edge mask, out-degrees of a transposed
+  graph and in-degrees of a non-transposed one come from the major offsets
+  instead of a pass over every edge. Unweighted PageRank on an undirected
+  graph reads these out-degrees.
 
 Bug fixes:
 
