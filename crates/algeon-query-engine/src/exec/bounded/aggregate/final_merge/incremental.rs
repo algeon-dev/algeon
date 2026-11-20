@@ -744,6 +744,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
 /// With every input in the batch (`complete`), its bytes are the whole input. Otherwise the batch
 /// bytes are scaled to the producer's declared input rows when known, else to the expected input
 /// count; a lazy producer that does not know its frame count has no other measure of progress.
+/// The estimate is never below the batch's own bytes: a producer can deliver more rows than it
+/// declares (a join that expands its probe rows) or declare none and report no frame count.
 pub(in crate::exec::bounded::aggregate) fn first_batch_estimated_total_bytes(
     batch_bytes: u64,
     batch_inputs: usize,
@@ -759,6 +761,7 @@ pub(in crate::exec::bounded::aggregate) fn first_batch_estimated_total_bytes(
         },
         _ => batch_bytes.div_ceil(batch_inputs.max(1) as u64).saturating_mul(expected_inputs as u64),
     }
+    .max(batch_bytes)
     .max(1)
 }
 

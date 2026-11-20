@@ -831,9 +831,9 @@ pub(in crate::exec::bounded) fn should_execute_partitioned_frame_stream_aggregat
 /// partitioned, or hash-partitioned so that its slices join the held partition inputs. A frame is
 /// consumed by the step that takes it. The first staged frame fixes the partition count
 /// (`accumulation_partition_count`) against an estimate of the whole input: an eager stream
-/// reports every frame's bytes up front, and a lazy stream is estimated from its first frames
-/// (`pull_lazy_stream_estimate`), which the consumer holds unstaged until they reach the
-/// partitioned input's uncharged hold; after that it pulls one frame at a time. The released
+/// reports every frame's bytes up front, and a lazy stream is measured or estimated from the
+/// frames the consumer holds unstaged while they fit the partitioned input's hold
+/// (`pull_lazy_stream_frames`); after that it pulls one frame at a time. The released
 /// partials reach the aligned incremental merge, which finalizes them like the stream's other
 /// merges.
 pub(in crate::exec::bounded) fn execute_partitioned_frame_stream_aggregate(

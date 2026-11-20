@@ -242,7 +242,8 @@ fn run_lazy_stream(
 /// them are pulled before the first is partitioned, and the measured 192 MB sizes two partitions.
 /// With the ledger already full, the ninth frame passes the uncharged hold and is refused: the
 /// nine pulled frames, scaled to the four-fold declared rows, size six partitions, and each later
-/// frame is pulled only after the frames before it were partitioned.
+/// frame is pulled only after the frames before it were partitioned. A producer that declares no
+/// rows, or fewer than the nine frames hold, still sizes two partitions from the 144 MB it holds.
 fn lazy_stream_is_held_up_to_the_ledger_then_staged_in_order() {
     let (aggregate, schema) = distinct_pairs();
     let frame_count = 12;
@@ -282,6 +283,21 @@ fn lazy_stream_is_held_up_to_the_ledger_then_staged_in_order() {
     let held = 9;
     assert!(slices_at_pull[..held].iter().all(|slices| *slices == 0), "{slices_at_pull:?}");
     assert!(slices_at_pull[held - 1..].windows(2).all(|pulls| pulls[0] < pulls[1]), "{slices_at_pull:?}");
+
+    for declared_rows in [0, 3 * FRAME_ROWS as u64] {
+        let fixture = Fixture::with_device_budget(HOLD_CASE_DEVICE_BUDGET_BYTES);
+        let (frames, _) = run_lazy_stream(
+            &fixture,
+            &aggregate,
+            &schema,
+            &schema,
+            (0..frame_count).map(pair_frame).collect(),
+            declared_rows,
+            true,
+        );
+        assert_eq!(output_pairs(frames), expected, "declared rows {declared_rows}");
+        assert_eq!(fixture.partition_count(), Some(2), "declared rows {declared_rows}");
+    }
 }
 
 /// A lazy stream that passes its hold is sized for the partial state its rows produce. Each row
