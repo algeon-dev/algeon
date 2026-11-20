@@ -108,6 +108,11 @@ Features:
 - Non-convergence reporting for eigenvector, Katz and HITS centrality
   (`*_allow_nonconvergence`, `cugraph_hits_result_converged`), matching the
   existing PageRank option.
+- Graph construction sorts edges on one packed 64-bit key of the two endpoint
+  offsets when they fit, so Thrust runs a radix sort in place of a merge sort
+  over two columns. With 8-byte vertex IDs the key reuses the minor column and
+  peak device memory drops; the memory-frugal path for 4-byte IDs keeps the
+  merge sort.
 
 Bug fixes:
 
