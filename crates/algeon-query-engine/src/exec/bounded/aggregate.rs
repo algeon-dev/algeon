@@ -49,8 +49,8 @@ use super::{
     BoundedJoinLeafLocalParquetSourceStream, BoundedPartitionRowPolicy, BoundedPartitionTargetPolicy,
     BoundedSourceBatchingPolicy, CommittedPartial, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
     Expr, Field, FilterNode, GpuDataFrame, Instant, LimitNode, LocalParquetSource, MemoryControlPolicy, NodeId,
-    PartialAggregateInputEvidence, PlanningPolicy, ProjectionNode, QueryError, QueryErrorCode, RawSourceInput,
-    ResidentGpuFrame, Result, RuntimeResourceFacts, SortNode, SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy,
+    PartialAggregateInputEvidence, PlanningPolicy, ProjectionNode, QueryError, QueryErrorCode, ResidentGpuFrame,
+    Result, RuntimeResourceFacts, SortNode, SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy,
     aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_floating_statistical_aggregate,
     aggregate_spec_has_median, aggregate_spec_requires_whole_input, attach_budget_token_failure_facts,
     bounded_invariant_violation, budgeted_value, cast_count_output_columns_with_budget,
@@ -95,6 +95,7 @@ pub(super) use plan::{BoundedPlan, BoundedUnaryStage, SourceAggregateTopK};
 use post_stages::{aggregate_spec_has_global_final_state, execute_final_aggregate_projection};
 use sizing::partial_aggregate_work_reservation_upper_bound_bytes;
 pub(in crate::exec::bounded) use source_adjacent::execute_source_aggregate_with_dispatch;
+use source_adjacent::{execute_partitioned_frame_stream_aggregate, should_execute_partitioned_frame_stream_aggregate};
 pub(in crate::exec::bounded) use stream::{
     execute_compiled_bounded_aggregate_from_source_stream, execute_compiled_bounded_aggregate_from_stream,
     execute_compiled_source_aggregate_chunk,
@@ -140,12 +141,19 @@ pub(in crate::exec::bounded) fn should_execute_partitioned_source_adjacent_group
     // fixed chunk or row-group counts are not admission inputs. Source-adjacent group-key
     // partition is the high-cardinality path for multi-chunk string grouped aggregates.
     bounded.has_source_adjacent_stages()
-        && !bounded.aggregate.0.spec.group_exprs.is_empty()
-        && !aggregate_spec_has_floating_statistical_aggregate(&bounded.aggregate.0.spec)
-        && !aggregate_spec_has_median(&bounded.aggregate.0.spec)
-        && bounded.aggregate.0.spec.grouping_sets.is_none()
+        && partitioned_accumulation_accepts(&bounded.aggregate.0.spec)
         && chunks.len() > 1
         && source_adjacent_partitioned_live_working_set_fits_budget(context, bounded, chunks)
+}
+
+/// Aggregate shapes the group-key partitioned accumulation (`source_adjacent.rs`) can run, over
+/// source batches or a resident frame stream: grouped, without grouping sets, floating statistical
+/// aggregates or medians.
+fn partitioned_accumulation_accepts(spec: &AggregateSpec) -> bool {
+    !spec.group_exprs.is_empty()
+        && !aggregate_spec_has_floating_statistical_aggregate(spec)
+        && !aggregate_spec_has_median(spec)
+        && spec.grouping_sets.is_none()
 }
 
 /// Estimates the live working set of the partitioned path and compares it with the attempt's device

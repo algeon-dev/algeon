@@ -1,4 +1,5 @@
-//! Grouped and global aggregates whose input is a local Parquet source.
+//! Grouped and global aggregates whose input is a local Parquet source, and the group-key
+//! partitioned accumulation they share with grouped aggregates over resident frame streams.
 //!
 //! A source-adjacent aggregate (`BoundedPlan`) has only a filter and
 //! projections between the source and the aggregate, so each source chunk can
@@ -24,13 +25,30 @@
 //! `source_adjacent_local_reduction_key_sample_rows` rows and counts its
 //! distinct keys. That probe runs once per first-batch raw input (again for
 //! each piece of a retry split), and its cost is fixed by the sample bound,
-//! not by the batch size. The partition count is fixed by the first batch and
-//! never changes within a run. With an `AggregateLaneDispatch`,
+//! not by the batch size. The partition count is fixed by the first raw input
+//! and never changes within a run (`accumulation_partition_count`): the input
+//! estimate, widened by how much the partial state of the first input's rows
+//! can exceed those rows under the same byte model, divided by the aggregate
+//! partition target. A partition holds its input and produces that state, so
+//! the larger of the two sizes it; a group-only aggregate's state is a subset
+//! of its input and leaves the estimate unchanged. With an `AggregateLaneDispatch`,
 //! raw batches and ready partitions run as lane work and their results are
 //! folded on the coordinator; without one everything runs inline. Retry is
 //! local: a raw batch whose read, stages or partitioning fails on a resource
 //! error splits by chunk, a single chunk splits by row group, and a partition
 //! whose partial state is bounded above the cap splits by rows before it runs.
+//!
+//! The same accumulation serves a grouped aggregate over a resident frame
+//! stream (`execute_partitioned_frame_stream_aggregate`). Each pulled frame is
+//! a raw input (`PartitionedRawInput`) with the same staging decision,
+//! readiness rules and holds; `PartitionedAggregate` names the aggregate in
+//! place of a `BoundedPlan`. Source evidence, the batch row cap, lane splits
+//! and the source retry apply to source batches alone. A frame has no source to
+//! read again, so a resource failure while staging it ends the aggregate, as it
+//! does for the per-frame partial path. The key sample decides from at most a
+//! frame's rows; a frame too small for its sample to show reduction is
+//! partitioned and held like a high-cardinality one, and the extra work that
+//! costs is bounded by the frame.
 
 use std::time::Instant;
 
@@ -44,16 +62,19 @@ use super::{
     AggregateNode, Arc, ArrowDataType, ArrowSchemaRef, BoundedExecutionAttempt, BoundedPartitionRowPolicy, BoundedPlan,
     BoundedSourceBatchingPolicy, CommittedPartial, CompiledIncrementalPartitionedMerge, ExecutionBudgetToken,
     ExecutionContext, FilterNode, GpuDataFrame, LocalParquetSource, MemoryControlPolicy, NodeId,
-    PartialAggregateInputEvidence, PlanningPolicy, ProjectionNode, QueryError, QueryErrorCode, RawSourceInput,
-    ResidentGpuFrame, Result, SourceChunk, SourceChunkBatch, attach_budget_token_failure_facts,
-    bounded_invariant_violation, budgeted_value, cudf_query_error, execute_bounded_raw_source_chunk,
-    execute_bounded_raw_source_chunk_batch, execute_incremental_source_adjacent_final_aggregate_merge,
-    execute_partial_aggregate_with_budget, execution_budget_token_for_boundary,
-    final_merge::partition_final_merge_partial, is_retryable_chunk_error, is_source_adjacent_grouped_aggregate,
-    lower_aggregate_spec_keys, lower_final_aggregate_spec, observe_device_memory_bytes,
-    partial_aggregate_source_chunk_fingerprint, partial_aggregate_work_reservation_upper_bound_bytes,
-    partitioned::partitioned_aggregate_partition_count, plan_source_chunk_batches_with_row_cap,
-    record_chunk_retry_error, should_execute_incremental_partitioned_final_aggregate_merge,
+    PartialAggregateInputEvidence, PlanningPolicy, ProjectionNode, QueryError, QueryErrorCode, ResidentGpuFrame,
+    Result, SourceChunk, SourceChunkBatch, attach_budget_token_failure_facts, bounded_invariant_violation,
+    budgeted_value, cudf_query_error, execute_bounded_raw_source_chunk, execute_bounded_raw_source_chunk_batch,
+    execute_incremental_source_adjacent_final_aggregate_merge, execute_partial_aggregate_with_budget,
+    execution_budget_token_for_boundary,
+    final_merge::{first_batch_estimated_total_bytes, partition_final_merge_partial},
+    is_retryable_chunk_error, is_source_adjacent_grouped_aggregate, lower_aggregate_spec_keys,
+    lower_final_aggregate_spec, observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint,
+    partial_aggregate_work_reservation_upper_bound_bytes,
+    partitioned::partitioned_aggregate_partition_count,
+    partitioned_accumulation_accepts, plan_source_chunk_batches_with_row_cap, record_chunk_retry_error,
+    should_execute_incremental_partitioned_final_aggregate_merge,
+    sizing::aggregate_input_upper_bound_bytes,
 };
 use crate::{
     exec::{
@@ -63,7 +84,7 @@ use crate::{
                 bounded_source_adjacent_chunk_batches_for_work_width, bounded_source_adjacent_chunk_batching_enabled,
                 chunk_retry_facts, execute_source_adjacent_batch_uncommitted, split_retryable_chunk,
             },
-            compiled::{CompiledGpuResource, lanes::AggregateLaneDispatch},
+            compiled::{CompiledGpuResource, ResidentFrameStreamPayload, lanes::AggregateLaneDispatch},
         },
         retry::{RetryLimits, backoff_before_retry},
     },
@@ -188,12 +209,79 @@ pub(in crate::exec::bounded) fn execute_source_aggregate_with_dispatch(
     state.1.finish(execution, false)
 }
 
-/// One partition's slice of a staged raw batch, resident until its partition
-/// is aggregated. `chunks` is kept for the input evidence of that aggregate.
+/// The aggregate a partitioned accumulation feeds: its node, spec and the schemas of its input
+/// and output. Source batches take it from their `BoundedPlan`; resident frame streams from the
+/// compiled aggregate task.
+#[derive(Clone, Copy)]
+struct PartitionedAggregate<'a> {
+    node_id: NodeId,
+    aggregate: &'a AggregateNode,
+    input_schema: &'a ArrowSchemaRef,
+    output_schema: &'a ArrowSchemaRef,
+}
+
+impl<'a> PartitionedAggregate<'a> {
+    fn of_plan(bounded: &'a BoundedPlan<'_>) -> Self {
+        Self {
+            node_id: bounded.aggregate_id,
+            aggregate: bounded.aggregate.0,
+            input_schema: bounded.aggregate_input_schema,
+            output_schema: bounded.aggregate.1,
+        }
+    }
+}
+
+/// Where one raw input of the partitioned accumulation came from. Only source inputs carry
+/// source evidence; the key-sample offset seed and the stage's chunk index come from either.
+#[derive(Clone)]
+enum PartitionedInputOrigin {
+    /// Staged source chunks, which are row-group halves of a planned chunk after a retry split,
+    /// and the row groups the read covered.
+    Source { chunks: Arc<[SourceChunk]>, row_group_count: u64 },
+    /// The `index`-th frame pulled from a resident frame stream.
+    Frame { index: usize },
+}
+
+impl PartitionedInputOrigin {
+    /// Index recorded on the input's hash-partition and key-sample stages.
+    fn chunk_index(&self) -> usize {
+        match self {
+            Self::Source { chunks, .. } => chunks.first().expect("raw source batch has at least one chunk").chunk_index,
+            Self::Frame { index } => *index,
+        }
+    }
+
+    /// Seed of the key sample's row offset, stable for one input.
+    fn key_sample_seed(&self) -> u64 {
+        match self {
+            Self::Source { chunks, .. } => partial_aggregate_source_chunk_fingerprint(chunks).unwrap_or(0),
+            Self::Frame { index } => *index as u64,
+        }
+    }
+
+    fn source_row_group_count(&self) -> u64 {
+        match self {
+            Self::Source { row_group_count, .. } => *row_group_count,
+            Self::Frame { .. } => 0,
+        }
+    }
+}
+
+/// One raw input of the partitioned accumulation: the frame the aggregate reads, with the rows
+/// and decoded bytes it had before source-adjacent stages. A resident frame reports its own rows
+/// and bytes, which only the source path's batch sizing reads.
+struct PartitionedRawInput {
+    origin: PartitionedInputOrigin,
+    frame: CommittedPartial,
+    rows: u64,
+    decoded_bytes: u64,
+}
+
+/// One partition's slice of a raw input, resident until its partition is aggregated. `origin` is
+/// kept for the input evidence of that aggregate.
 struct SourceAdjacentPartitionInput {
-    chunks: Arc<[SourceChunk]>,
+    origin: PartitionedInputOrigin,
     partial: CommittedPartial,
-    source_row_group_count: u64,
 }
 
 /// Inputs of one raw batch worker.
@@ -302,16 +390,7 @@ impl<'a> SourceAdjacentPartitionedFinal<'a> {
     ) -> Result<()> {
         match self {
             Self::Incremental { merge, aligned_key_columns: Some(_) } => {
-                for output in outputs {
-                    merge.push_aligned(
-                        execution,
-                        output.partition_index,
-                        output.partition_count,
-                        &output.key_columns,
-                        output.partial,
-                    )?;
-                }
-                Ok(())
+                push_aligned_partials(execution, merge, outputs)
             },
             Self::Incremental { merge, aligned_key_columns: None } => {
                 for output in outputs {
@@ -499,9 +578,10 @@ impl SourceAdjacentRawBatchFeedback {
 /// current allocation (`attempt_allocation_domain_usage`, which counts every
 /// live allocation of the attempt including retained partition slices),
 /// reads and partitions it, flushes the partitions the batching policy marks
-/// ready, then records the batch's samples. A batch wider than one chunk per
-/// lane is split across lanes; each lane computes the partition count from
-/// the same estimate, so the first batch fixes it consistently. Retained
+/// ready, then records the batch's samples. The first batch runs whole and
+/// fixes the partition count from its first raw input
+/// (`accumulation_partition_count`); a later batch wider than one chunk per
+/// lane is split across lanes, which all use that count. Retained
 /// partition inputs stay on the coordinator at all times. Source commits are
 /// counted as outputs are accepted and recorded once before the final merge.
 fn execute_partitioned_source_adjacent_aggregate(
@@ -511,7 +591,7 @@ fn execute_partitioned_source_adjacent_aggregate(
     dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<CompiledGpuResource> {
     let owned = dispatch.map(|_| Arc::new(OwnedSourceAdjacentAggregate::new(bounded)));
-    let partitioner = source_adjacent_aggregate_partitioner(bounded);
+    let partitioner = source_adjacent_aggregate_partitioner(PartitionedAggregate::of_plan(bounded));
     let estimated_input_bytes = chunks.iter().filter_map(SourceChunk::planning_bytes).sum::<u64>().max(1);
     let batching_policy = BoundedSourceBatchingPolicy::default();
     let device_budget_bytes = execution.device_budget_bytes();
@@ -548,8 +628,10 @@ fn execute_partitioned_source_adjacent_aggregate(
             source_adjacent_aggregate_task_id(bounded.aggregate_id, "source_adjacent_raw_batch", batch_ordinal);
         batch_ordinal += 1;
         let budget_window = execution.metrics().open_budget_window();
-        let lane_batches =
-            split_partitioned_raw_batch_for_lanes(batch, dispatch.map_or(1, AggregateLaneDispatch::width));
+        // The first raw input fixes the partition count from its own rows, so the batch that holds
+        // it runs whole: lanes that each staged a first input could fix different counts.
+        let lane_width = if partition_count.is_some() { dispatch.map_or(1, AggregateLaneDispatch::width) } else { 1 };
+        let lane_batches = split_partitioned_raw_batch_for_lanes(batch, lane_width);
         if lane_batches.len() > 1 {
             let dispatch = dispatch.expect("multiple raw batches require aggregate lanes");
             let worker_owned = Arc::clone(owned.as_ref().expect("lane dispatch owns its source descriptor"));
@@ -697,6 +779,161 @@ fn execute_partitioned_source_adjacent_aggregate(
     final_merge.finish(execution, bounded)
 }
 
+/// Whether a grouped aggregate over a resident frame stream goes through the partitioned
+/// accumulation (`execute_partitioned_frame_stream_aggregate`).
+///
+/// The aggregate must have a shape the partitioned accumulation accepts and keys that partition by
+/// group key. The stream must be lazy, whose frame count is unknown, or hold more than one frame;
+/// an eager single frame keeps the single-frame path.
+pub(in crate::exec::bounded) fn should_execute_partitioned_frame_stream_aggregate(
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    inputs: &ResidentFrameStreamPayload,
+) -> bool {
+    partitioned_accumulation_accepts(&aggregate.spec)
+        && (inputs.is_lazy() || inputs.len() > 1)
+        && source_adjacent_aggregate_partitioner(PartitionedAggregate {
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+        })
+        .group_key_columns()
+        .is_some()
+}
+
+/// Aggregates a resident frame stream through the partitioned accumulation.
+///
+/// Frames are pulled one at a time and each is staged like a raw source input. The key sample of
+/// the first frame, then the feedback of the frames before, decides whether a frame is reduced
+/// whole and its partial partitioned, or hash-partitioned so that its slices join the held
+/// partition inputs. A frame is consumed by the step that takes it, so the consumer holds the
+/// current frame, its partition copy and the held slices, and never pulls ahead. The first frame
+/// fixes the partition count (`first_batch_partition_count`): an eager stream reports every frame
+/// up front, and a lazy stream scales the first frame to its declared rows. The released partials
+/// reach the aligned incremental merge, which finalizes them like the stream's other merges.
+pub(in crate::exec::bounded) fn execute_partitioned_frame_stream_aggregate(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    inputs: &mut ResidentFrameStreamPayload,
+    preserve_output_stream: bool,
+) -> Result<CompiledGpuResource> {
+    let target = PartitionedAggregate { node_id, aggregate, input_schema, output_schema };
+    let partitioner = source_adjacent_aggregate_partitioner(target);
+    let Some(key_columns) = partitioner.group_key_columns() else {
+        return Err(bounded_invariant_violation(
+            "a frame stream reached the partitioned aggregate without group-key partitions",
+            "frame_stream_partitioned_aggregate_without_group_keys",
+        )
+        .with_fact("node_id", node_id));
+    };
+    let mut merge = CompiledIncrementalPartitionedMerge::new_aligned(
+        execution.context(),
+        node_id,
+        aggregate,
+        input_schema,
+        output_schema,
+        key_columns,
+    )?;
+    let batching_policy = BoundedSourceBatchingPolicy::default();
+    let device_budget_bytes = execution.device_budget_bytes();
+    let complete = !inputs.is_lazy();
+    let total_bytes = inputs.total_bytes_hint();
+    let expected_input_rows = Some(inputs.num_rows()).filter(|rows| *rows > 0);
+    let expected_frames = inputs.len();
+    let mut feedback = SourceAdjacentRawBatchFeedback::default();
+    let mut partition_count = None;
+    let mut pending = None;
+    let mut hold = execution.retained_state_charge();
+    let mut index = 0usize;
+    while let Some(frame) = inputs.next_frame(execution) {
+        let frame = frame?;
+        execution.context().check_cancellation("query_engine.exec.bounded.frame_stream_partitioned_aggregate")?;
+        let rows = frame.frame.num_rows() as u64;
+        let bytes = frame.device_bytes();
+        let current_partition_count = match partition_count {
+            Some(count) => count,
+            None => {
+                let input_bytes_estimate = first_batch_estimated_total_bytes(
+                    if complete { total_bytes.unwrap_or(bytes) } else { bytes },
+                    1,
+                    rows,
+                    expected_input_rows,
+                    expected_frames,
+                    complete,
+                );
+                let count = accumulation_partition_count(
+                    execution,
+                    target,
+                    &frame,
+                    input_bytes_estimate,
+                    source_adjacent_partitioned_aggregate_min_partition_count(expected_frames),
+                )?;
+                *partition_count.insert(count)
+            },
+        };
+        let mut staging = SourceAdjacentRawStaging {
+            local_reduction: feedback.local_reduction_effective(batching_policy, device_budget_bytes),
+            partition_count: AccumulationPartitionCount::Fixed(current_partition_count),
+            partitioner: &partitioner,
+        };
+        let raw =
+            PartitionedRawInput { origin: PartitionedInputOrigin::Frame { index }, frame, rows, decoded_bytes: bytes };
+        let piece = stage_source_adjacent_raw_input(execution, target, raw, &mut staging)?;
+        let (outputs, sample) = accumulate_staged_raw_input(
+            execution,
+            target,
+            &partitioner,
+            current_partition_count,
+            piece,
+            &mut pending,
+            &mut hold,
+        )?;
+        push_aligned_partials(execution, &mut merge, outputs)?;
+        feedback.observe(sample);
+        index += 1;
+    }
+    let outputs = process_partitioned_source_adjacent_final_batches(
+        execution,
+        target,
+        pending.take().unwrap_or_default(),
+        partition_count.unwrap_or(1),
+        &partitioner,
+    )?;
+    // The final work consumed the held slices, and the merge below holds its
+    // own slices on the same ledger.
+    drop(hold);
+    push_aligned_partials(execution, &mut merge, outputs)?;
+    if preserve_output_stream {
+        merge.finish_stream(execution).map(CompiledGpuResource::frame_stream_payload)
+    } else {
+        merge.finish(execution).map(CompiledGpuResource::new)
+    }
+}
+
+/// Pushes partials that stay aligned to their group-key partitions into the aligned merge.
+fn push_aligned_partials(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    merge: &mut CompiledIncrementalPartitionedMerge<'_>,
+    outputs: Vec<SourceAdjacentAlignedPartial>,
+) -> Result<()> {
+    for output in outputs {
+        merge.push_aligned(
+            execution,
+            output.partition_index,
+            output.partition_count,
+            &output.key_columns,
+            output.partial,
+        )?;
+    }
+    Ok(())
+}
+
 /// Splits one planned raw batch into up to `width` sub-batches by chunk so
 /// every lane reads a share. A batch with fewer chunks than lanes stays whole;
 /// the sub-batches keep consecutive batch indexes for the source read rows.
@@ -775,62 +1012,102 @@ fn process_partitioned_source_adjacent_batch(
         estimated_input_bytes,
         min_partition_count,
     } = work;
-    let current_partition_count = *partition_count.get_or_insert_with(|| {
-        partitioned_aggregate_partition_count(execution.context(), estimated_input_bytes).max(min_partition_count)
-    });
     let planned_chunk_count = batch.chunk_count() as u64;
-    let staging = SourceAdjacentRawStaging { local_reduction, partition_count: current_partition_count, partitioner };
-    let pieces = execute_source_adjacent_raw_source_batch(execution, bounded, batch, 1, &staging)?;
+    let mut staging = SourceAdjacentRawStaging {
+        local_reduction,
+        partition_count: match partition_count {
+            Some(count) => AccumulationPartitionCount::Fixed(count),
+            None => AccumulationPartitionCount::FromFirstInput {
+                input_bytes_estimate: estimated_input_bytes,
+                min_partition_count,
+            },
+        },
+        partitioner,
+    };
+    let pieces = execute_source_adjacent_raw_source_batch(execution, bounded, batch, 1, &mut staging)?;
+    let AccumulationPartitionCount::Fixed(current_partition_count) = staging.partition_count else {
+        return Err(bounded_invariant_violation(
+            "a staged raw batch left the accumulation's partition count unset",
+            "source_adjacent_partition_count_unset",
+        ));
+    };
+    partition_count = Some(current_partition_count);
     let mut outputs = Vec::new();
     let mut samples = Vec::with_capacity(pieces.len());
     let mut committed_row_groups = 0u64;
-    for SourceAdjacentRawPiece { chunks, mut sample, source_row_group_count, staged } in pieces {
-        committed_row_groups = committed_row_groups.saturating_add(source_row_group_count);
-        match staged {
-            SourceAdjacentRawStaged::Reduced(reduced) => {
-                observe_aligned_partial_outputs(&mut sample, &reduced);
-                outputs.extend(reduced);
-            },
-            SourceAdjacentRawStaged::Partitioned(partitions) => {
-                let chunks: Arc<[SourceChunk]> = chunks.into();
-                let inputs = pending.get_or_insert_with(|| (0..current_partition_count).map(|_| Vec::new()).collect());
-                for (partition_index, partition) in partitions.into_iter().enumerate() {
-                    if let Some(partition) = partition {
-                        // Oversized partitions still enter the budgeted partial retry.
-                        inputs[partition_index].push(SourceAdjacentPartitionInput {
-                            chunks: Arc::clone(&chunks),
-                            partial: partition,
-                            source_row_group_count,
-                        });
-                    }
-                }
-                let flush_all = !source_adjacent_hold_pending_partitions(execution.context(), inputs, &mut hold);
-                for (partition_index, partition_inputs) in inputs.iter_mut().enumerate() {
-                    if partition_inputs.is_empty()
-                        || (!flush_all && !source_adjacent_partition_batch_ready(execution.context(), partition_inputs))
-                    {
-                        continue;
-                    }
-                    let reduced = execute_source_adjacent_partition_aggregate_batch(
-                        execution,
-                        bounded,
-                        partition_index,
-                        current_partition_count,
-                        partitioner,
-                        partition_inputs,
-                    )?;
-                    observe_aligned_partial_outputs(&mut sample, &reduced);
-                    outputs.extend(reduced);
-                }
-                source_adjacent_hold_pending_partitions(execution.context(), inputs, &mut hold);
-            },
-        }
+    for piece in pieces {
+        committed_row_groups = committed_row_groups.saturating_add(piece.origin.source_row_group_count());
+        let (piece_outputs, sample) = accumulate_staged_raw_input(
+            execution,
+            PartitionedAggregate::of_plan(bounded),
+            partitioner,
+            current_partition_count,
+            piece,
+            &mut pending,
+            &mut hold,
+        )?;
+        outputs.extend(piece_outputs);
         samples.push(sample);
     }
     // A batch split by retry still commits its planned chunks once, with the
     // row groups of every piece.
     let commit = (planned_chunk_count, committed_row_groups);
     Ok(PartitionedSourceBatchOutput { pending, hold, partition_count, outputs, samples, commit })
+}
+
+/// Adds one staged raw input to the accumulation and returns the partials it releases, with the
+/// input's feedback sample.
+///
+/// A locally reduced input's partials are returned as they are. A partitioned input's slices join
+/// the held partition inputs; then every partition is aggregated when the retained-state ledger
+/// refuses to hold the slices past the partition batch byte limit, and otherwise the partitions
+/// the readiness rules release. The hold is sized again to what stays. The sample also records
+/// the released partials.
+fn accumulate_staged_raw_input(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    target: PartitionedAggregate<'_>,
+    partitioner: &SourceAdjacentAggregatePartitioner,
+    partition_count: usize,
+    piece: SourceAdjacentRawPiece,
+    pending: &mut Option<Vec<Vec<SourceAdjacentPartitionInput>>>,
+    hold: &mut Option<RetentionCharge>,
+) -> Result<(Vec<SourceAdjacentAlignedPartial>, SourceAdjacentRawBatchSample)> {
+    let SourceAdjacentRawPiece { origin, mut sample, staged } = piece;
+    let partitions = match staged {
+        SourceAdjacentRawStaged::Reduced(reduced) => {
+            observe_aligned_partial_outputs(&mut sample, &reduced);
+            return Ok((reduced, sample));
+        },
+        SourceAdjacentRawStaged::Partitioned(partitions) => partitions,
+    };
+    let inputs = pending.get_or_insert_with(|| (0..partition_count).map(|_| Vec::new()).collect());
+    for (partition_index, partition) in partitions.into_iter().enumerate() {
+        if let Some(partition) = partition {
+            // Oversized partitions still enter the budgeted partial retry.
+            inputs[partition_index].push(SourceAdjacentPartitionInput { origin: origin.clone(), partial: partition });
+        }
+    }
+    let mut outputs = Vec::new();
+    let flush_all = !source_adjacent_hold_pending_partitions(execution.context(), inputs, hold);
+    for (partition_index, partition_inputs) in inputs.iter_mut().enumerate() {
+        if partition_inputs.is_empty()
+            || (!flush_all && !source_adjacent_partition_batch_ready(execution.context(), partition_inputs))
+        {
+            continue;
+        }
+        let reduced = execute_source_adjacent_partition_aggregate_batch(
+            execution,
+            target,
+            partition_index,
+            partition_count,
+            partitioner,
+            partition_inputs,
+        )?;
+        observe_aligned_partial_outputs(&mut sample, &reduced);
+        outputs.extend(reduced);
+    }
+    source_adjacent_hold_pending_partitions(execution.context(), inputs, hold);
+    Ok((outputs, sample))
 }
 
 fn execute_partitioned_source_adjacent_final_work(
@@ -845,7 +1122,7 @@ fn execute_partitioned_source_adjacent_final_work(
     let Some(dispatch) = dispatch else {
         return process_partitioned_source_adjacent_final_batches(
             execution,
-            bounded,
+            PartitionedAggregate::of_plan(bounded),
             pending,
             partition_count,
             partitioner,
@@ -862,7 +1139,7 @@ fn execute_partitioned_source_adjacent_final_work(
         move |execution, (partition_index, mut inputs)| {
             execute_source_adjacent_partition_aggregate_batch(
                 execution,
-                &owned.plan(),
+                PartitionedAggregate::of_plan(&owned.plan()),
                 partition_index,
                 partition_count,
                 &partitioner,
@@ -879,7 +1156,7 @@ fn execute_partitioned_source_adjacent_final_work(
 
 fn process_partitioned_source_adjacent_final_batches(
     execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
+    target: PartitionedAggregate<'_>,
     pending: Vec<Vec<SourceAdjacentPartitionInput>>,
     partition_count: usize,
     partitioner: &SourceAdjacentAggregatePartitioner,
@@ -891,7 +1168,7 @@ fn process_partitioned_source_adjacent_final_batches(
         }
         match execute_source_adjacent_partition_aggregate_batch(
             execution,
-            bounded,
+            target,
             partition_index,
             partition_count,
             partitioner,
@@ -928,9 +1205,9 @@ const SOURCE_ADJACENT_LOCAL_REDUCTION_STAGE: &str = "source_adjacent_local_reduc
 /// staged batch into partitions first would only add two copies of it.
 fn execute_source_adjacent_batch_local_reduction(
     execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-    chunks: &[SourceChunk],
-    raw: RawSourceInput,
+    target: PartitionedAggregate<'_>,
+    origin: &PartitionedInputOrigin,
+    frame: CommittedPartial,
     partition_count: usize,
     partitioner: &SourceAdjacentAggregatePartitioner,
 ) -> Result<Vec<SourceAdjacentAlignedPartial>> {
@@ -938,8 +1215,7 @@ fn execute_source_adjacent_batch_local_reduction(
         source_adjacent_partition_strategy: "local_reduction",
         source_adjacent_max_partition_fan_in: Some(1),
         ..source_adjacent_partitioned_aggregate_input_evidence(
-            chunks,
-            raw.source_row_group_count,
+            std::slice::from_ref(origin),
             partitioner,
             partition_count,
             1,
@@ -948,10 +1224,10 @@ fn execute_source_adjacent_batch_local_reduction(
     };
     let partials = execute_source_adjacent_partition_aggregate_with_retry(
         execution,
-        bounded,
+        target,
         SOURCE_ADJACENT_LOCAL_REDUCTION_STAGE,
         0,
-        raw.partial,
+        frame,
         input_evidence,
         source_adjacent_partition_aggregate_retry_budget(execution.context()),
     )?;
@@ -966,12 +1242,12 @@ fn execute_source_adjacent_batch_local_reduction(
             })
             .collect());
     };
-    let output_key_columns = lower_final_aggregate_spec(&bounded.aggregate.0.spec)?.key_columns;
+    let output_key_columns = lower_final_aggregate_spec(&target.aggregate.spec)?.key_columns;
     let mut outputs = Vec::new();
     for (partial_index, partial) in partials.into_iter().enumerate() {
         let partitions = match partition_final_merge_partial(
             execution,
-            bounded.aggregate_id,
+            target.node_id,
             partial_index,
             partial,
             &output_key_columns,
@@ -1002,17 +1278,61 @@ fn execute_source_adjacent_batch_local_reduction(
 /// key sample then decides.
 struct SourceAdjacentRawStaging<'a> {
     local_reduction: Option<bool>,
-    partition_count: usize,
+    partition_count: AccumulationPartitionCount,
     partitioner: &'a SourceAdjacentAggregatePartitioner,
 }
 
-/// One raw input that completed its retry scope. `chunks` names the source
-/// chunks it covers, which are row-group halves of a planned chunk after a
-/// split.
+/// The accumulation's partition count as a raw input is staged.
+#[derive(Debug, Clone, Copy)]
+enum AccumulationPartitionCount {
+    /// Fixed by an earlier raw input of the run.
+    Fixed(usize),
+    /// Fixed by the first raw input staged (`accumulation_partition_count`), for an input
+    /// estimated at `input_bytes_estimate` bytes in all.
+    FromFirstInput { input_bytes_estimate: u64, min_partition_count: usize },
+}
+
+/// Partition count of the partitioned accumulation, fixed from its first raw input.
+///
+/// A partition holds its input slices and produces the partial state of the same rows, so its
+/// working set is bounded by the larger of the two. `input_bytes_estimate` estimates the whole
+/// input. When the partial-state upper bound of the first input's rows
+/// (`partial_aggregate_work_reservation_upper_bound_bytes`) exceeds that input's own bound under
+/// the same byte model (`aggregate_input_upper_bound_bytes`), the estimate grows by that ratio.
+/// The count is the aggregate partition count of the result, at least `min_partition_count`. A
+/// group-only aggregate's state columns are a subset of its input columns, so its estimate stays
+/// the input estimate. A first input without rows bounds nothing and leaves the estimate as it is.
+fn accumulation_partition_count(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    target: PartitionedAggregate<'_>,
+    first_input: &CommittedPartial,
+    input_bytes_estimate: u64,
+    min_partition_count: usize,
+) -> Result<usize> {
+    let mut estimate = input_bytes_estimate;
+    if first_input.frame.num_rows() > 0 {
+        let state = partial_aggregate_work_reservation_upper_bound_bytes(
+            execution,
+            target.aggregate,
+            target.input_schema,
+            target.output_schema,
+            &first_input.frame,
+        )?;
+        let input = aggregate_input_upper_bound_bytes(execution, target.input_schema, &first_input.frame)?;
+        if let (Some(state), Some(input)) = (state, input)
+            && state > input
+        {
+            estimate = (u128::from(input_bytes_estimate) * u128::from(state) / u128::from(input))
+                .min(u128::from(u64::MAX)) as u64;
+        }
+    }
+    Ok(partitioned_aggregate_partition_count(execution.context(), estimate).max(min_partition_count))
+}
+
+/// One raw input that completed its retry scope.
 struct SourceAdjacentRawPiece {
-    chunks: Vec<SourceChunk>,
+    origin: PartitionedInputOrigin,
     sample: SourceAdjacentRawBatchSample,
-    source_row_group_count: u64,
     staged: SourceAdjacentRawStaged,
 }
 
@@ -1039,7 +1359,7 @@ fn execute_source_adjacent_raw_source_batch(
     bounded: &BoundedPlan<'_>,
     batch: SourceChunkBatch,
     attempt: usize,
-    staging: &SourceAdjacentRawStaging<'_>,
+    staging: &mut SourceAdjacentRawStaging<'_>,
 ) -> Result<Vec<SourceAdjacentRawPiece>> {
     execution.context().check_cancellation("query_engine.exec.bounded.source_adjacent_raw_source_batch_retry")?;
     let RetryLimits { max_attempts, min_split_row_groups } = RetryLimits::of(execution.context());
@@ -1048,12 +1368,22 @@ fn execute_source_adjacent_raw_source_batch(
     } else {
         execute_bounded_raw_source_chunk_batch(execution, bounded, &batch)
     };
-    let error =
-        match raw.and_then(|raw| stage_source_adjacent_raw_input(execution, bounded, &batch.chunks, raw, staging)) {
-            Ok(piece) => return Ok(vec![piece]),
-            Err(error) if is_retryable_chunk_error(&error) => error,
-            Err(error) => return Err(error),
+    let error = match raw.and_then(|raw| {
+        let raw = PartitionedRawInput {
+            origin: PartitionedInputOrigin::Source {
+                chunks: batch.chunks.clone().into(),
+                row_group_count: raw.source_row_group_count,
+            },
+            rows: raw.source_rows,
+            decoded_bytes: raw.source_bytes,
+            frame: raw.partial,
         };
+        stage_source_adjacent_raw_input(execution, PartitionedAggregate::of_plan(bounded), raw, staging)
+    }) {
+        Ok(piece) => return Ok(vec![piece]),
+        Err(error) if is_retryable_chunk_error(&error) => error,
+        Err(error) => return Err(error),
+    };
     record_chunk_retry_error(&error, execution.metrics());
     let children = if batch.is_singleton() {
         let chunk = &batch.chunks[0];
@@ -1085,46 +1415,54 @@ fn execute_source_adjacent_raw_source_batch(
     Ok(pieces)
 }
 
-/// Partitions or locally reduces one staged raw input. Its outputs are
-/// returned to the retry scope, never pushed into retained partition state.
+/// Partitions or locally reduces one raw input, a staged source batch or a resident frame. A
+/// source input's outputs are returned to its retry scope, never pushed into retained partition
+/// state.
 fn stage_source_adjacent_raw_input(
     execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-    chunks: &[SourceChunk],
-    raw: RawSourceInput,
-    staging: &SourceAdjacentRawStaging<'_>,
+    target: PartitionedAggregate<'_>,
+    raw: PartitionedRawInput,
+    staging: &mut SourceAdjacentRawStaging<'_>,
 ) -> Result<SourceAdjacentRawPiece> {
-    let SourceAdjacentRawStaging { local_reduction, partition_count, partitioner } = *staging;
+    let partition_count = match staging.partition_count {
+        AccumulationPartitionCount::Fixed(count) => count,
+        AccumulationPartitionCount::FromFirstInput { input_bytes_estimate, min_partition_count } => {
+            let count =
+                accumulation_partition_count(execution, target, &raw.frame, input_bytes_estimate, min_partition_count)?;
+            staging.partition_count = AccumulationPartitionCount::Fixed(count);
+            count
+        },
+    };
+    let SourceAdjacentRawStaging { local_reduction, partitioner, .. } = *staging;
+    let PartitionedRawInput { origin, frame, rows, decoded_bytes } = raw;
     let mut sample = SourceAdjacentRawBatchSample {
-        rows: raw.source_rows,
-        decoded_bytes: raw.source_bytes,
-        staged_bytes: raw.partial.device_bytes(),
+        rows,
+        decoded_bytes,
+        staged_bytes: frame.device_bytes(),
         partial_rows: None,
         partial_bytes: 0,
         non_empty_partitions: None,
         partition_count: None,
     };
-    let source_row_group_count = raw.source_row_group_count;
     let local_reduction = match local_reduction {
         Some(local_reduction) => local_reduction,
-        None => source_adjacent_key_sample_local_reduction(execution, bounded, chunks, &raw.partial)?,
+        None => source_adjacent_key_sample_local_reduction(execution, target, &origin, &frame)?,
     };
     let staged = if local_reduction {
         SourceAdjacentRawStaged::Reduced(execute_source_adjacent_batch_local_reduction(
             execution,
-            bounded,
-            chunks,
-            raw,
+            target,
+            &origin,
+            frame,
             partition_count,
             partitioner,
         )?)
     } else {
-        let chunk_index = chunks.first().expect("raw source batch has at least one chunk").chunk_index;
         let partitions = partition_source_adjacent_raw_chunk(
             execution,
-            bounded.aggregate_id,
-            chunk_index,
-            raw.partial,
+            target.node_id,
+            origin.chunk_index(),
+            frame,
             partition_count,
             partitioner,
         )?;
@@ -1137,7 +1475,7 @@ fn stage_source_adjacent_raw_input(
         sample.partition_count = Some(partition_count);
         SourceAdjacentRawStaged::Partitioned(partitions)
     };
-    Ok(SourceAdjacentRawPiece { chunks: chunks.to_vec(), sample, source_row_group_count, staged })
+    Ok(SourceAdjacentRawPiece { origin, sample, staged })
 }
 
 const SOURCE_ADJACENT_KEY_SAMPLE_STRATEGY: &str = "source_adjacent_local_reduction_key_sample";
@@ -1162,12 +1500,12 @@ const SOURCE_ADJACENT_KEY_SAMPLE_STRATEGY: &str = "source_adjacent_local_reducti
 /// Group keys that do not lower to input columns leave the input partitioned.
 fn source_adjacent_key_sample_local_reduction(
     execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-    chunks: &[SourceChunk],
+    target: PartitionedAggregate<'_>,
+    origin: &PartitionedInputOrigin,
     staged: &CommittedPartial,
 ) -> Result<bool> {
     let policy = BoundedSourceBatchingPolicy::default();
-    let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
+    let Ok(lowered_keys) = lower_aggregate_spec_keys(&target.aggregate.spec) else {
         return Ok(false);
     };
     let rows = staged.frame.num_rows() as u64;
@@ -1175,7 +1513,7 @@ fn source_adjacent_key_sample_local_reduction(
         return Ok(false);
     }
     let stride = rows.div_ceil(policy.source_adjacent_local_reduction_key_sample_rows());
-    let offset = partial_aggregate_source_chunk_fingerprint(chunks).unwrap_or(0) % stride;
+    let offset = origin.key_sample_seed() % stride;
     let sample_rows = (rows - offset).div_ceil(stride);
     let key_refs = lowered_keys.key_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let token = execution_budget_token_for_boundary(
@@ -1192,8 +1530,8 @@ fn source_adjacent_key_sample_local_reduction(
         parent_span_id,
         RuntimeOperatorStageKind::ExactCardinalityProbe,
         RuntimeOperatorStageIdentity::new()
-            .with_node_id(bounded.aggregate_id.to_string())
-            .with_chunk_index(chunks.first().expect("raw source batch has at least one chunk").chunk_index)
+            .with_node_id(target.node_id.to_string())
+            .with_chunk_index(origin.chunk_index())
             .with_strategy_label(SOURCE_ADJACENT_KEY_SAMPLE_STRATEGY)
             .with_input_rows(sample_rows),
     );
@@ -1212,9 +1550,8 @@ fn source_adjacent_key_sample_local_reduction(
             groups
         },
         Err(error) => {
-            let error = error
-                .with_fact_if_absent("node_id", bounded.aggregate_id)
-                .with_fact_if_absent("sample_rows", sample_rows);
+            let error =
+                error.with_fact_if_absent("node_id", target.node_id).with_fact_if_absent("sample_rows", sample_rows);
             stage_guard.fail(&error);
             return Err(error);
         },
@@ -1356,19 +1693,28 @@ fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatc
         .collect()
 }
 
+/// Evidence for one partitioned partial aggregate over the inputs of `origins`. Source inputs
+/// report their chunks; resident frames report no source and are not source-adjacent partials.
 fn source_adjacent_partitioned_aggregate_input_evidence(
-    chunks: &[SourceChunk],
-    source_row_group_count: u64,
+    origins: &[PartitionedInputOrigin],
     partitioner: &SourceAdjacentAggregatePartitioner,
     partition_count: usize,
     non_empty_partition_count: usize,
     max_partition_fan_in: usize,
 ) -> PartialAggregateInputEvidence {
+    let chunks = origins
+        .iter()
+        .filter_map(|origin| match origin {
+            PartitionedInputOrigin::Source { chunks, .. } => Some(chunks.iter().cloned()),
+            PartitionedInputOrigin::Frame { .. } => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
     PartialAggregateInputEvidence {
-        source_chunk_fingerprint: partial_aggregate_source_chunk_fingerprint(chunks),
-        source_adjacent_partial: true,
-        source_chunk_row_group_count: source_row_group_count,
-        source_chunk_reads_all_row_groups: chunks.iter().all(|chunk| chunk.reads_all_row_groups),
+        source_chunk_fingerprint: partial_aggregate_source_chunk_fingerprint(&chunks),
+        source_adjacent_partial: !chunks.is_empty(),
+        source_chunk_row_group_count: origins.iter().map(PartitionedInputOrigin::source_row_group_count).sum(),
+        source_chunk_reads_all_row_groups: !chunks.is_empty() && chunks.iter().all(|chunk| chunk.reads_all_row_groups),
         source_chunk_known_row_count: sum_optional_u64(chunks.iter().map(|chunk| chunk.known_row_count)),
         source_chunk_estimated_source_read_bytes: sum_optional_u64(
             chunks.iter().map(|chunk| chunk.estimated_source_read_bytes),
@@ -1430,7 +1776,7 @@ fn source_adjacent_partition_batch_observed_device_bytes(inputs: &[SourceAdjacen
 /// batch.
 fn execute_source_adjacent_partition_aggregate_batch(
     execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
+    target: PartitionedAggregate<'_>,
     partition_index: usize,
     partition_count: usize,
     partitioner: &SourceAdjacentAggregatePartitioner,
@@ -1439,21 +1785,19 @@ fn execute_source_adjacent_partition_aggregate_batch(
     let batch_inputs = std::mem::take(inputs);
     let non_empty_partition_count = usize::from(batch_inputs.iter().any(|input| input.partial.frame.num_rows() > 0));
     let max_partition_fan_in = batch_inputs.len();
-    let source_row_group_count = batch_inputs.iter().map(|input| input.source_row_group_count).sum::<u64>();
-    let batch_chunks = batch_inputs.iter().flat_map(|input| input.chunks.iter().cloned()).collect::<Vec<_>>();
+    let origins = batch_inputs.iter().map(|input| input.origin.clone()).collect::<Vec<_>>();
     let input_evidence = source_adjacent_partitioned_aggregate_input_evidence(
-        &batch_chunks,
-        source_row_group_count,
+        &origins,
         partitioner,
         partition_count,
         non_empty_partition_count,
         max_partition_fan_in,
     );
     let partials = batch_inputs.into_iter().map(|input| input.partial).collect::<Vec<_>>();
-    let partition_input = concatenate_partition_inputs(execution, bounded.aggregate_id, partition_index, partials)?;
+    let partition_input = concatenate_partition_inputs(execution, target.node_id, partition_index, partials)?;
     let partials = execute_source_adjacent_partition_aggregate_with_retry(
         execution,
-        bounded,
+        target,
         SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE,
         partition_index,
         partition_input,
@@ -1474,8 +1818,8 @@ fn execute_source_adjacent_partition_aggregate_batch(
 /// Group-key partitioning requires every key to be an integer type, or at
 /// least one key to be a string with the rest integers; keys that cannot be
 /// lowered or include other types fall back to row balancing.
-fn source_adjacent_aggregate_partitioner(bounded: &BoundedPlan<'_>) -> SourceAdjacentAggregatePartitioner {
-    let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
+fn source_adjacent_aggregate_partitioner(target: PartitionedAggregate<'_>) -> SourceAdjacentAggregatePartitioner {
+    let Ok(lowered_keys) = lower_aggregate_spec_keys(&target.aggregate.spec) else {
         return SourceAdjacentAggregatePartitioner::RowBalanced;
     };
     if lowered_keys.key_columns.is_empty() {
@@ -1484,7 +1828,7 @@ fn source_adjacent_aggregate_partitioner(bounded: &BoundedPlan<'_>) -> SourceAdj
     let mut has_string_key = false;
     let mut integer_keys = true;
     for key_column in &lowered_keys.key_columns {
-        let Ok(field) = bounded.aggregate_input_schema.field_with_name(key_column) else {
+        let Ok(field) = target.input_schema.field_with_name(key_column) else {
             return SourceAdjacentAggregatePartitioner::RowBalanced;
         };
         has_string_key |=
@@ -1778,7 +2122,7 @@ const SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE: &str = "source_adjace
 /// and the existing final merge owns combining its partial states.
 fn execute_source_adjacent_partition_aggregate_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
+    target: PartitionedAggregate<'_>,
     stage: &'static str,
     partition_index: usize,
     input: CommittedPartial,
@@ -1787,14 +2131,14 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
 ) -> Result<Vec<CommittedPartial>> {
     let upper_bound_bytes = match partial_aggregate_work_reservation_upper_bound_bytes(
         execution,
-        bounded.aggregate.0,
-        bounded.aggregate_input_schema,
-        bounded.aggregate.1,
+        target.aggregate,
+        target.input_schema,
+        target.output_schema,
         &input.frame,
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, stage, partition_index));
+            return Err(source_adjacent_partition_aggregate_error(error, target.node_id, stage, partition_index));
         },
     };
     if source_adjacent_partition_aggregate_should_split(
@@ -1809,18 +2153,13 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
             .context()
             .check_cancellation("query_engine.exec.bounded.source_adjacent_partition_aggregate_split")
         {
-            return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, stage, partition_index));
+            return Err(source_adjacent_partition_aggregate_error(error, target.node_id, stage, partition_index));
         }
-        let (left, right) = split_source_adjacent_partition_aggregate_input(
-            execution,
-            bounded.aggregate_id,
-            stage,
-            partition_index,
-            input,
-        )?;
+        let (left, right) =
+            split_source_adjacent_partition_aggregate_input(execution, target.node_id, stage, partition_index, input)?;
         let mut partials = match execute_source_adjacent_partition_aggregate_with_retry(
             execution,
-            bounded,
+            target,
             stage,
             partition_index,
             left,
@@ -1834,7 +2173,7 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
         };
         match execute_source_adjacent_partition_aggregate_with_retry(
             execution,
-            bounded,
+            target,
             stage,
             partition_index,
             right,
@@ -1848,14 +2187,14 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
             Err(error) => Err(error),
         }
     } else {
-        execute_source_adjacent_partition_aggregate(execution, bounded, stage, partition_index, input, input_evidence)
+        execute_source_adjacent_partition_aggregate(execution, target, stage, partition_index, input, input_evidence)
             .map(|partial| vec![partial])
     }
 }
 
 fn execute_source_adjacent_partition_aggregate(
     execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
+    target: PartitionedAggregate<'_>,
     stage: &'static str,
     partition_index: usize,
     input: CommittedPartial,
@@ -1863,7 +2202,7 @@ fn execute_source_adjacent_partition_aggregate(
 ) -> Result<CommittedPartial> {
     let input_rows = input.frame.num_rows() as u64;
     let input_frame = input.frame;
-    let task_id = source_adjacent_aggregate_task_id(bounded.aggregate_id, stage, format!("partition{partition_index}"));
+    let task_id = source_adjacent_aggregate_task_id(target.node_id, stage, format!("partition{partition_index}"));
     let token = match execution_budget_token_for_boundary(
         execution.context(),
         execution.device_budget_bytes(),
@@ -1873,17 +2212,17 @@ fn execute_source_adjacent_partition_aggregate(
     ) {
         Ok(token) => token,
         Err(error) => {
-            return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, stage, partition_index));
+            return Err(source_adjacent_partition_aggregate_error(error, target.node_id, stage, partition_index));
         },
     };
     let chunk_operator_timer = Instant::now();
     let budget_window = execution.metrics().open_budget_window();
     let result = execute_partial_aggregate_with_budget(
         execution.context(),
-        Some(bounded.aggregate_id),
-        bounded.aggregate.0,
-        bounded.aggregate_input_schema,
-        bounded.aggregate.1,
+        Some(target.node_id),
+        target.aggregate,
+        target.input_schema,
+        target.output_schema,
         input_frame,
         &token,
         Some(input_evidence),
@@ -1894,13 +2233,13 @@ fn execute_source_adjacent_partition_aggregate(
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, stage, partition_index));
+            return Err(source_adjacent_partition_aggregate_error(error, target.node_id, stage, partition_index));
         },
     };
     let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, stage, partition_index));
+            return Err(source_adjacent_partition_aggregate_error(error, target.node_id, stage, partition_index));
         },
     };
     let output = ResidentGpuFrame::with_device_bytes(frame, output_bytes);

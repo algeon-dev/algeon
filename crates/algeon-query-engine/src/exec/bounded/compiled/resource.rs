@@ -1,6 +1,10 @@
+#[cfg(test)]
+use query_planning::error::Result;
 use query_planning::plan::NodeId;
 
 use super::ResidentFrameStreamPayload;
+#[cfg(test)]
+use crate::exec::bounded::BoundedExecutionAttempt;
 use crate::exec::bounded::{
     BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
 };
@@ -59,6 +63,20 @@ impl CompiledGpuResource {
 
     pub(in crate::exec::bounded) fn frame_stream_payload(stream: ResidentFrameStreamPayload) -> Self {
         Self { payload: CompiledGpuResourcePayload::ResidentFrameStream(stream) }
+    }
+
+    /// The frames of a frame or frame-stream payload, draining the stream. Lets operator tests
+    /// outside the scheduler read an operator's output.
+    #[cfg(test)]
+    pub(in crate::exec::bounded) fn into_resident_frames(
+        self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+    ) -> Result<Vec<ResidentGpuFrame>> {
+        match self.payload {
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => Ok(vec![*frame]),
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.into_remaining_frames_owned(execution),
+            _ => panic!("payload holds no resident frames: {}", self.form_name()),
+        }
     }
 
     /// Diagnostic name of the payload's form.

@@ -1066,8 +1066,12 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
             .any(|join| join.execution_strategy == "bounded_partitioned_hash_equi_join")
     );
     assert!(
-        metrics.partial_aggregate_count > 2,
-        "direct join-output stream should produce one partial aggregate per streamed join batch"
+        metrics.aggregate_strategy_decisions.iter().any(|decision| decision
+            .facts
+            .get("source_adjacent_max_partition_fan_in")
+            .and_then(|fan_in| fan_in.parse::<u64>().ok())
+            .is_some_and(|fan_in| fan_in > 2)),
+        "the aggregate should take a slice of each streamed join batch into its partitions"
     );
     assert!(
         metrics.partial_aggregate_input_rows >= metrics.partial_aggregate_rows,

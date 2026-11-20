@@ -5,7 +5,7 @@ use super::*;
 #[path = "../../../support/incremental_merge_fixture.rs"]
 mod incremental_merge_fixture;
 
-use incremental_merge_fixture::incremental_partitioned_merge_builder;
+use incremental_merge_fixture::{grouped_join_aggregate_builder, incremental_partitioned_merge_builder};
 
 #[test]
 fn bounded_native_query_executes_global_final_merge_with_consistent_state_schema() {
@@ -205,6 +205,78 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
     assert_attempt_domain_released(admitted.context.context());
     admitted.finish();
 
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// A grouped aggregate over the streamed join output whose groups each reduce eight rows, above
+/// the local-reduction bound and below distinct input, holds raw partition slices. Under a cap
+/// whose quarter is smaller than the raw input, the retained-state ledger refuses the hold, every
+/// partition is aggregated whenever the held slices pass the partition batch size, and the
+/// attempt stays under the cap with exact sums and counts.
+#[test]
+fn bounded_native_query_holds_reducing_partitions_within_the_retained_state_share() {
+    let dir = unique_temp_dir("query-engine-bounded-reducing-partition-holds");
+    let row_groups = 64;
+    let rows_per_row_group = 131_072;
+    let rows_per_key = 8;
+    let (builder, aggregate, _) = grouped_join_aggregate_builder(
+        &dir,
+        row_groups,
+        rows_per_row_group,
+        rows_per_key,
+        LocalParquetSource::from_files,
+    );
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
+    // The streamed join output is 128 MiB of keys and values, more than the 100 MiB quarter of
+    // this cap that the held slices may take.
+    let cap = 400 * 1024 * 1024;
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: cap,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
+    let admitted = context.admit_plan(&plan).unwrap();
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
+    let outcome = execute_query_plan_direct(
+        admitted.context.context(),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+    );
+    let (output, metrics, _) = outcome.into_parts();
+    let metrics = metrics.snapshot();
+    let output = output.unwrap();
+    let usage = admitted.attempt_allocation_domain_usage().unwrap().unwrap();
+    assert!(usage.peak_bytes <= cap, "{usage:?}");
+
+    let rows = (row_groups * rows_per_row_group) as u64;
+    assert_eq!(metrics.partial_aggregate_input_rows, rows);
+    let partition_count = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find_map(|decision| {
+            (decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) == Some("group_key"))
+                .then(|| decision.facts.get("source_adjacent_partition_count")?.parse::<u64>().ok())
+                .flatten()
+        })
+        .expect("group-key partition aggregates");
+    // A refused hold aggregates the partitions before the input ends, so some partition is
+    // aggregated more than once.
+    assert!(metrics.partial_aggregate_count > partition_count, "{metrics:?}");
+
+    let QueryOutput::HostArrow(batch) = output else { panic!("host output") };
+    assert_eq!(batch.num_rows() as u64, rows / rows_per_key as u64);
+    let keys = int64_array(&batch, 0);
+    let sums = int64_array(&batch, 1);
+    let counts = int64_array(&batch, 2);
+    assert!((0..batch.num_rows()).all(|row| {
+        let first = keys.value(row) * rows_per_key as i64;
+        let expected_sum = (first..first + rows_per_key as i64).map(|input_row| input_row % 7).sum::<i64>();
+        sums.value(row) == expected_sum && counts.value(row) == rows_per_key as i64
+    }));
+    admitted.finish();
+    drop(admitted);
     fs::remove_dir_all(dir).unwrap();
 }
 
