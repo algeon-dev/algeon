@@ -257,6 +257,7 @@ add_library(
   src/execution_context.cpp
   src/io_parquet.cpp
   src/sorting.cpp
+  src/top_k_float_boundary.cu
   src/partitioning.cpp
   src/filter.cpp
   src/gds.cpp

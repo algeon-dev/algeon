@@ -97,7 +97,8 @@ cudf_status_t cudf_is_sorted_ex(cudf_table_view_handle input,
 /// value, and -0.0 equals 0.0. The mask has no nulls. `k >= rows` selects every
 /// row and `k == 0` none. `input` must be fixed-width (numeric, BOOL8,
 /// timestamp, duration or decimal); other types fail with `CUDF_ERROR_TYPE`,
-/// and a negative `k` with `CUDF_ERROR_INVALID_ARGUMENT`.
+/// and a negative `k` with `CUDF_ERROR_INVALID_ARGUMENT`. The `k`-th value comes
+/// from a partial selection, also for floating point; no call sorts every row.
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned column.
 cudf_status_t cudf_top_k_with_ties_mask_ex(cudf_column_view_handle input,

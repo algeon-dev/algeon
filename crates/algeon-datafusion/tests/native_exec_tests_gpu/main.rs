@@ -1450,8 +1450,9 @@ fn sort_by_keys_outside_the_output_matches_datafusion_row_order() {
 /// candidate keeps only the rows whose first key reaches the limit's boundary value, so
 /// these cases put that boundary inside runs of equal first keys (resolved by `id`), at
 /// NaN, infinities and both zeros, and among null runs shorter than, as long as and longer
-/// than the limit, in both directions and null placements. `g` and `t` take the partial
-/// selection path, `d`, `z` and `e` the floating-point path, `s` the full sort.
+/// than the limit, in both directions and null placements. `g` and `t` take libcudf's
+/// top-k selection, `d`, `f` (FLOAT32), `z` and `e` the shim's floating-point selection,
+/// and `s` the full sort.
 #[test]
 fn order_by_limit_matches_the_native_full_sort_prefix() {
     const ROWS: i64 = 4096;
@@ -1487,6 +1488,7 @@ fn order_by_limit_matches_the_native_full_sort_prefix() {
             Field::new("n", DataType::Int32, true),
             Field::new("m", DataType::Int32, true),
             Field::new("d", DataType::Float64, true),
+            Field::new("f", DataType::Float32, true),
             Field::new("z", DataType::Float64, false),
             Field::new("e", DataType::Float64, true),
             Field::new("s", DataType::Utf8, false),
@@ -1503,6 +1505,7 @@ fn order_by_limit_matches_the_native_full_sort_prefix() {
                 )),
                 Arc::new(Int32Array::from_iter(ids.iter().map(|id| [5, 900, 3000].contains(id).then_some(*id as i32)))),
                 Arc::new(Float64Array::from_iter(ids.iter().map(|id| float(*id)))),
+                Arc::new(Float32Array::from_iter(ids.iter().map(|id| float(*id).map(|value| value as f32)))),
                 Arc::new(Float64Array::from_iter_values(ids.iter().map(|id| zeros(*id)))),
                 Arc::new(Float64Array::from_iter(ids.iter().map(|id| mostly_nan(*id)))),
                 Arc::new(StringArray::from_iter_values(ids.iter().map(|id| format!("k{:03}", id % 50)))),
@@ -1547,6 +1550,10 @@ fn order_by_limit_matches_the_native_full_sort_prefix() {
         ("id, d", "d DESC NULLS FIRST, id", 0, 3),
         ("id, d", "d DESC NULLS FIRST, id", 0, 4),
         ("id, d", "d DESC NULLS FIRST, id", 0, 6),
+        ("id, d", "d DESC NULLS FIRST, id", 0, 10),
+        ("id, f", "f DESC NULLS LAST, id", 0, 10),
+        ("id, f", "f DESC NULLS FIRST, id", 0, 10),
+        ("id, f", "f NULLS FIRST, id", 0, 30),
         ("id, d", "d NULLS LAST, id", 0, 12),
         ("id, d", "d NULLS LAST, id", 5, 30),
         ("id, z", "z, id", 0, 100),

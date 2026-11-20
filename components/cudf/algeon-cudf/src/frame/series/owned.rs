@@ -807,10 +807,12 @@ impl SeriesOps<'_> {
     /// `sort_values`.
     ///
     /// # Cost
-    /// Null rows are compacted away first when present. The `k` best of the rest come from
-    /// libcudf's `top_k`, a partial selection for integral, decimal, boolean and temporal
-    /// values and a full single-column sort for floating point, which also reads its
-    /// boundary value back to the host. The mask is one comparison pass over the series.
+    /// The `k`-th value comes from a partial selection, not a sort of every row. Integral,
+    /// decimal, boolean and temporal values use libcudf's `top_k` after null rows are
+    /// compacted away. Floating-point values select on an order-preserving integer key read
+    /// in place, with workspace of a few bytes per row plus the `k` selected keys. The
+    /// boundary value is read back to the host, and the mask is one comparison pass over
+    /// the series.
     pub fn top_k_with_ties_mask(&self, k: usize, options: &SortOptions) -> Result<Series> {
         self.series.top_k_with_ties_mask_with_context(k, options, self.ctx, "series::top_k_with_ties_mask")
     }

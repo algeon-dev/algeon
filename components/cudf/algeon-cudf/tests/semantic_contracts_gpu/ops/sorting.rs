@@ -755,10 +755,15 @@ fn top_k_with_ties_reference(values: &[Option<f64>], k: usize, descending: bool,
 }
 
 fn assert_top_k_with_ties_matches_reference(series: &Series, values: &[Option<f64>], label: &str) {
+    let every_k = (0..=values.len() + 1).collect::<Vec<_>>();
+    assert_top_k_with_ties_matches_reference_at(series, values, &every_k, label);
+}
+
+fn assert_top_k_with_ties_matches_reference_at(series: &Series, values: &[Option<f64>], ks: &[usize], label: &str) {
     for descending in [false, true] {
         for nulls_first in [false, true] {
             let options = SortOptions::new().with_descending(vec![descending]).with_nulls_first(vec![nulls_first]);
-            for k in 0..=values.len() + 1 {
+            for &k in ks {
                 let mask = series.on(Exec::RETAINED).top_k_with_ties_mask(k, &options).unwrap();
                 assert_eq!(mask.null_count(), 0, "{label}: k={k} descending={descending} nulls_first={nulls_first}");
                 assert_eq!(
@@ -771,10 +776,11 @@ fn assert_top_k_with_ties_matches_reference(series: &Series, values: &[Option<f6
     }
 }
 
-/// Every `k`, direction and null placement against the host model, for an integral key (the
-/// partial-selection path when it has no nulls) and a floating-point key with NaN of both
-/// signs, infinities and both zeros (the single-column sort path). The null keys hold three
-/// nulls, so `k` runs below, at and above the null count.
+/// Every `k`, direction and null placement against the host model, for an integral key
+/// (libcudf's `top_k`) and FLOAT64 and FLOAT32 keys with NaN of both signs, infinities and
+/// both zeros (the shim's integer-keyed selection). The null keys hold three nulls and two
+/// NaNs, so `k` runs below, at and above the null count, inside the NaN run that follows
+/// leading nulls in a descending order, and into the NaN run that trails ascending values.
 fn test_top_k_with_ties_mask_matches_one_key_sort_order() {
     let integers = [Some(5i64), Some(3), None, Some(5), Some(1), None, Some(3), Some(3), Some(9), None, Some(-2)];
     let as_f64 =
@@ -808,6 +814,33 @@ fn test_top_k_with_ties_mask_matches_one_key_sort_order() {
     let dense_floats = floats.iter().flatten().map(|value| Some(*value)).collect::<Vec<_>>();
     let dense_series = series_opt("v", &dense_floats).unwrap();
     assert_top_k_with_ties_matches_reference(&dense_series, &dense_floats, "float64 without nulls");
+    let singles = floats.iter().map(|value| value.map(|value| value as f32)).collect::<Vec<_>>();
+    let single_series = series_opt("v", &singles).unwrap();
+    assert_top_k_with_ties_matches_reference(&single_series, &floats, "float32 with nulls");
+}
+
+/// A FLOAT64 key large enough for the selection's multi-pass path, with duplicates, both
+/// zeros, infinities, NaNs and nulls, at boundaries inside each run of the order.
+fn test_top_k_with_ties_mask_selects_large_float_keys() {
+    let rows = 300_000_i64;
+    let values = (0..rows)
+        .map(|row| match row % 997 {
+            0 => None,
+            1 | 2 => Some(f64::NAN),
+            3 => Some(-f64::NAN),
+            4 => Some(f64::INFINITY),
+            5 => Some(f64::NEG_INFINITY),
+            6 => Some(-0.0),
+            7 => Some(0.0),
+            _ => Some(((row * 7919) % 20_011) as f64 / 8.0 - 1250.0),
+        })
+        .collect::<Vec<_>>();
+    let series = series_opt("v", &values).unwrap();
+    let nulls = values.iter().filter(|value| value.is_none()).count();
+    let nans = values.iter().filter(|value| value.is_some_and(f64::is_nan)).count();
+    let rows = values.len();
+    let ks = [1, 1_000, nulls, nulls + 10, nulls + nans, nulls + nans + 5, 40_000, rows - nulls - nans + 3, rows - 1];
+    assert_top_k_with_ties_matches_reference_at(&series, &values, &ks, "large float64");
 }
 
 /// Decimal, timestamp, duration and boolean keys order like their integral values.
@@ -839,6 +872,10 @@ pub(super) const CASES: &[(&str, fn())] = &[
     (
         "series_top_k_with_ties_mask_tests::test_top_k_with_ties_mask_matches_one_key_sort_order",
         test_top_k_with_ties_mask_matches_one_key_sort_order,
+    ),
+    (
+        "series_top_k_with_ties_mask_tests::test_top_k_with_ties_mask_selects_large_float_keys",
+        test_top_k_with_ties_mask_selects_large_float_keys,
     ),
     (
         "series_top_k_with_ties_mask_tests::test_top_k_with_ties_mask_accepts_every_fixed_width_family",

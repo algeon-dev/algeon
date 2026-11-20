@@ -2,6 +2,7 @@
 
 #include "execution_context_internal.hpp"
 #include "shim_common.h"
+#include "sorting_internal.hpp"
 
 #include <cudf/binaryop.hpp>
 #include <cudf/column/column.hpp>
@@ -170,13 +171,38 @@ not_after_boundary(cudf::column_view const &input,
                                 stream, mr);
 }
 
+// The `k`-th value of a non-floating-point column's non-null rows under a
+// one-key sort in `order`; requires 0 < k <= the non-null row count. Floating
+// point goes to `float_top_k_boundary`: libcudf's `top_k` keeps its
+// `cub::DeviceTopK` path to non-floating types and sorts every row otherwise.
+std::unique_ptr<cudf::scalar>
+integral_top_k_boundary(cudf::column_view const &input, cudf::size_type k,
+                        cudf::order order, rmm::cuda_stream_view stream,
+                        rmm::device_async_resource_ref mr) {
+  auto valid_storage = std::unique_ptr<cudf::table>{};
+  auto valid = input;
+  if (input.null_count() > 0) {
+    valid_storage =
+        cudf::drop_nulls(cudf::table_view{{input}}, {0}, stream, mr);
+    valid = valid_storage->get_column(0).view();
+  }
+  // `top_k` returns its k values in no particular order; sorting those k
+  // values with the full sort's comparator puts the boundary last.
+  auto const best = cudf::top_k(valid, k, order, stream, mr);
+  auto const best_sorted =
+      cudf::sort(cudf::table_view{{best->view()}}, {order}, {}, stream, mr);
+  return cudf::get_element(best_sorted->get_column(0).view(), k - 1, stream,
+                           mr);
+}
+
 // See `cudf_top_k_with_ties_mask_ex` in sorting.h for the contract.
 // `null_order` is cuDF's: BEFORE means a null compares below every value.
 std::unique_ptr<cudf::column>
 top_k_with_ties_mask(cudf::column_view const &input, cudf::size_type k,
                      cudf::order order, cudf::null_order null_order,
-                     rmm::cuda_stream_view stream,
-                     rmm::device_async_resource_ref mr) {
+                     cudf_exec_context const &exec) {
+  auto const stream = exec.stream;
+  rmm::device_async_resource_ref const mr = *exec.mr;
   CUDF_EXPECTS(k >= 0, "k must be non-negative", std::invalid_argument);
   CUDF_EXPECTS(cudf::is_fixed_width(input.type()),
                "top_k_with_ties_mask requires a fixed-width column",
@@ -204,20 +230,11 @@ top_k_with_ties_mask(cudf::column_view const &input, cudf::size_type k,
 
   // Intermediates are allocated from the call's resource as well; shim
   // operations never read the ambient current resource.
-  auto valid_storage = std::unique_ptr<cudf::table>{};
-  auto valid = input;
-  if (null_rows > 0) {
-    valid_storage =
-        cudf::drop_nulls(cudf::table_view{{input}}, {0}, stream, mr);
-    valid = valid_storage->get_column(0).view();
-  }
-  // `top_k` returns its k values in no particular order; sorting those k
-  // values with the full sort's comparator puts the boundary last.
-  auto const best = cudf::top_k(valid, valid_k, order, stream, mr);
-  auto const best_sorted =
-      cudf::sort(cudf::table_view{{best->view()}}, {order}, {}, stream, mr);
-  auto const boundary = cudf::get_element(best_sorted->get_column(0).view(),
-                                          valid_k - 1, stream, mr);
+  auto const boundary = cudf::is_floating_point(input.type())
+                            ? cudf_rust::sorting::float_top_k_boundary(
+                                  input, valid_k, order, exec)
+                            : integral_top_k_boundary(input, valid_k, order,
+                                                      stream, mr);
   auto ranked = not_after_boundary(input, *boundary, order, stream, mr);
   if (null_rows == 0) {
     return ranked;
@@ -530,8 +547,8 @@ cudf_status_t cudf_top_k_with_ties_mask_ex(cudf_column_view_handle input,
 
     auto *view = reinterpret_cast<cudf::column_view *>(input);
     {
-      auto result = top_k_with_ties_mask(*view, k, orders[0], null_orders[0],
-                                         exec->stream, *exec->mr);
+      auto result =
+          top_k_with_ties_mask(*view, k, orders[0], null_orders[0], *exec);
       *out = cudf_release_column_handle(std::move(result),
                                         cudf_capture_exec_provenance(*exec));
     }

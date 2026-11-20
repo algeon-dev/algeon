@@ -17,11 +17,11 @@
 //!
 //! The reduction runs when the first key is fixed-width (integers, floating point, boolean,
 //! decimal, timestamp, duration) and the candidate holds at least
-//! `PREFILTER_MIN_ROWS_PER_KEPT_ROW` rows per kept row. Integral, decimal, boolean and
-//! temporal keys take libcudf's partial top-k selection, after their null rows are
-//! compacted away when present; floating-point keys take a single-column sort of the first
-//! key, which still avoids the multi-key sort and the full-width gather of every row. Other first keys (strings, nested types) and candidates at most a few times
-//! `keep_rows` sort whole. A first key with few distinct values can keep most rows; then
+//! `PREFILTER_MIN_ROWS_PER_KEPT_ROW` rows per kept row. Every fixed-width key takes a
+//! partial top-k selection of the first key rather than a sort of every row: libcudf's
+//! `top_k` for integral, decimal, boolean and temporal keys, and an integer-keyed
+//! selection inside the cuDF shim for floating-point keys. Other first keys (strings,
+//! nested types) and candidates at most a few times `keep_rows` sort whole. A first key with few distinct values can keep most rows; then
 //! the reduction costs one top-k, one comparison pass and one filter that shares the input
 //! columns when every row survives.
 
