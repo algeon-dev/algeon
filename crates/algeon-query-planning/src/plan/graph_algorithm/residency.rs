@@ -148,7 +148,10 @@ pub struct GraphResidencyDescriptor {
     /// normalization retains that source frame while the normalized graph
     /// frame is live. Bounded graph admission must retain this fact.
     graph_raw_edge_row_count: Option<u64>,
-    /// Arrow dtype of the graph vertex columns.
+    /// Arrow dtype of the vertex columns of the edge frame that carries this
+    /// descriptor. Graph execution narrows Int64 vertex ids that fit Int32 to
+    /// Int32 before construction and rewrites this field with the frame, so
+    /// the resident key names the vertex type of the graph it caches.
     pub vertex_data_type: ArrowDataType,
     /// Arrow dtype of the semantic weight column when the algorithm consumes
     /// weights.
@@ -248,6 +251,8 @@ pub struct ResidentGraphKey {
     pub(crate) edge_preparation: GraphEdgePreparationKey,
     /// Concrete cuGraph graph orientation.
     pub orientation: GraphResidencyOrientation,
+    /// Vertex id type of the constructed graph, which can be narrower than the
+    /// declared edge columns' type.
     pub(crate) vertex_data_type: ArrowDataType,
     /// Arrow dtype of the semantic weight column when consumed.
     pub(crate) weight_data_type: Option<ArrowDataType>,

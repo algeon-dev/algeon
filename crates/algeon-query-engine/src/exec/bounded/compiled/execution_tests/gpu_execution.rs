@@ -23,7 +23,8 @@ use query_runtime::{
 use super::*;
 #[cfg(feature = "cugraph")]
 use crate::exec::graph_algorithm::{
-    bounded_betweenness::validate_betweenness_seed_policy_for_vertex_count, statistics::runtime_graph_statistics_probe,
+    bounded_betweenness::validate_betweenness_seed_policy_for_vertex_count, narrow_id_columns,
+    statistics::runtime_graph_statistics_probe,
 };
 use crate::{
     dimension_pruning::local_dimension_pruning_resolver,
@@ -1193,6 +1194,54 @@ fn graph_statistics_sizing_avoids_unused_work_and_counts_distinct_endpoint_union
     let error = validate_betweenness_seed_policy_for_vertex_count(&betweenness, count).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("exact_betweenness_vertex_threshold_exceeded"));
     assert_eq!(error.fact_value("actual_vertex_count"), Some(expected_vertices.to_string().as_str()));
+}
+
+/// Narrowing a uniquely owned edge frame holds at most one Int32 column above
+/// the input frame, because each Int64 column is released once its Int32 copy
+/// exists.
+#[cfg(feature = "cugraph")]
+#[test]
+fn graph_vertex_id_narrowing_releases_each_int64_column_after_its_int32_copy() {
+    const ROWS: usize = 1 << 20;
+    const SLACK_BYTES: u64 = 1 << 20;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("weight", DataType::Float64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&schema))));
+    let plan = builder.finish_with_host_sink(edges).unwrap();
+    let runtime = shared_runtime(suite_backend::Runtime::new().expect("graph id narrowing requires CUDA"));
+    let context = bounded_context(runtime, &plan);
+    let sources = (0..ROWS as i64).collect::<Vec<_>>();
+    let destinations = (0..ROWS as i64).map(|row| (row * 7) % ROWS as i64).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(sources.clone())),
+            Arc::new(Int64Array::from(destinations.clone())),
+            Arc::new(Float64Array::from(vec![1.0; ROWS])),
+        ],
+    )
+    .unwrap();
+    let frame = CudfDataFrame::from_record_batch(context.shared_runtime().unwrap().as_ref(), &batch).unwrap();
+    let before = context.attempt_allocation_domain_usage().unwrap().unwrap();
+    assert!(before.peak_bytes <= before.current_bytes + SLACK_BYTES, "{before:?}");
+
+    let narrowing_runtime = context.runtime().unwrap();
+    let narrowed = narrow_id_columns(GpuDataFrame::new(frame), &["src", "dst"], narrowing_runtime.exec()).unwrap();
+
+    let after = context.attempt_allocation_domain_usage().unwrap().unwrap();
+    let int32_column_bytes = (ROWS * size_of::<i32>()) as u64;
+    assert!(after.peak_bytes <= before.current_bytes + int32_column_bytes + SLACK_BYTES, "{before:?} {after:?}");
+    assert_eq!(after.current_bytes, before.current_bytes - 2 * int32_column_bytes, "{before:?} {after:?}");
+    let column = |name| narrowed.frame().series(name).unwrap();
+    assert_eq!(column("weight").dtype().unwrap().id(), cudf::TypeId::Float64);
+    for (name, expected) in [("src", sources), ("dst", destinations)] {
+        assert_eq!(column(name).dtype().unwrap().id(), cudf::TypeId::Int32, "{name}");
+        assert!(column(name).to_vec_strict::<i32>().unwrap().into_iter().map(i64::from).eq(expected), "{name}");
+    }
 }
 
 #[test]

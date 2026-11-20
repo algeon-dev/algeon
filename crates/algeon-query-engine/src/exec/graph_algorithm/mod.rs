@@ -6,6 +6,8 @@
 #[cfg(feature = "cugraph")]
 mod enabled;
 
+#[cfg(all(test, feature = "cugraph"))]
+pub(in crate::exec) use enabled::narrow_id_columns;
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) use enabled::{
     bounded_betweenness, execute_graph_algorithm_sanitized, graph_empty_input_prevalidated, statistics,

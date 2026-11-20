@@ -15,6 +15,7 @@ mod empty_inputs;
 mod reproducible_results;
 mod similarity;
 mod support;
+mod vertex_width;
 
 #[test]
 fn graph_algorithm_execution_cases_1() {
@@ -147,6 +148,48 @@ fn graph_algorithm_execution_cases_3() {
         (
             "graph_algorithm_execution::bfs::bfs_source_vertices_side_input_rejects_empty_source_set",
             bfs::bfs_source_vertices_side_input_rejects_empty_source_set,
+        ),
+    ]);
+}
+
+#[test]
+fn graph_algorithm_execution_cases_4() {
+    run_named_cases(&[
+        (
+            "graph_algorithm_execution::vertex_width::narrowed_pagerank_matches_the_int64_path",
+            vertex_width::narrowed_pagerank_matches_the_int64_path,
+        ),
+        (
+            "graph_algorithm_execution::vertex_width::narrowed_bfs_matches_the_int64_path_and_keeps_the_int64_unreachable_marker",
+            vertex_width::narrowed_bfs_matches_the_int64_path_and_keeps_the_int64_unreachable_marker,
+        ),
+        (
+            "graph_algorithm_execution::vertex_width::narrowed_bfs_path_output_matches_the_int64_path",
+            vertex_width::narrowed_bfs_path_output_matches_the_int64_path,
+        ),
+        (
+            "graph_algorithm_execution::vertex_width::narrowed_sssp_matches_the_int64_path",
+            vertex_width::narrowed_sssp_matches_the_int64_path,
+        ),
+        (
+            "graph_algorithm_execution::vertex_width::narrowed_jaccard_with_vertex_pairs_matches_the_int64_path",
+            vertex_width::narrowed_jaccard_with_vertex_pairs_matches_the_int64_path,
+        ),
+        (
+            "graph_algorithm_execution::vertex_width::narrowed_personalized_pagerank_matches_the_int64_path",
+            vertex_width::narrowed_personalized_pagerank_matches_the_int64_path,
+        ),
+        (
+            "graph_algorithm_execution::vertex_width::narrowed_louvain_matches_the_int64_partition",
+            vertex_width::narrowed_louvain_matches_the_int64_partition,
+        ),
+        (
+            "graph_algorithm_execution::vertex_width::similarity_pair_id_outside_int32_keeps_the_int64_absent_vertex_error",
+            vertex_width::similarity_pair_id_outside_int32_keeps_the_int64_absent_vertex_error,
+        ),
+        (
+            "graph_algorithm_execution::vertex_width::bfs_literal_source_outside_int32_keeps_the_int64_outcome",
+            vertex_width::bfs_literal_source_outside_int32_keeps_the_int64_outcome,
         ),
     ]);
 }

@@ -39,6 +39,30 @@ same graph with Int64 vertex ids. When such a call exceeds the query memory
 grant, assign Int64 surrogate ids in the edge subquery, for example by joining
 the edges to a vertex table, and join the algorithm output back to the strings.
 
+## Vertex id width
+
+libcugraph stores one vertex id for every adjacency entry of the graph it
+builds, in the type of the edge columns it receives. Before construction,
+Algeon reads the minimum and maximum of the Int64 endpoint columns. When the
+graph qualifies, it builds from Int32 copies of those columns. A call
+qualifies when:
+
+- every endpoint id, edge id, vertex id in a side input (source vertices,
+  personalization vertices, vertex pairs, BFS predicate relations, seeds,
+  ForceAtlas2 vertices) and literal vertex id lies in
+  `[-2147483648, 2147483646]`;
+- the edge relation has fewer than 2,147,483,647 rows after normalization;
+- the number of distinct endpoint values can be at most 2,147,483,647.
+
+A call that does not qualify keeps Int64 ids. A side-input id outside the
+Int32 range therefore names a vertex that is not in the graph, with the same
+outcome as on an Int64 graph. Result columns keep the declared vertex type,
+and a BFS distance of a vertex the traversal does not reach stays the Int64
+maximum. String and codebook-mapped calls apply the same rule to their dense
+ids. For the functions whose results repeat between runs
+([Reproducibility](../design/gpu-table-functions.mdx#reproducibility)), the
+rows equal those of the same graph built with Int64 ids.
+
 ## Construction options
 
 Every `cugraph_*` UDTF accepts these shared named value arguments alongside

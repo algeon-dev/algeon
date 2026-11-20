@@ -413,6 +413,23 @@ impl GraphOperationDefinition {
         }
     }
 
+    /// Result columns in which libcugraph marks a vertex it did not reach
+    /// with [`graph_unreachable_vertex_sentinel`] of the graph's vertex type.
+    ///
+    /// BFS writes `numeric_limits<vertex_t>::max()` as the distance of every
+    /// unreached vertex. Its path output holds reached vertices only, so the
+    /// path `distance` column carries no sentinel.
+    pub fn unreachable_sentinel_columns(&self, params: &GraphAlgorithmParams) -> &'static [&'static str] {
+        match params {
+            GraphAlgorithmParams::Bfs(params)
+                if self.algorithm == GraphAlgorithm::Bfs && params.path_output.is_none() =>
+            {
+                &["distance"]
+            },
+            _ => &[],
+        }
+    }
+
     /// Source-vertex requirement for this algorithm.
     pub const fn source_vertex_requirement(&self) -> GraphSourceVertexRequirement {
         match self.algorithm {
@@ -612,6 +629,19 @@ impl GraphOperationDefinition {
             ]));
         }
         self.base_result_schema()
+    }
+}
+
+/// Value of a [`GraphOperationDefinition::unreachable_sentinel_columns`]
+/// column for a vertex the algorithm did not reach, for a graph whose vertex
+/// ids have type `vertex_type`: that type's maximum, as an Int64.
+///
+/// Returns `None` for a type that is not a native graph vertex type.
+pub fn graph_unreachable_vertex_sentinel(vertex_type: &DataType) -> Option<i64> {
+    match vertex_type {
+        DataType::Int32 => Some(i64::from(i32::MAX)),
+        DataType::Int64 => Some(i64::MAX),
+        _ => None,
     }
 }
 
