@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path, sync::Arc};
 
-use query_planning::{expr::ColumnRef, mode::StatisticalAggregateExecutionMode};
+use query_planning::{expr::ColumnRef, mode::StatisticalAggregateExecutionMode, plan::NodeId};
 
 use super::*;
 
@@ -597,10 +597,8 @@ fn bounded_stddev_join_aggregate_uses_exact_statistical_contract() {
 }
 
 /// Probe rows `(key, value = 1, d)` with `d` from `d_of_row`, written in row
-/// groups of `row_group_rows`, joined by `join_type` on `d` against a dimension
-/// holding `dimension_keys` and built on the dimension, then grouped by `key`
-/// with `sum_count` SUMs of `value`.
-#[expect(clippy::too_many_arguments, reason = "each fixture dimension is set by the calling test")]
+/// groups of `row_group_rows`, joined on `d` against a dimension holding
+/// `dimension_keys`, then grouped by `key` with `sum_count` SUMs of `value`.
 fn grouped_sums_over_dimension_join_plan(
     dir: &Path,
     rows: usize,
@@ -609,8 +607,36 @@ fn grouped_sums_over_dimension_join_plan(
     d_of_row: impl Fn(usize) -> i64,
     dimension_keys: &[i64],
     sum_count: usize,
-    join_type: JoinType,
 ) -> QueryPlan {
+    let (mut builder, join) =
+        dimension_join_plan(dir, rows, row_group_rows, key_of_row, d_of_row, dimension_keys, JoinType::Inner);
+    let mut aggregate_fields = vec![Field::new("key", DataType::Int64, false)];
+    aggregate_fields.extend((0..sum_count).map(|index| Field::new(format!("sum_{index}"), DataType::Int64, true)));
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        (0..sum_count)
+            .map(|index| AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), format!("sum_{index}")))
+            .collect(),
+    );
+    let aggregate = builder.add_aggregate(join, aggregate, Arc::new(Schema::new(aggregate_fields))).unwrap();
+    let sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
+}
+
+/// Probe rows `(key, value = 1, d)` with `d` from `d_of_row`, written in row
+/// groups of `row_group_rows`, joined by `join_type` on `d` against a dimension
+/// holding `dimension_keys` that the join builds. The join outputs `key` and
+/// `value`.
+fn dimension_join_plan(
+    dir: &Path,
+    rows: usize,
+    row_group_rows: usize,
+    key_of_row: impl Fn(usize) -> i64,
+    d_of_row: impl Fn(usize) -> i64,
+    dimension_keys: &[i64],
+    join_type: JoinType,
+) -> (QueryPlanBuilder, NodeId) {
     let probe_path = dir.join("probe.parquet");
     let probe_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int64, false),
@@ -638,14 +664,6 @@ fn grouped_sums_over_dimension_join_plan(
         Field::new("key", DataType::Int64, false),
         Field::new("value", DataType::Int64, false),
     ]));
-    let mut aggregate_fields = vec![Field::new("key", DataType::Int64, false)];
-    aggregate_fields.extend((0..sum_count).map(|index| Field::new(format!("sum_{index}"), DataType::Int64, true)));
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("key")],
-        (0..sum_count)
-            .map(|index| AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), format!("sum_{index}")))
-            .collect(),
-    );
     let mut builder = QueryPlanBuilder::new();
     let probe = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&probe_path).with_file_size_bytes(fs::metadata(&probe_path).unwrap().len())],
@@ -670,10 +688,7 @@ fn grouped_sums_over_dimension_join_plan(
             join_schema,
         )
         .unwrap();
-    let aggregate = builder.add_aggregate(join, aggregate, Arc::new(Schema::new(aggregate_fields))).unwrap();
-    let sort =
-        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
-    builder.finish_with_host_sink(sort).unwrap()
+    (builder, join)
 }
 
 /// Context whose 1 KiB source chunk cap reads every probe row group as its
@@ -715,7 +730,6 @@ fn bounded_join_aggregate_projects_a_single_partial_when_another_probe_chunk_joi
         |row| if row < row_group_rows { 0 } else { 1 + 2 * (row % 2) as i64 },
         &[0, 2],
         1,
-        JoinType::Inner,
     );
     let context = row_group_batched_join_context();
 
@@ -752,7 +766,6 @@ fn bounded_join_aggregate_sizes_final_merge_partitions_from_partial_bytes_not_pr
         |row| (row % 1024) as i64,
         &[0],
         256,
-        JoinType::Inner,
     );
     let context = row_group_batched_join_context();
 
@@ -775,9 +788,12 @@ fn bounded_join_aggregate_sizes_final_merge_partitions_from_partial_bytes_not_pr
 }
 
 /// A semi or anti join that builds its right side probes each source chunk
-/// when the aggregate pulls it, so the query domain holds one chunk's join
-/// output at a time. Probing every chunk before the aggregate starts would
-/// hold all of them at once, a peak at least their sum.
+/// when its consumer pulls it, so the query domain holds one chunk's join
+/// output at a time. Probing every chunk before the consumer starts would hold
+/// all of them at once, a peak at least their sum. The consumer is an ungrouped
+/// aggregate, which reduces each pulled frame to a one-row partial before it
+/// pulls the next; a grouped aggregate may hold several pulled frames to size
+/// its partitions, which would hide the probe's form.
 #[test]
 fn bounded_join_aggregate_pulls_right_built_semi_and_anti_output_one_chunk_at_a_time() {
     let rows = 1 << 20;
@@ -789,16 +805,21 @@ fn bounded_join_aggregate_pulls_right_built_semi_and_anti_output_one_chunk_at_a_
         [(JoinType::LeftSemi, true), (JoinType::LEFT_ANTI, false), (JoinType::LeftAnti { null_aware: true }, false)]
     {
         let dir = unique_temp_dir("query-engine-bounded-filtered-join-aggregate-pull");
-        let plan = grouped_sums_over_dimension_join_plan(
-            &dir,
-            rows,
-            row_group_rows,
-            key_of_row,
-            d_of_row,
-            &dimension_keys,
-            1,
-            join_type.clone(),
+        let (mut builder, join) =
+            dimension_join_plan(&dir, rows, row_group_rows, key_of_row, d_of_row, &dimension_keys, join_type.clone());
+        let aggregate = AggregateSpec::new(
+            vec![],
+            vec![
+                AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "rows"),
+                AggregateExpr::new(AggregateFunction::Sum, Expr::column("key"), "key_sum"),
+            ],
         );
+        let aggregate_schema = Arc::new(Schema::new(vec![
+            Field::new("rows", DataType::Int64, true),
+            Field::new("key_sum", DataType::Int64, true),
+        ]));
+        let aggregate = builder.add_aggregate(join, aggregate, aggregate_schema).unwrap();
+        let plan = builder.finish_with_host_sink(aggregate).unwrap();
         let context = row_group_batched_join_context();
 
         let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
@@ -817,17 +838,14 @@ fn bounded_join_aggregate_pulls_right_built_semi_and_anti_output_one_chunk_at_a_
              outputs"
         );
 
-        let mut expected = [0_i64; 4];
-        for row in 0..rows {
-            if dimension_keys.contains(&d_of_row(row)) == keep_matched {
-                expected[key_of_row(row) as usize] += 1;
-            }
-        }
+        let kept_rows = (0..rows).filter(|row| dimension_keys.contains(&d_of_row(*row)) == keep_matched);
+        let expected_rows = kept_rows.clone().count() as i64;
+        let expected_key_sum = kept_rows.map(key_of_row).sum::<i64>();
         let QueryOutput::HostArrow(batch) = &output else {
             panic!("host sink should materialize one RecordBatch");
         };
-        assert_eq!(int64_array(batch, 0).values().as_ref(), &[0, 1, 2, 3], "{join_type}");
-        assert_eq!(int64_array(batch, 1).values().as_ref(), &expected, "{join_type}");
+        assert_eq!(int64_array(batch, 0).values().as_ref(), &[expected_rows], "{join_type}");
+        assert_eq!(int64_array(batch, 1).values().as_ref(), &[expected_key_sum], "{join_type}");
 
         fs::remove_dir_all(dir).unwrap();
     }
