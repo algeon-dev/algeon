@@ -1,7 +1,7 @@
 //! GPU cases for grouped aggregates over resident frame streams. High-cardinality frames go
 //! through the partitioned accumulation, from an eager or a lazy stream, and each group-key
-//! partition is aggregated once; a lazy stream is pulled one frame at a time. Low-cardinality
-//! frames keep one partial per frame.
+//! partition is aggregated once. A lazy stream is held unstaged up to what the retained-state
+//! ledger accepts, then staged in order. Low-cardinality frames keep one partial per frame.
 
 use std::{
     collections::VecDeque,
@@ -34,14 +34,17 @@ const FRAME_COUNT: i64 = 3;
 struct Fixture {
     context: ExecutionContext,
     metrics: ExecutionMetrics,
+    device_budget_bytes: u64,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let memory_control_policy = MemoryControlPolicy {
-            device_budget_bytes: DEVICE_BUDGET_BYTES,
-            ..StandaloneConfig::default().memory_control_policy
-        };
+        Self::with_device_budget(DEVICE_BUDGET_BYTES)
+    }
+
+    fn with_device_budget(device_budget_bytes: u64) -> Self {
+        let memory_control_policy =
+            MemoryControlPolicy { device_budget_bytes, ..StandaloneConfig::default().memory_control_policy };
         Self {
             context: ExecutionContext::standalone(StandaloneConfig {
                 memory_control_policy,
@@ -49,11 +52,21 @@ impl Fixture {
             })
             .expect("standalone execution context"),
             metrics: ExecutionMetrics::detached("frame_stream_aggregate_tests"),
+            device_budget_bytes,
         }
     }
 
     fn attempt(&self) -> BoundedExecutionAttempt<'_> {
-        BoundedExecutionAttempt::new(&self.context, DEVICE_BUDGET_BYTES, &self.metrics)
+        BoundedExecutionAttempt::new(&self.context, self.device_budget_bytes, &self.metrics)
+    }
+
+    /// Group-key partition count the partitioned accumulation recorded on its partials.
+    fn partition_count(&self) -> Option<u64> {
+        self.metrics.snapshot().aggregate_strategy_decisions.iter().find_map(|decision| {
+            (decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) == Some("group_key"))
+                .then(|| decision.facts.get("source_adjacent_partition_count")?.parse().ok())
+                .flatten()
+        })
     }
 
     fn operation_count(&self, operation: &str) -> usize {
@@ -161,52 +174,168 @@ fn eager_high_cardinality_stream_aggregates_each_partition_once() {
 
 /// Lazy source that uploads one frame per pull and records, at each pull, how many partition
 /// slices the consumer had cut so far.
-struct PulledPairFrames {
-    next: VecDeque<i64>,
+struct PulledFrames {
+    next: VecDeque<RecordBatch>,
     slices_at_pull: Arc<Mutex<Vec<usize>>>,
 }
 
-impl ResidentFrameStreamSource for PulledPairFrames {
+impl ResidentFrameStreamSource for PulledFrames {
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
-        let index = self.next.pop_front()?;
+        let batch = self.next.pop_front()?;
         self.slices_at_pull
             .lock()
             .expect("pull record")
             .push(operation_count(execution.metrics(), PARTITION_SLICE_OPERATION));
-        Some(upload(execution.context(), execution.metrics(), &pair_frame(index)))
+        Some(upload(execution.context(), execution.metrics(), &batch))
     }
 }
 
-/// A lazy stream without byte hints is pulled one frame at a time: each frame is partitioned
-/// before the next is pulled, and each group-key partition is aggregated once at the end.
-fn lazy_high_cardinality_stream_partitions_each_frame_before_the_next_pull() {
-    let fixture = Fixture::new();
-    let (aggregate, schema) = distinct_pairs();
+/// A 1 GiB budget holds 128 MiB of input uncharged and 256 MiB on the retained-state ledger, and
+/// sizes 128 MiB partitions; each pair frame is 16 MB.
+const HOLD_CASE_DEVICE_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Runs a lazy stream of `batches` declaring `declared_rows` rows through the aggregate, with the
+/// retained-state ledger taken in full first when `ledger_full`.
+/// Returns the output frames and the slice count recorded at each pull.
+fn run_lazy_stream(
+    fixture: &Fixture,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    batches: Vec<RecordBatch>,
+    declared_rows: u64,
+    ledger_full: bool,
+) -> (Vec<ResidentGpuFrame>, Vec<usize>) {
     let mut execution = fixture.attempt();
+    let _occupied = ledger_full.then(|| {
+        execution
+            .charge_retained_join_table(MemoryControlPolicy::retained_state_share_bytes(fixture.device_budget_bytes))
+            .expect("an empty ledger accepts its whole share")
+    });
     let slices_at_pull = Arc::new(Mutex::new(Vec::new()));
     let inputs = ResidentFrameStreamPayload::from_producer(
         None,
         None,
-        (FRAME_COUNT * FRAME_ROWS) as u64,
-        2,
-        Box::new(PulledPairFrames { next: (0..FRAME_COUNT).collect(), slices_at_pull: Arc::clone(&slices_at_pull) }),
+        declared_rows,
+        input_schema.fields().len(),
+        Box::new(PulledFrames { next: batches.into(), slices_at_pull: Arc::clone(&slices_at_pull) }),
     );
     let output = execute_compiled_bounded_aggregate_from_stream(
         &mut execution,
         NodeId::from_index_for_test(1),
-        &aggregate,
-        &schema,
-        &schema,
+        aggregate,
+        input_schema,
+        output_schema,
         inputs,
         false,
     )
     .expect("aggregate");
     let frames = output.into_resident_frames(&mut execution).expect("output frames");
-    let pairs = output_pairs(frames);
-    assert_each_pair_aggregated_once(&fixture, &pairs);
     let slices_at_pull = slices_at_pull.lock().expect("pull record").clone();
-    assert_eq!(slices_at_pull.len(), FRAME_COUNT as usize);
-    assert!(slices_at_pull.windows(2).all(|pulls| pulls[0] < pulls[1]), "{slices_at_pull:?}");
+    (frames, slices_at_pull)
+}
+
+/// A lazy stream is held unstaged while the retained-state ledger accepts its frames, then staged
+/// in order, and never held beyond the ledger.
+///
+/// Twelve 16 MB frames pass the 128 MiB uncharged hold and fit the 256 MiB ledger share, so all of
+/// them are pulled before the first is partitioned, and the measured 192 MB sizes two partitions.
+/// With the ledger already full, the ninth frame passes the uncharged hold and is refused: the
+/// nine pulled frames, scaled to the four-fold declared rows, size six partitions, and each later
+/// frame is pulled only after the frames before it were partitioned.
+fn lazy_stream_is_held_up_to_the_ledger_then_staged_in_order() {
+    let (aggregate, schema) = distinct_pairs();
+    let frame_count = 12;
+    let expected = (0..FRAME_ROWS).map(|key| (key, key + 1_000_000_000)).collect::<Vec<_>>();
+
+    let fixture = Fixture::with_device_budget(HOLD_CASE_DEVICE_BUDGET_BYTES);
+    let (frames, slices_at_pull) = run_lazy_stream(
+        &fixture,
+        &aggregate,
+        &schema,
+        &schema,
+        (0..frame_count).map(pair_frame).collect(),
+        (frame_count * FRAME_ROWS) as u64,
+        false,
+    );
+    assert_eq!(output_pairs(frames), expected);
+    assert_eq!(slices_at_pull, vec![0; frame_count as usize]);
+    assert_eq!(fixture.partition_count(), Some(2));
+    // Each partition is aggregated once, from the slices of every frame.
+    let metrics = fixture.metrics.snapshot();
+    assert_eq!(metrics.partial_aggregate_input_rows, (frame_count * FRAME_ROWS) as u64);
+    assert_eq!(metrics.partial_aggregate_rows, FRAME_ROWS as u64);
+    assert_eq!(fixture.operation_count(FINAL_GROUPBY_OPERATION), 0);
+
+    let fixture = Fixture::with_device_budget(HOLD_CASE_DEVICE_BUDGET_BYTES);
+    let (frames, slices_at_pull) = run_lazy_stream(
+        &fixture,
+        &aggregate,
+        &schema,
+        &schema,
+        (0..frame_count).map(pair_frame).collect(),
+        (4 * frame_count * FRAME_ROWS) as u64,
+        true,
+    );
+    assert_eq!(output_pairs(frames), expected);
+    assert_eq!(fixture.partition_count(), Some(6));
+    let held = 9;
+    assert!(slices_at_pull[..held].iter().all(|slices| *slices == 0), "{slices_at_pull:?}");
+    assert!(slices_at_pull[held - 1..].windows(2).all(|pulls| pulls[0] < pulls[1]), "{slices_at_pull:?}");
+}
+
+/// A lazy stream that passes its hold is sized for the partial state its rows produce. Each row
+/// is a unique key and a value, 16 bytes, and its partial state holds four SUMs beside the key,
+/// about 2.5 times the row. Under a 512 MiB budget, five of six 16 MB frames are pulled before the
+/// full ledger refuses at the 64 MiB uncharged hold, and the 96 MB input they estimate needs one
+/// 128 MiB partition while its 240 MB of state needs two.
+fn lazy_stream_past_its_hold_is_sized_for_wide_partial_state() {
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("k", ArrowDataType::Int64, false),
+        Field::new("v", ArrowDataType::Int64, false),
+    ]));
+    let sums = (0..4).map(|index| format!("s{index}")).collect::<Vec<_>>();
+    let mut output_fields = vec![Field::new("k", ArrowDataType::Int64, false)];
+    output_fields.extend(sums.iter().map(|alias| Field::new(alias, ArrowDataType::Int64, true)));
+    let output_schema = Arc::new(Schema::new(output_fields));
+    let aggregate = AggregateNode {
+        input: NodeId::from_index_for_test(0),
+        spec: AggregateSpec::new(
+            vec![Expr::column("k")],
+            sums.iter().map(|alias| AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), alias)).collect(),
+        ),
+    };
+    let frame_count = 6;
+    let batches = (0..frame_count)
+        .map(|index| {
+            let rows = index * FRAME_ROWS..(index + 1) * FRAME_ROWS;
+            RecordBatch::try_new(Arc::clone(&input_schema), vec![int64(rows.clone()), int64(rows)])
+                .expect("unique-key frame")
+        })
+        .collect();
+    let fixture = Fixture::with_device_budget(512 * 1024 * 1024);
+    let (frames, _) = run_lazy_stream(
+        &fixture,
+        &aggregate,
+        &input_schema,
+        &output_schema,
+        batches,
+        (frame_count * FRAME_ROWS) as u64,
+        true,
+    );
+    assert_eq!(fixture.partition_count(), Some(2));
+    let mut output_rows = 0;
+    for frame in frames {
+        let batch = frame.frame.frame().to_record_batch().expect("output download");
+        let keys =
+            batch.column_by_name("k").expect("key").as_any().downcast_ref::<Int64Array>().expect("int64").clone();
+        for alias in &sums {
+            let sum = batch.column_by_name(alias).expect("sum").as_any().downcast_ref::<Int64Array>().expect("int64");
+            assert_eq!(sum.values(), keys.values());
+        }
+        output_rows += batch.num_rows();
+    }
+    assert_eq!(output_rows as i64, frame_count * FRAME_ROWS);
 }
 
 /// Low-cardinality frames are each reduced whole, as one partial per frame, and the partials are
@@ -300,8 +429,12 @@ fn frame_stream_aggregate_cases() {
             eager_high_cardinality_stream_aggregates_each_partition_once,
         ),
         (
-            "exec::bounded::aggregate::stream::tests::lazy_high_cardinality_stream_partitions_each_frame_before_the_next_pull",
-            lazy_high_cardinality_stream_partitions_each_frame_before_the_next_pull,
+            "exec::bounded::aggregate::stream::tests::lazy_stream_is_held_up_to_the_ledger_then_staged_in_order",
+            lazy_stream_is_held_up_to_the_ledger_then_staged_in_order,
+        ),
+        (
+            "exec::bounded::aggregate::stream::tests::lazy_stream_past_its_hold_is_sized_for_wide_partial_state",
+            lazy_stream_past_its_hold_is_sized_for_wide_partial_state,
         ),
         (
             "exec::bounded::aggregate::stream::tests::low_cardinality_stream_keeps_one_partial_per_frame",

@@ -150,20 +150,27 @@ A grouped aggregate keeps input until a merge consumes it. When it partitions a
 Parquet source or a stream of resident frames by group key, it keeps each
 partition's slices until they reach the partition batch size, an eighth of the
 grant clamped to between 64 MiB and 1 GiB, and aggregates the remaining slices
-when its input ends. The number of partitions divides the estimated input by
-the aggregate partition target, a thirty-second of the grant clamped to between
-128 MiB and 1 GiB. When the partial state of the first input's rows can be
-larger than those rows, for example COUNT or AVG state beside narrow keys, the
-estimate grows by that ratio, because a partition holds its input and produces
-that state. A group-only aggregate keeps the input estimate. The final merge
-keeps each partition's partial results until they reach 16 partials or the
-larger of one target and the partition's merged state. Held input carries no
-charge up to a smaller amount. For the partitioned input it is the partition
-batch size across all partitions; for the final merge it is the larger of an
+when its input ends. A stream whose frames are produced on demand is first held
+whole, frame by frame, until it ends or the quarter refuses the next frame, as
+a streaming join build holds whole chunks; the held frames then supply the
+input size and are partitioned in order. The number of partitions divides the
+estimated input by the aggregate partition target, a thirty-second of the grant
+clamped to between 128 MiB and 1 GiB. A stream that ended while held is
+measured; otherwise the held frames are scaled to the rows the producer
+declared. When the partial state of the first input's rows can be larger than
+those rows, for example COUNT or AVG state beside narrow keys, the estimate
+grows by that ratio, because a partition holds its input and produces that
+state. A group-only aggregate keeps the input estimate, and a first input that
+its aggregate reduces whole counts its partial instead. The final merge keeps
+each partition's partial results until they reach 16 partials or the larger of
+one target and the partition's merged state. Held input carries no charge up to
+a smaller amount. For the partitioned input, held frames and slices together,
+it is the partition batch size; for the final merge it is the larger of an
 eighth of the target and the merged state. Held input beyond that amount counts
-toward the quarter. When the quarter is full, the partitioned input aggregates
-every partition and the final merge merges that partition at once. The charge
-returns when a merge consumes the held input, or when the aggregate fails or is
+toward the quarter, and a staged frame's slices take the place of its bytes in
+that count. When the quarter is full, the partitioned input aggregates every
+partition and the final merge merges that partition at once. The charge returns
+when a merge consumes the held input, or when the aggregate fails or is
 dropped. The merged state is the aggregate's result and carries no charge.
 
 The same quarter of the grant bounds the build chunks that a

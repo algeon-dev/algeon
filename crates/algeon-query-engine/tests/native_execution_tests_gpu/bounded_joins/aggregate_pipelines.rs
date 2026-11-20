@@ -750,13 +750,14 @@ fn bounded_join_aggregate_projects_a_single_partial_when_another_probe_chunk_joi
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// The partitioned accumulation sizes its partitions for the partial state of
-/// its input rows, not the rows alone. Each joined row is a key and a value,
-/// 16 bytes, but its partial state carries 256 SUMs, about 2 KiB. The first
-/// streamed frame, scaled to the join's declared rows, is 16 MiB of rows, one
-/// partition of the 128 MiB target; its partial state needs 17.
+/// A small selective join output is sized from its measured input. The join
+/// declares its 1,048,576 probe rows, but only 1,024 rows match. Scaling the
+/// first streamed frame to the declared rows, with the 2 KiB partial state of
+/// its 256 SUMs, would select 17 partitions of the 128 MiB target. The whole
+/// stream fits the aggregate's hold before any frame is staged, so its
+/// measured bytes select one.
 #[test]
-fn bounded_join_aggregate_sizes_partitions_for_partial_state_wider_than_its_rows() {
+fn bounded_join_aggregate_sizes_partitions_from_its_measured_input_not_probe_rows() {
     let dir = unique_temp_dir("query-engine-bounded-join-aggregate-selective-partition-count");
     let rows = 1 << 20;
     let plan = grouped_sums_over_dimension_join_plan(
@@ -774,7 +775,7 @@ fn bounded_join_aggregate_sizes_partitions_for_partial_state_wider_than_its_rows
     let metrics = result.metrics();
     assert_eq!(metrics.partial_aggregate_input_rows, 1024);
     assert_eq!(metrics.final_merge_attempts, 1);
-    assert_eq!(final_merge_fact(metrics, "partitioned_merge_partition_count"), Some("17"));
+    assert_eq!(final_merge_fact(metrics, "partitioned_merge_partition_count"), Some("1"));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

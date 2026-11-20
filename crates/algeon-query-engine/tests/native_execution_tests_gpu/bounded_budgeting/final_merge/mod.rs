@@ -209,9 +209,10 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
 }
 
 /// A grouped aggregate over the streamed join output whose groups each reduce eight rows, above
-/// the local-reduction bound and below distinct input, holds raw partition slices. Under a cap
-/// whose quarter is smaller than the raw input, the retained-state ledger refuses the hold, every
-/// partition is aggregated whenever the held slices pass the partition batch size, and the
+/// the local-reduction bound and below distinct input, holds the pulled frames and then raw
+/// partition slices. Under a cap whose quarter is smaller than the raw input, the retained-state
+/// ledger refuses the frame hold, the partition count comes from the held frames scaled to the
+/// declared rows, every partition is aggregated whenever a refused hold leaves no room, and the
 /// attempt stays under the cap with exact sums and counts.
 #[test]
 fn bounded_native_query_holds_reducing_partitions_within_the_retained_state_share() {
@@ -261,6 +262,10 @@ fn bounded_native_query_holds_reducing_partitions_within_the_retained_state_shar
                 .flatten()
         })
         .expect("group-key partition aggregates");
+    // The ledger refuses the frame hold before the stream ends. The held frames, scaled to the
+    // join's declared probe rows, estimate the whole 128 MiB input, and its SUM, COUNT and AVG
+    // state, about 2.5 times the rows, needs three 128 MiB partitions.
+    assert_eq!(partition_count, 3);
     // A refused hold aggregates the partitions before the input ends, so some partition is
     // aggregated more than once.
     assert!(metrics.partial_aggregate_count > partition_count, "{metrics:?}");
