@@ -3,10 +3,14 @@
 /// Each slot represents one live region the size of a chunk's decoded read
 /// columns ([`crate::chunk::decoded`]) that may coexist during the source
 /// task. A consumer that runs several chunks at once keeps every chunk's
-/// regions live together, so the slots count once per concurrent chunk. Stages
-/// that widen their input, such as a projection adding columns, are not
-/// modeled. The model is a planning heuristic. It does not record the
-/// executor's allocations.
+/// regions live together, so the slots count once per concurrent chunk. A
+/// consumer that reads one chunk ahead of itself adds one slot: the next
+/// chunk's decoded output is live next to the current chunk's regions, and its
+/// read scratch, bounded by the executor to one chunk target, reuses the
+/// preflight slack slot the current chunk no longer needs once its own read
+/// has finished. Stages that widen their input, such as a projection adding
+/// columns, are not modeled. The model is a planning heuristic. It does not
+/// record the executor's allocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceTaskMemoryModel {
     source_read_slots: u64,
@@ -15,6 +19,7 @@ pub struct SourceTaskMemoryModel {
     retained_output_slots: u64,
     source_read_preflight_slack_slots: u64,
     concurrent_chunks: u64,
+    read_ahead_slots: u64,
 }
 
 impl SourceTaskMemoryModel {
@@ -30,6 +35,7 @@ impl SourceTaskMemoryModel {
             retained_output_slots: 1,
             source_read_preflight_slack_slots: 1,
             concurrent_chunks: 1,
+            read_ahead_slots: 0,
         }
     }
 
@@ -42,6 +48,7 @@ impl SourceTaskMemoryModel {
             retained_output_slots: 2,
             source_read_preflight_slack_slots: 1,
             concurrent_chunks: 1,
+            read_ahead_slots: 0,
         }
     }
 
@@ -54,6 +61,7 @@ impl SourceTaskMemoryModel {
             retained_output_slots: 2,
             source_read_preflight_slack_slots: 1,
             concurrent_chunks: 1,
+            read_ahead_slots: 0,
         }
     }
 
@@ -73,6 +81,7 @@ impl SourceTaskMemoryModel {
             retained_output_slots: 1,
             source_read_preflight_slack_slots: 1,
             concurrent_chunks: 1,
+            read_ahead_slots: 0,
         }
     }
 
@@ -108,7 +117,15 @@ impl SourceTaskMemoryModel {
         self
     }
 
-    /// Returns the live slots of every concurrent chunk together.
+    /// Returns this model for a consumer that keeps one chunk read ahead of
+    /// itself when `read_ahead` is true, and the model unchanged otherwise.
+    pub const fn with_read_ahead(mut self, read_ahead: bool) -> Self {
+        self.read_ahead_slots = if read_ahead { 1 } else { 0 };
+        self
+    }
+
+    /// Returns the live slots of every concurrent chunk together, plus the
+    /// read-ahead slot.
     pub const fn live_slot_count(self) -> u64 {
         (self.source_read_slots
             + self.source_adjacent_operator_slots
@@ -116,5 +133,6 @@ impl SourceTaskMemoryModel {
             + self.retained_output_slots
             + self.source_read_preflight_slack_slots)
             * self.concurrent_chunks
+            + self.read_ahead_slots
     }
 }

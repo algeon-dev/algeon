@@ -91,13 +91,28 @@ Buffered POSIX reads can pass through the operating system's page cache.
 Where enabled and supported, `O_DIRECT` bypasses that cache. The host staging
 and GPU copy still belong to this compatibility path. Larger range reads
 amortize syscall and submission overhead.
-Source reads run as `SupervisedWorker` jobs on the blocking
-lane of the GPU execution runtime, each backed by an attempt auxiliary
-permit. A read issued from an execution lane executes inline on that
-lane. When auxiliary permits are unavailable, a required read executes inline on
-the coordinator while prefetch pauses. Source read tasks do not
-execute on the host runtime. A `max_source_reads_in_flight` value above 1
-enables prefetch.
+A consumer that runs its source chunks one at a time on the coordinator reads
+each chunk on the coordinator's stream and keeps the read of the next chunk
+ahead of it. That read runs as a `SupervisedWorker` job on the blocking lane of
+the GPU execution runtime, backed by an attempt auxiliary permit and a leased
+stream. It decodes on the leased stream while the coordinator's stream runs the
+current chunk's stages and operator. At most one read is ahead, and chunks
+commit in planned order. A read ahead starts only when an auxiliary permit is
+free and the space left under the query's allocation limit holds the chunk's
+decoded estimate plus its read scratch. Its pass read limit is the planned chunk
+target. The chunk planner reserves one chunk of the grant for it, and plans no
+read ahead for a scan whose aggregate may take the partitioned path. A read
+ahead that fails is dropped and the coordinator reads its chunk. A query-cap
+retry anywhere in the attempt first releases the read ahead, and the consumer
+then reads serially. A memory failure in consumer work that has no retry left
+also releases it, and that work runs once more without it. Two failures are
+terminal while a read can still be pending: an aggregate committing a chunk's
+partials, and work of a pull-stream consumer that is not retried. In both the
+pending read's bytes count against the query cap, as in any other allocation of
+the attempt. A run with two or more execution lanes keeps
+no read ahead, nor does work inside a lane. Source read tasks do not execute on
+the host runtime. A `max_source_reads_in_flight` value above 1 enables the read
+ahead; 1 turns it off.
 
 KvikIO's settings are global to the process. Algeon's cuDF component applies
 them once, while `AlgeonGpuBackend::build()` builds the backend and before any

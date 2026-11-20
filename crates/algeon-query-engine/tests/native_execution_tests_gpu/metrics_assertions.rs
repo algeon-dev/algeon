@@ -185,7 +185,10 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
             assert!(matches!(event.boundary.as_str(), "source_chunk_read" | "source_chunk_prefetch"));
         },
         "query_engine.local_parquet_chunk.read" => {
-            assert!(matches!(event.boundary.as_str(), "source_chunk_read" | "join_source_read"));
+            assert!(matches!(
+                event.boundary.as_str(),
+                "source_chunk_read" | "join_source_read" | "source_chunk_prefetch" | "join_source_read_prefetch"
+            ));
             assert_source_budget_event_context(
                 event,
                 event.context_facts["read_columns"].as_str(),

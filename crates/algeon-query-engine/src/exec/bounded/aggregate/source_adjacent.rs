@@ -55,8 +55,9 @@ use crate::{
     exec::{
         bounded::{
             chunks::{
-                bounded_source_adjacent_chunk_batches_for_work_width, bounded_source_adjacent_chunk_batching_enabled,
-                chunk_retry_facts, execute_source_adjacent_batch_uncommitted, split_retryable_chunk,
+                ReadAheadStep, SourceReadAhead, bounded_source_adjacent_chunk_batches_for_work_width,
+                bounded_source_adjacent_chunk_batching_enabled, chunk_retry_facts,
+                execute_source_adjacent_batch_uncommitted, split_retryable_chunk,
             },
             compiled::{CompiledGpuResource, lanes::AggregateLaneDispatch},
         },
@@ -128,13 +129,18 @@ impl OwnedSourceAdjacentAggregate {
 /// `partitioned` selects the group-key partitioned path; otherwise chunks are
 /// batched per the lane width and each batch yields one partial. A chunk's
 /// source commit is recorded only after its partial has been accepted, so a
-/// batch that fails leaves no committed chunk behind.
+/// batch that fails leaves no committed chunk behind. On the batched path,
+/// `read_ahead` (present only for a run without lanes) reads each next batch
+/// while the current one runs its stages and partial aggregate. The partitioned
+/// path keeps none: it sizes each raw batch from the attempt's allocation after
+/// the previous batch's partitions were retained and flushed.
 pub(in crate::exec::bounded) fn execute_source_aggregate_with_dispatch(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
     dispatch: Option<&AggregateLaneDispatch>,
     partitioned: bool,
+    read_ahead: Option<SourceReadAhead>,
 ) -> Result<CompiledGpuResource> {
     if partitioned {
         return execute_partitioned_source_adjacent_aggregate(execution, bounded, chunks, dispatch);
@@ -158,14 +164,18 @@ pub(in crate::exec::bounded) fn execute_source_aggregate_with_dispatch(
         batches.len(),
         sum_optional_u64(chunks.iter().map(|chunk| chunk.known_row_count)),
     )?;
-    let mut state = (batches.into_iter(), partials);
+    let mut state = (batches.into_iter().peekable(), partials);
     if let Some(dispatch) = dispatch {
         let owned = Arc::new(OwnedSourceAdjacentAggregate::new(bounded));
+        let read_ahead = read_ahead.map(Arc::new);
         dispatch.execute_work(
             execution,
             &mut state,
-            |state, _| Ok(state.0.next()),
-            move |execution, batch| execute_source_adjacent_batch_uncommitted(execution, &owned.plan(), batch),
+            |state, _| Ok(state.0.next().map(|batch| (batch, state.0.peek().cloned()))),
+            move |execution, (batch, next)| {
+                let read_ahead = read_ahead.as_deref().map(|read_ahead| ReadAheadStep { read_ahead, next });
+                execute_source_adjacent_batch_uncommitted(execution, &owned.plan(), batch, read_ahead)
+            },
             |state, execution, output| {
                 state.1.extend(execution, output.partials)?;
                 execution.metrics().record_source_chunk_commit_count(output.chunk_count, output.row_groups);
@@ -173,8 +183,10 @@ pub(in crate::exec::bounded) fn execute_source_aggregate_with_dispatch(
             },
         )?;
     } else {
-        for batch in state.0 {
-            let output = execute_source_adjacent_batch_uncommitted(execution, bounded, batch)?;
+        while let Some(batch) = state.0.next() {
+            let next = state.0.peek().cloned();
+            let read_ahead = read_ahead.as_ref().map(|read_ahead| ReadAheadStep { read_ahead, next });
+            let output = execute_source_adjacent_batch_uncommitted(execution, bounded, batch, read_ahead)?;
             execution.context().check_cancellation("query_engine.exec.bounded.source_adjacent_batch_commit")?;
             state.1.extend(execution, output.partials)?;
             execution.metrics().record_source_chunk_commit_count(output.chunk_count, output.row_groups);

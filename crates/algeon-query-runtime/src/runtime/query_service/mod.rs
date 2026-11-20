@@ -30,8 +30,8 @@ use super::{
     DeviceRegistry, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool, MemoryGrant,
     SourceSchedulerPolicy,
     context::{
-        AdmittedAttempt, PlanScope, QueryServiceEpochUser, StreamBinding, memory_control_policy_for_grant,
-        validate_service_stream_pool_device,
+        AdmittedAttempt, PlanScope, QueryServiceEpochUser, ReadAheadRegistry, StreamBinding,
+        memory_control_policy_for_grant, validate_service_stream_pool_device,
     },
 };
 use crate::observability::{

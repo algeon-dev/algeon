@@ -34,12 +34,13 @@ use query_runtime::metrics::DynamicFilterSourceSnapshot;
 
 use super::{
     BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, ExecutionMetrics, FilterNode, GpuDataFrame,
-    Instant, LocalParquetSource, MemoryControlPolicy, NodeId, ProjectionNode, QueryError, ResidentGpuFrame, Result,
-    SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
-    annotate_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts,
-    cudf_query_error, execute_projection_with_budget, is_retryable_chunk_error, join_leaf_prefetch_admitted,
-    observe_device_memory_bytes, plan_source_chunk_batches, record_bounded_parquet_source_metrics,
-    record_chunk_retry_error, split_retryable_chunk, validate_local_parquet_source,
+    Instant, JOIN_LEAF_READ_AHEAD_BOUNDARY, LocalParquetSource, MemoryControlPolicy, NodeId, ProjectionNode,
+    QueryError, ReadAheadStep, ResidentGpuFrame, Result, SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy,
+    SourceReadAhead, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
+    apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts, cudf_query_error, execute_projection_with_budget,
+    is_retryable_chunk_error, observe_device_memory_bytes, plan_source_chunk_batches, read_ahead_chunk_batch,
+    record_bounded_parquet_source_metrics, record_chunk_retry_error, source_read_ahead_admitted, split_retryable_chunk,
+    validate_local_parquet_source,
 };
 use crate::{
     chunk::{plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata},
@@ -47,7 +48,7 @@ use crate::{
         bounded::BoundedPlan,
         operators::PreparedDynamicFilter,
         source::{
-            ScheduledLocalParquetRead, attach_row_group_facts_if_absent, parquet_chunk_path_fact,
+            ScheduledLocalParquetRead, ScheduledSourceRead, attach_row_group_facts_if_absent, parquet_chunk_path_fact,
             read_local_parquet_chunk_batch, read_local_parquet_chunk_with_reader_dynamic_filter_count,
             read_local_parquet_source,
         },
@@ -67,8 +68,8 @@ mod stream;
 
 use batching::{
     annotate_join_leaf_source_chunk_batching_reasons, join_leaf_source_chunk_batches_for_execution,
-    materialized_source_chunk_batches_for_execution, source_chunk_batch_target_bytes, source_chunk_batches,
-    stream_has_multi_source_batches,
+    materialized_source_chunk_batches_for_execution, singleton_source_chunk_batches, source_chunk_batch_target_bytes,
+    source_chunk_batches, stream_has_multi_source_batches,
 };
 use concat::concatenate_join_source_chunks;
 use dynamic_filter::{
@@ -82,18 +83,13 @@ pub(in crate::exec::bounded) use planning::{
     plan_bounded_unary_chain_local_parquet_source_stream,
 };
 use read_serial::{
-    read_join_leaf_source_batch_attempt, read_join_leaf_source_batches_serial, read_join_leaf_source_chunk_attempt,
-    read_join_leaf_source_chunks_serial,
+    read_join_leaf_source_batch_attempt, read_join_leaf_source_batches_serial, read_join_leaf_source_chunks_serial,
 };
-use scheduler::{
-    abandon_join_leaf_reads, fill_optional_join_leaf_reads, read_join_leaf_source_chunks_with_scheduler,
-    start_join_leaf_prefetch_source_read, start_next_required_join_leaf_read,
-};
+use scheduler::{read_join_leaf_source_chunks_with_scheduler, start_join_leaf_prefetch_source_read};
 use stages::apply_join_leaf_source_stream_stages;
 pub(in crate::exec::bounded) use stream::bounded_join_leaf_local_parquet_source_frame_stream;
 use stream::{
-    execute_uncommitted_source_chunk, stream_join_leaf_source_chunk_with_consumer_retry,
-    stream_join_leaf_source_chunks_serial, stream_join_leaf_source_chunks_with_scheduler,
+    execute_uncommitted_source_chunk, stream_join_leaf_source_batches, stream_join_leaf_source_chunks_serial,
 };
 
 /// Names the join source read as the failing boundary so a resource error
@@ -136,6 +132,9 @@ pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
     stages: Vec<BoundedJoinLeafSourceStreamStage>,
     reader_dynamic_filters: Vec<BoundedJoinLeafSourceStreamDynamicFilterStage>,
     planning_policy: SourceChunkPlanningPolicy,
+    /// Whether the chunks were planned with the read-ahead slot. Only then does a consumer
+    /// keep a read ahead of itself.
+    read_ahead: bool,
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
 }
@@ -226,18 +225,33 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         &self.chunks
     }
 
+    /// The source-byte target the chunks were planned against, which also bounds the read
+    /// scratch of a chunk read ahead of its consumer.
+    pub(in crate::exec::bounded) fn planned_chunk_target_bytes(&self) -> Option<u64> {
+        self.planning_policy.max_source_chunk_bytes
+    }
+
+    /// Whether the chunks were planned with the read-ahead slot.
+    pub(in crate::exec::bounded) fn planned_read_ahead(&self) -> bool {
+        self.read_ahead
+    }
+
     /// Executes one logical chunk, including source-owned split retries. The
-    /// consumer must keep outputs private until this call succeeds.
+    /// consumer must keep outputs private until this call succeeds. With
+    /// `read_ahead`, the chunk comes from the read started for it when there is
+    /// one, and the read of the step's next chunk starts once this chunk is
+    /// decoded, before its stages and `consume` run.
     pub(in crate::exec::bounded) fn execute_chunk<F>(
         &self,
         execution: &mut BoundedExecutionAttempt<'_>,
         chunk: SourceChunk,
+        read_ahead: Option<ReadAheadStep<'_>>,
         consume: &mut F,
     ) -> Result<u64>
     where
         F: FnMut(&SourceChunk, usize, ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
     {
-        execute_uncommitted_source_chunk(execution, self, chunk, 1, consume)
+        execute_uncommitted_source_chunk(execution, self, chunk, 1, read_ahead, consume)
     }
 
     pub(in crate::exec::bounded) fn chunk_count(&self) -> usize {
@@ -540,12 +554,14 @@ pub(in crate::exec::bounded) fn materialize_bounded_join_leaf_local_parquet_sour
     concatenate_join_source_chunks(execution, node_id, chunks)
 }
 
-/// Pushes the leaf's chunks to `consume` in chunk order, choosing the driver.
+/// Pushes the leaf's chunks to `consume` in chunk order, keeping the next batch's read ahead
+/// of `consume` when `source_read_ahead_applies`.
 ///
-/// Multi-chunk batches read serially because the scheduler issues one chunk
-/// per job; otherwise a multi-chunk leaf with prefetch enabled uses the
-/// scheduler, which keeps one read ahead of the consumer. Frames `consume`
-/// already accepted stay with the consumer on error.
+/// A leaf whose planned-cap batching groups chunks reads batches cut against the
+/// memory-control target, as the serial path does. Otherwise a leaf that reads ahead pushes
+/// one chunk per batch, so each read ahead covers one planned chunk, and a leaf that does not
+/// keeps the serial batching. Frames `consume` already accepted stay with the consumer on
+/// error. Dropping the read ahead when this returns joins a read still pending.
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
@@ -554,17 +570,25 @@ pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source<F>
 where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    if stream_has_multi_source_batches(execution.context(), &stream) {
-        stream_join_leaf_source_chunks_serial(execution, &stream, &mut consume)
-    } else if execution.context().source_scheduler_policy().enables_prefetch() && stream.chunks.len() > 1 {
-        stream_join_leaf_source_chunks_with_scheduler(execution, &stream, &mut consume)
+    let read_ahead = (stream.chunks.len() > 1)
+        .then(|| SourceReadAhead::for_stream(execution, &stream, JOIN_LEAF_READ_AHEAD_BOUNDARY))
+        .flatten();
+    let batches = if read_ahead.is_some() && !stream_has_multi_source_batches(execution.context(), &stream) {
+        singleton_source_chunk_batches(&stream.chunks, "read_ahead_chunks")
     } else {
-        stream_join_leaf_source_chunks_serial(execution, &stream, &mut consume)
-    }
+        join_leaf_source_chunk_batches_for_execution(
+            &stream.source,
+            &stream.chunks,
+            &stream.reader_dynamic_filters,
+            source_chunk_batch_target_bytes(execution.context().memory_control_policy()),
+        )
+    };
+    stream_join_leaf_source_batches(execution, &stream, batches, read_ahead.as_ref(), &mut consume)
 }
 
 /// Pushes chunks one at a time with the single-chunk split retry and no
-/// batching, for consumers whose retry contract is per chunk.
+/// batching, for consumers whose retry contract is per chunk. A stream planned
+/// with the read-ahead slot keeps the next chunk's read ahead of `consume`.
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_chunks<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
@@ -573,12 +597,15 @@ pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_ch
 where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    for chunk in stream.chunks.clone() {
-        stream_join_leaf_source_chunk_with_consumer_retry(execution, &stream, chunk, 1, &mut consume)?;
-    }
-    Ok(())
+    let read_ahead = SourceReadAhead::for_stream(execution, &stream, JOIN_LEAF_READ_AHEAD_BOUNDARY);
+    let batches = singleton_source_chunk_batches(&stream.chunks, "per_chunk_consumer");
+    stream_join_leaf_source_batches(execution, &stream, batches, read_ahead.as_ref(), &mut consume)
 }
 
+/// Pushes the leaf's chunks in batches cut against the memory-control target,
+/// with the split retries of `stream_join_leaf_source_chunks_serial`. A stream
+/// planned with the read-ahead slot keeps the next batch's read ahead of
+/// `consume`.
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_serial<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
@@ -587,7 +614,14 @@ pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_se
 where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    stream_join_leaf_source_chunks_serial(execution, &stream, &mut consume)
+    let read_ahead = SourceReadAhead::for_stream(execution, &stream, JOIN_LEAF_READ_AHEAD_BOUNDARY);
+    let batches = join_leaf_source_chunk_batches_for_execution(
+        &stream.source,
+        &stream.chunks,
+        &stream.reader_dynamic_filters,
+        source_chunk_batch_target_bytes(execution.context().memory_control_policy()),
+    );
+    stream_join_leaf_source_batches(execution, &stream, batches, read_ahead.as_ref(), &mut consume)
 }
 
 /// Reads every chunk and returns the decoded frames with their device bytes.

@@ -27,7 +27,7 @@ use super::{
         object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
         service_stream::{default_service_stream_pool_size_for_device, validate_service_stream_pool_size},
     },
-    DeviceRuntime, ExecutionCancellation, ExecutionContext, PlanScope, QueryScope, StreamBinding,
+    DeviceRuntime, ExecutionCancellation, ExecutionContext, PlanScope, QueryScope, ReadAheadRegistry, StreamBinding,
     scope::StandaloneQuery,
     validate_service_stream_pool_device,
 };
@@ -355,6 +355,7 @@ impl StandaloneScopes {
             memory_control_policy,
             cancellation,
             parquet_footers: ParquetFooterCache::new(),
+            read_ahead: ReadAheadRegistry::default(),
             observation_owner: None,
         };
         let stream = query.bind_root(runtime)?;

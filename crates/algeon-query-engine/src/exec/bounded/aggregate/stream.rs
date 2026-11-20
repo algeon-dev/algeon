@@ -15,6 +15,8 @@
 //! A source stream whose plan has source-adjacent stages can instead go to `source_adjacent.rs`,
 //! which fuses the stages with group-key partitioning.
 
+use std::sync::Arc;
+
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
@@ -33,7 +35,10 @@ use super::{
 };
 use crate::exec::{
     bounded::{
-        chunks::bounded_source_adjacent_chunk_batching_enabled,
+        chunks::{
+            AGGREGATE_READ_AHEAD_BOUNDARY, ReadAheadStep, SourceReadAhead,
+            bounded_source_adjacent_chunk_batching_enabled,
+        },
         compiled::{CompiledGpuResource, lanes::AggregateLaneDispatch},
         join::bounded_join_leaf_local_parquet_source_frame_stream,
     },
@@ -200,9 +205,9 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
     topk: Option<&super::SourceAggregateTopK<'_>>,
 ) -> Result<CompiledGpuResource> {
     if aggregate_spec_requires_whole_input(&aggregate.spec) {
-        // Whole-input consumers use the same source-owned pull cursor. They
-        // must not start nested prefetch workers while the compiled run owns
-        // the attempt's lane leases.
+        // Whole-input consumers use the same source-owned pull cursor. A run
+        // that owns lane leases keeps no read ahead in it; a run without lanes
+        // reads the next batch while the cursor collects the current one.
         let inputs = bounded_join_leaf_local_parquet_source_frame_stream(execution, stream)
             .into_remaining_frames_owned(execution)?;
         if inputs.is_empty() {
@@ -251,12 +256,16 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
         );
         if partitioned || bounded_source_adjacent_chunk_batching_enabled(execution.context(), &bounded, stream.chunks())
         {
+            let read_ahead = (!partitioned)
+                .then(|| SourceReadAhead::for_stream(execution, &stream, AGGREGATE_READ_AHEAD_BOUNDARY))
+                .flatten();
             return super::execute_source_aggregate_with_dispatch(
                 execution,
                 &bounded,
                 stream.chunks(),
                 dispatch,
                 partitioned,
+                read_ahead,
             );
         }
     }
@@ -270,6 +279,10 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
         stream.chunk_count(),
         None,
     )?;
+    // A run without lanes executes its chunks one at a time on the coordinator and keeps the
+    // next chunk's read ahead of the current chunk's stages and partial aggregate. Dropping the
+    // read ahead at the end of this function joins a read still pending on any exit path.
+    let read_ahead = SourceReadAhead::for_stream(execution, &stream, AGGREGATE_READ_AHEAD_BOUNDARY);
     if let Some(dispatch) = dispatch.filter(|_| aggregate.spec.grouping_sets.is_none()) {
         dispatch.execute_chunks(
             execution,
@@ -278,10 +291,12 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
             input_schema,
             output_schema,
             stream,
+            read_ahead.map(Arc::new),
             |execution, chunk_partials| partials.extend(execution, chunk_partials),
         )?;
     } else {
-        for chunk in stream.chunks().iter().cloned() {
+        let chunks = stream.chunks();
+        for (index, chunk) in chunks.iter().cloned().enumerate() {
             let chunk_partials = execute_compiled_source_aggregate_chunk(
                 execution,
                 node_id,
@@ -290,6 +305,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
                 output_schema,
                 &stream,
                 chunk,
+                read_ahead.as_ref().map(|read_ahead| ReadAheadStep::chunk(read_ahead, chunks.get(index + 1))),
             )?;
             // Merge failure cannot replay source work after earlier partials committed.
             partials.extend(execution, chunk_partials.partials)?;
@@ -311,6 +327,8 @@ pub(in crate::exec::bounded) struct AggregateChunkOutput {
 /// The stream's chunk execution owns decode and operator retries. Each successful piece of the
 /// chunk adds its partials to the returned `AggregateChunkOutput`, and the caller inserts them into
 /// merge state. A stage record ties each piece's partial aggregate to the chunk index and attempt.
+/// `read_ahead` follows `BoundedJoinLeafLocalParquetSourceStream::execute_chunk`.
+#[expect(clippy::too_many_arguments, reason = "chunk execution carries its aggregate occurrence and schemas")]
 pub(in crate::exec::bounded) fn execute_compiled_source_aggregate_chunk(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -319,54 +337,56 @@ pub(in crate::exec::bounded) fn execute_compiled_source_aggregate_chunk(
     output_schema: &ArrowSchemaRef,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
     chunk: SourceChunk,
+    read_ahead: Option<ReadAheadStep<'_>>,
 ) -> Result<AggregateChunkOutput> {
     let mut partials = Vec::new();
-    let source_row_groups = stream.execute_chunk(execution, chunk, &mut |chunk, attempt, input, execution| {
-        let evidence = PartialAggregateInputEvidence {
-            source_chunk_fingerprint: partial_aggregate_source_chunk_fingerprint(std::slice::from_ref(chunk)),
-            source_adjacent_partial: stream.has_stages(),
-            source_chunk_row_group_count: observed_chunk_row_group_count(chunk)
-                .unwrap_or_else(|| chunk.row_group_count()) as u64,
-            source_chunk_reads_all_row_groups: chunk.reads_all_row_groups,
-            source_chunk_known_row_count: chunk.known_row_count,
-            source_chunk_estimated_source_read_bytes: chunk.estimated_source_read_bytes,
-            source_chunk_size_estimate_based: chunk.size_estimate_based,
-            source_adjacent_partition_strategy: "none",
-            source_adjacent_partition_count: None,
-            source_adjacent_non_empty_partition_count: None,
-            source_adjacent_partition_key_count: None,
-            source_adjacent_max_partition_fan_in: None,
-        };
-        let stage = super::start_aggregate_chunk_stage(
-            execution,
-            node_id,
-            chunk.chunk_index,
-            attempt,
-            input.frame.num_rows() as u64,
-        );
-        match execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
-            execution,
-            node_id,
-            aggregate,
-            input_schema,
-            output_schema,
-            input,
-            Some(evidence),
-        ) {
-            Ok(outputs) => {
-                stage.finish(
-                    Some(outputs.iter().map(|partial| partial.frame.num_rows() as u64).sum()),
-                    Some(outputs.iter().map(CommittedPartial::device_bytes).sum()),
-                );
-                partials.extend(outputs);
-            },
-            Err(error) => {
-                stage.fail(&error);
-                return Err(error);
-            },
-        }
-        Ok(())
-    })?;
+    let source_row_groups =
+        stream.execute_chunk(execution, chunk, read_ahead, &mut |chunk, attempt, input, execution| {
+            let evidence = PartialAggregateInputEvidence {
+                source_chunk_fingerprint: partial_aggregate_source_chunk_fingerprint(std::slice::from_ref(chunk)),
+                source_adjacent_partial: stream.has_stages(),
+                source_chunk_row_group_count: observed_chunk_row_group_count(chunk)
+                    .unwrap_or_else(|| chunk.row_group_count()) as u64,
+                source_chunk_reads_all_row_groups: chunk.reads_all_row_groups,
+                source_chunk_known_row_count: chunk.known_row_count,
+                source_chunk_estimated_source_read_bytes: chunk.estimated_source_read_bytes,
+                source_chunk_size_estimate_based: chunk.size_estimate_based,
+                source_adjacent_partition_strategy: "none",
+                source_adjacent_partition_count: None,
+                source_adjacent_non_empty_partition_count: None,
+                source_adjacent_partition_key_count: None,
+                source_adjacent_max_partition_fan_in: None,
+            };
+            let stage = super::start_aggregate_chunk_stage(
+                execution,
+                node_id,
+                chunk.chunk_index,
+                attempt,
+                input.frame.num_rows() as u64,
+            );
+            match execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
+                execution,
+                node_id,
+                aggregate,
+                input_schema,
+                output_schema,
+                input,
+                Some(evidence),
+            ) {
+                Ok(outputs) => {
+                    stage.finish(
+                        Some(outputs.iter().map(|partial| partial.frame.num_rows() as u64).sum()),
+                        Some(outputs.iter().map(CommittedPartial::device_bytes).sum()),
+                    );
+                    partials.extend(outputs);
+                },
+                Err(error) => {
+                    stage.fail(&error);
+                    return Err(error);
+                },
+            }
+            Ok(())
+        })?;
     Ok(AggregateChunkOutput { partials, source_row_groups })
 }
 

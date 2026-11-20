@@ -96,7 +96,9 @@ use read_runtime_metrics::{
 };
 pub(in crate::exec) use scan_limit::apply_source_scan_limit_to_frame;
 use scan_limit::{apply_source_chunk_scan_limit, empty_local_parquet_execution_frame};
-pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
+#[cfg(test)]
+pub(in crate::exec) use scheduler::read_fault;
+pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, ScheduledSourceRead};
 use schema::{coerce_local_parquet_source_schema, materialize_missing_columns};
 use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_frame_with_budget};
 
@@ -390,6 +392,7 @@ pub(super) fn read_local_parquet_chunk(
         budget_bytes,
         budget_boundary,
         0,
+        None,
         metrics,
     )
 }
@@ -398,6 +401,12 @@ pub(super) fn read_local_parquet_chunk(
 /// `budget_boundary`, through the resident source cache when the chunk is
 /// cacheable. `reader_dynamic_filter_count` only labels the source-read row
 /// with how many dynamic filters were merged into the reader predicate.
+/// `scratch_limit_bytes`, when set, lowers the reader's pass read limit to at
+/// most that many bytes of read and decompression scratch.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -405,6 +414,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
+    scratch_limit_bytes: Option<u64>,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     // Count probes and empty chunks build synthetic frames without decoding
@@ -420,6 +430,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
             budget_bytes,
             budget_boundary,
             reader_dynamic_filter_count,
+            scratch_limit_bytes,
             metrics,
         );
     };
@@ -438,6 +449,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
                 budget_bytes,
                 budget_boundary,
                 reader_dynamic_filter_count,
+                scratch_limit_bytes,
                 metrics,
             ) {
                 Ok(frame) => frame,
@@ -461,7 +473,12 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
 /// reader sizes its own passes to the same bound the token enforces. The I/O
 /// lease is taken after the token, and only for the read call. A chunk that
 /// reads part of its file reuses the file's footer from the attempt's
-/// [`ExecutionContext::parquet_footer_cache`].
+/// [`ExecutionContext::parquet_footer_cache`]. `scratch_limit_bytes` lowers the
+/// pass read limit further for a read that runs next to other live work.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 fn read_local_parquet_chunk_uncached(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -469,6 +486,7 @@ fn read_local_parquet_chunk_uncached(
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
+    scratch_limit_bytes: Option<u64>,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     context.check_cancellation("query_engine.local_parquet_chunk.read")?;
@@ -544,9 +562,11 @@ fn read_local_parquet_chunk_uncached(
     let runtime = context.runtime()?;
     let outcome = token
         .run("dataframe::read_parquet_source", |exec| {
-            let request = SourceRead::new(&cudf_source, slice::from_ref(&cudf_chunk), SourceReadMode::ExecutionFrame)
-                .with_pass_read_limit_for_budget(token.member_limit_bytes()?)
-                .with_footer_cache(context.parquet_footer_cache());
+            let mut request =
+                SourceRead::new(&cudf_source, slice::from_ref(&cudf_chunk), SourceReadMode::ExecutionFrame)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?)
+                    .with_footer_cache(context.parquet_footer_cache());
+            request.pass_read_limit = lower_pass_read_limit(request.pass_read_limit, scratch_limit_bytes);
             DataFrame::read_parquet_source(request, &runtime, exec)
         })
         .map_err(|error| {
@@ -621,6 +641,15 @@ fn read_local_parquet_chunk_uncached(
     Ok(GpuDataFrame::new(frame))
 }
 
+/// The lower of the budget-derived pass read limit and a caller's scratch
+/// limit; either may be absent.
+fn lower_pass_read_limit(pass_read_limit: Option<u64>, scratch_limit_bytes: Option<u64>) -> Option<u64> {
+    match (pass_read_limit, scratch_limit_bytes) {
+        (Some(limit), Some(scratch)) => Some(limit.min(scratch)),
+        (limit, scratch) => limit.or(scratch),
+    }
+}
+
 /// One-row frame carrying `row_count` as the `COUNT(*)` probe weight, so the
 /// aggregate above sums weights and does not count decoded rows.
 /// `record_input_rows` is false on the whole-source path, which has already
@@ -663,7 +692,12 @@ fn count_star_probe_weight_frame(
 
 /// Reads a batch of chunks in one cuDF call, through the resident source cache
 /// under a key covering the whole batch. A singleton batch is the single chunk
-/// read, so its cache key stays the chunk key.
+/// read, so its cache key stays the chunk key. `scratch_limit_bytes` follows
+/// `read_local_parquet_chunk_with_reader_dynamic_filter_count`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 pub(super) fn read_local_parquet_chunk_batch(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -671,6 +705,7 @@ pub(super) fn read_local_parquet_chunk_batch(
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
+    scratch_limit_bytes: Option<u64>,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if batch.is_singleton() {
@@ -682,6 +717,7 @@ pub(super) fn read_local_parquet_chunk_batch(
             budget_bytes,
             budget_boundary,
             reader_dynamic_filter_count,
+            scratch_limit_bytes,
             metrics,
         );
     }
@@ -695,6 +731,7 @@ pub(super) fn read_local_parquet_chunk_batch(
             budget_bytes,
             budget_boundary,
             reader_dynamic_filter_count,
+            scratch_limit_bytes,
             metrics,
         );
     };
@@ -713,6 +750,7 @@ pub(super) fn read_local_parquet_chunk_batch(
                 budget_bytes,
                 budget_boundary,
                 reader_dynamic_filter_count,
+                scratch_limit_bytes,
                 metrics,
             ) {
                 Ok(frame) => frame,
@@ -739,6 +777,13 @@ pub(super) fn read_local_parquet_chunk_batch(
 /// limit: the batch byte target, the query domain's allocator and the
 /// chunk-split retry bound it (see `source_batching_policy.rs`), and a pass
 /// limit would make cuDF return several passes that are then concatenated.
+/// A read with `scratch_limit_bytes` set runs next to other live work and takes
+/// that pass limit. It reads the member files, because the optimized-file read
+/// has no pass limit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 fn read_local_parquet_chunk_batch_uncached(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -746,6 +791,7 @@ fn read_local_parquet_chunk_batch_uncached(
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
+    scratch_limit_bytes: Option<u64>,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if batch.is_singleton() {
@@ -757,12 +803,14 @@ fn read_local_parquet_chunk_batch_uncached(
             budget_bytes,
             budget_boundary,
             reader_dynamic_filter_count,
+            scratch_limit_bytes,
             metrics,
         );
     }
     context.check_cancellation("query_engine.local_parquet_chunk_batch.read")?;
     validate_local_parquet_chunk_batch(source, batch)?;
-    if let Some(entry) = local_cache_optimized_batch_entry(source, batch)
+    if scratch_limit_bytes.is_none()
+        && let Some(entry) = local_cache_optimized_batch_entry(source, batch)
         && entry.path.is_file()
     {
         match read_optimized_local_cache_chunk_batch(
@@ -811,12 +859,10 @@ fn read_local_parquet_chunk_batch_uncached(
     let runtime = context.runtime()?;
     let outcome = token
         .run("dataframe::read_parquet_source", |exec| {
-            DataFrame::read_parquet_source(
-                SourceRead::new(&cudf_source, &cudf_chunks, SourceReadMode::ExecutionFrame)
-                    .with_footer_cache(context.parquet_footer_cache()),
-                &runtime,
-                exec,
-            )
+            let mut request = SourceRead::new(&cudf_source, &cudf_chunks, SourceReadMode::ExecutionFrame)
+                .with_footer_cache(context.parquet_footer_cache());
+            request.pass_read_limit = scratch_limit_bytes;
+            DataFrame::read_parquet_source(request, &runtime, exec)
         })
         .map_err(|error| {
             cudf_error_for_chunk_batch_with_budget_details(

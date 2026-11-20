@@ -28,6 +28,9 @@ pub(in crate::exec) struct BoundedExecutionAttempt<'a> {
     /// Probe slices that partitioned hash joins defer for partitions without a
     /// kept table. Present on the coordinator's attempt only, like the tables.
     deferred_join_probes: Option<Arc<JoinRetentionLedger>>,
+    /// Execution lanes the compiled run holds for its whole duration; 1 for a run
+    /// without lanes and for a lane job.
+    run_lane_width: usize,
 }
 
 impl<'a> BoundedExecutionAttempt<'a> {
@@ -47,6 +50,7 @@ impl<'a> BoundedExecutionAttempt<'a> {
             deferred_join_probes: Some(JoinRetentionLedger::new(
                 policy.partitioned_join_target_bytes(device_budget_bytes),
             )),
+            run_lane_width: 1,
         }
     }
 
@@ -57,7 +61,24 @@ impl<'a> BoundedExecutionAttempt<'a> {
         device_budget_bytes: u64,
         metrics: &'a ExecutionMetrics,
     ) -> Self {
-        Self { context, device_budget_bytes, metrics, retained_join_tables: None, deferred_join_probes: None }
+        Self {
+            context,
+            device_budget_bytes,
+            metrics,
+            retained_join_tables: None,
+            deferred_join_probes: None,
+            run_lane_width: 1,
+        }
+    }
+
+    /// Records the lanes the compiled run holds while this attempt executes it.
+    pub(in crate::exec::bounded) fn set_run_lane_width(&mut self, run_lane_width: usize) {
+        self.run_lane_width = run_lane_width;
+    }
+
+    /// Execution lanes the compiled run holds; see `chunks::source_read_ahead_applies`.
+    pub(in crate::exec::bounded) const fn run_lane_width(&self) -> usize {
+        self.run_lane_width
     }
 
     pub(in crate::exec) const fn context(&self) -> &'a ExecutionContext {

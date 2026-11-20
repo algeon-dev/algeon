@@ -226,6 +226,7 @@ pub fn run_resident_lane_borrow(
         &support.gpu_inputs,
         &support.metrics,
     )?;
+    executor.execution.set_run_lane_width(dispatch.width());
     executor.aggregate_dispatch = Some(dispatch);
     let mut state = match observation_scope {
         Some(scope) => scheduler.run_observed(&mut executor, scope)?,

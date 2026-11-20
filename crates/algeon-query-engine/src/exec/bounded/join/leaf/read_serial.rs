@@ -188,6 +188,7 @@ pub(super) fn read_join_leaf_source_batch_attempt(
         source_token_budget,
         "join_source_read",
         reader_dynamic_filters.len(),
+        None,
         execution.metrics(),
     ) {
         Ok(frame) => frame,
@@ -294,7 +295,7 @@ pub(super) fn retry_join_leaf_source_chunk_after_error(
     Err(chunk_retry_facts(&chunk, execution).attach_to_error(error))
 }
 /// One read of a chunk that records the source chunk commit once the decode succeeds.
-pub(super) fn read_join_leaf_source_chunk_attempt(
+fn read_join_leaf_source_chunk_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     node_id: NodeId,
@@ -343,6 +344,7 @@ pub(super) fn read_join_leaf_source_chunk_attempt_uncommitted(
         source_token_budget,
         budget_boundary,
         reader_dynamic_filters.len(),
+        None,
         execution.metrics(),
     )
     .map_err(|error| attach_join_source_read_resource_facts(error, node_id, chunk, attempt, max_attempts))?;

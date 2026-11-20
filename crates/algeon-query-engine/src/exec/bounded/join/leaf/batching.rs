@@ -3,11 +3,12 @@
 //! Adjacent chunks of one source are grouped into a batch that is read with one call when
 //! their planned read bytes fit a target. Batching is off, giving one chunk per batch, when
 //! the source has partition columns or a reader predicate the reader cannot evaluate; the
-//! reason is recorded on the batch. A multi-chunk batch is never read through the read
-//! scheduler.
+//! reason is recorded on the batch. The materializing read scheduler reads one chunk per job
+//! and is used only when no batch groups chunks.
 //!
 //! The target depends on the caller. Push loops use the memory-control batching target. The
-//! pull stream and the serial-or-scheduler decision use the stream's planned chunk cap. The
+//! pull stream uses the stream's planned chunk cap, and so does the push loop's choice to read
+//! one chunk per batch when it keeps a read ahead and that cap groups no chunks. The
 //! materializing path raises the target for remote-direct sources with no stages, scan limit
 //! or partition columns, to give the concatenation fewer inputs.
 
@@ -20,8 +21,8 @@ use super::{
 };
 use crate::rapids_backend::rapids_analysis_context;
 
-/// Whether the planned-cap batching groups any chunks. A stream that does is read serially,
-/// because the scheduler reads one chunk per job.
+/// Whether the planned-cap batching groups any chunks. A push loop over such a stream reads
+/// memory-control batches even when it keeps a read ahead.
 pub(super) fn stream_has_multi_source_batches(
     context: &ExecutionContext,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
@@ -194,6 +195,7 @@ mod tests {
             stages: Vec::new(),
             reader_dynamic_filters: Vec::new(),
             planning_policy: SourceChunkPlanningPolicy::new(Some(4 * 1024 * 1024 * 1024), 512),
+            read_ahead: false,
             max_attempts: 1,
             min_retry_chunk_row_groups: 1,
         };

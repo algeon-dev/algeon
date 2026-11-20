@@ -41,7 +41,9 @@ use crate::exec::{
     ExecutionMetrics,
     bounded::{
         BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, CommittedPartial,
-        compiled::scheduler::record_cleanup_failure, execute_compiled_source_aggregate_chunk,
+        chunks::{ReadAheadStep, SourceReadAhead},
+        compiled::scheduler::record_cleanup_failure,
+        execute_compiled_source_aggregate_chunk,
     },
 };
 
@@ -239,6 +241,9 @@ impl AggregateLaneDispatch {
         run(&dispatcher, execution)
     }
 
+    /// Runs the stream's chunks through `execute_work` and hands each chunk's partials to
+    /// `consume` in chunk order. `read_ahead` is only present on a run without lanes, where each
+    /// chunk's work starts the read of the chunk after it.
     #[expect(clippy::too_many_arguments, reason = "chunk execution carries its aggregate occurrence and schemas")]
     pub(in crate::exec::bounded) fn execute_chunks(
         &self,
@@ -248,18 +253,20 @@ impl AggregateLaneDispatch {
         input_schema: &SchemaRef,
         output_schema: &SchemaRef,
         stream: BoundedJoinLeafLocalParquetSourceStream,
+        read_ahead: Option<Arc<SourceReadAhead>>,
         mut consume: impl FnMut(&mut BoundedExecutionAttempt<'_>, Vec<CommittedPartial>) -> Result<()>,
     ) -> Result<()> {
+        debug_assert!(read_ahead.is_none() || self.lanes.is_empty(), "a run with lanes keeps no read ahead");
         let stream = Arc::new(stream);
         let aggregate = aggregate.clone();
         let input_schema = Arc::clone(input_schema);
         let output_schema = Arc::clone(output_schema);
-        let mut chunks = stream.chunks().to_vec().into_iter();
+        let mut chunks = stream.chunks().to_vec().into_iter().peekable();
         self.execute_work(
             execution,
             &mut chunks,
-            |chunks, _| Ok(chunks.next()),
-            move |execution, chunk| {
+            |chunks, _| Ok(chunks.next().map(|chunk| (chunk, chunks.peek().cloned()))),
+            move |execution, (chunk, next)| {
                 execute_compiled_source_aggregate_chunk(
                     execution,
                     node_id,
@@ -268,6 +275,7 @@ impl AggregateLaneDispatch {
                     &output_schema,
                     &stream,
                     chunk,
+                    read_ahead.as_deref().map(|read_ahead| ReadAheadStep::chunk(read_ahead, next.as_ref())),
                 )
             },
             |_, execution, output| {

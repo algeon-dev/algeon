@@ -65,16 +65,18 @@ mod source_batching_policy;
 
 pub(in crate::exec::bounded) use aggregate::apply_source_adjacent_aggregate_chunk_caps;
 use aggregate::{
-    BoundedPlan, BoundedUnaryStage, SourceAggregateTopK, execute_compiled_bounded_aggregate_from_frame,
-    execute_compiled_bounded_aggregate_from_source_stream, execute_compiled_bounded_aggregate_from_stream,
-    execute_compiled_source_aggregate_chunk, is_source_adjacent_grouped_aggregate, reduce_merge_fan_in,
+    BoundedPlan, BoundedUnaryStage, SourceAggregateTopK, aggregate_source_stream_reads_ahead,
+    execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_aggregate_from_source_stream,
+    execute_compiled_bounded_aggregate_from_stream, execute_compiled_source_aggregate_chunk,
+    is_source_adjacent_grouped_aggregate, reduce_merge_fan_in,
 };
 pub(in crate::exec) use attempt::BoundedExecutionAttempt;
 pub(in crate::exec::bounded) use attempt::{DeferredJoinProbeCharge, RetainedJoinTableCharge};
 use chunks::{
-    RawSourceInput, chunk_retry_facts, concatenate_source_read_outputs, execute_bounded_raw_source_chunk,
-    execute_bounded_raw_source_chunk_batch, is_retryable_chunk_error, join_leaf_prefetch_admitted,
-    read_local_parquet_chunks_required_only, record_chunk_retry_error, split_retryable_chunk,
+    JOIN_LEAF_READ_AHEAD_BOUNDARY, RawSourceInput, ReadAheadStep, SourceReadAhead, chunk_retry_facts,
+    concatenate_source_read_outputs, execute_bounded_raw_source_chunk, execute_bounded_raw_source_chunk_batch,
+    is_retryable_chunk_error, read_ahead_chunk_batch, read_local_parquet_chunks_required_only,
+    record_chunk_retry_error, source_read_ahead_admitted, source_read_ahead_applies, split_retryable_chunk,
 };
 pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::{attach_chunk_resource_facts, attach_source_batch_resource_facts};

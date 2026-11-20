@@ -1,7 +1,8 @@
 //! Scheduled local Parquet chunk reads and their join protocol.
 //!
-//! `ScheduledLocalParquetRead::spawn` starts one chunk read and the consumer ends it with either
-//! `finish` (take the decoded frame at the commit point) or `abandon` (join and discard).
+//! `ScheduledLocalParquetRead::spawn` starts one read of a planned chunk batch (a single chunk is
+//! a singleton batch) and the consumer ends it with either `finish` (take the decoded frame at the
+//! commit point) or `abandon` (join and discard).
 //! A read runs in one of two arms. From an attempt's root context with an attempt auxiliary
 //! permit free, it is submitted as a `SupervisedWorker` job on the device executor's blocking
 //! lane, holding an `AttemptWorkLease` (that permit plus a leased stream) until it is joined.
@@ -9,10 +10,10 @@
 //! as an execution lane, or on a root context whose permits are all held. The caller never waits
 //! for a permit, because the root coordinator may itself hold every one through its lanes.
 //!
-//! This module does not count reads outstanding. The join-leaf scheduler keeps at most one
-//! optional read ahead of the required one, and only when `max_source_reads_in_flight` exceeds 1;
-//! for an admitted attempt, its auxiliary permits also bound the worker arm. The worker does not
-//! host-synchronize the decode; see `ReadinessEvent`. Design owner:
+//! This module does not count reads outstanding. Its callers keep at most one optional read
+//! ahead of their consumer, and only when `max_source_reads_in_flight` exceeds 1 (see
+//! `bounded::chunks::read_ahead`); for an admitted attempt, its auxiliary permits also bound the
+//! worker arm. The worker does not host-synchronize the decode; see `ReadinessEvent`. Design owner:
 //! `website/docs/design/data-path.mdx` and
 //! `website/docs/design/admission.mdx#device-profiles-and-grants`.
 
@@ -38,18 +39,58 @@ use query_runtime::{
 use super::{
     BoundedExecutionAttempt, ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, QueryError,
     QueryErrorCode, Result, SourceChunk, attach_row_group_facts, cudf_query_error, observed_chunk_row_group_count,
-    parquet_chunk_path_fact, read_local_parquet_chunk,
+    parquet_chunk_path_fact, read_local_parquet_chunk_batch,
 };
+use crate::chunk::SourceChunkBatch;
 
 /// Process-wide span ids for source-read observations. The plan span is id 1 and operator-stage
 /// spans start at `1 << 32`, so this range sits between them.
 static NEXT_SOURCE_READ_SPAN_ID: AtomicU64 = AtomicU64::new(10_000);
 
-/// One started chunk read, owned by the consumer that spawned it.
+/// What one scheduled read decodes and the budget it runs under.
+///
+/// `budget_bytes` and `budget_boundary` are forwarded to the bounded read unchanged.
+/// `reader_dynamic_filter_count` only labels the source-read row. `scratch_limit_bytes` lowers
+/// the reader's pass read limit; a read that runs next to its consumer's live work sets it.
+pub(in crate::exec) struct ScheduledSourceRead {
+    pub(in crate::exec) source: LocalParquetSource,
+    pub(in crate::exec) batch: SourceChunkBatch,
+    pub(in crate::exec) budget_bytes: u64,
+    pub(in crate::exec) budget_boundary: &'static str,
+    pub(in crate::exec) reader_dynamic_filter_count: usize,
+    pub(in crate::exec) scratch_limit_bytes: Option<u64>,
+}
+
+impl ScheduledSourceRead {
+    /// A read of one chunk with no reader dynamic filters and no scratch limit.
+    pub(in crate::exec) fn chunk(
+        source: LocalParquetSource,
+        chunk: SourceChunk,
+        budget_bytes: u64,
+        budget_boundary: &'static str,
+    ) -> Self {
+        Self {
+            source,
+            batch: SourceChunkBatch {
+                batch_index: chunk.chunk_index,
+                estimated_source_read_bytes: chunk.estimated_source_read_bytes,
+                source_batching_reason: "singleton".to_string(),
+                chunks: vec![chunk],
+            },
+            budget_bytes,
+            budget_boundary,
+            reader_dynamic_filter_count: 0,
+            scratch_limit_bytes: None,
+        }
+    }
+}
+
+/// One started read, owned by the consumer that spawned it.
 ///
 /// The consumer must end it with `finish` or `abandon`. Both join the worker, observe the
 /// readiness event and record the consumer-join lifecycle events; a plain drop does none of
 /// that. `prefetch` only labels the read for the caller and does not change how it runs.
+/// `chunk` is the batch's first chunk, the one that names the read in facts and observations.
 pub(in crate::exec) struct ScheduledLocalParquetRead {
     chunk: SourceChunk,
     state: ScheduledLocalParquetReadState,
@@ -71,8 +112,9 @@ enum ScheduledLocalParquetReadState {
     Inline { result: Box<ScheduledLocalParquetReadResult>, observation: Option<Arc<SourceReadObservation>> },
 }
 
-/// A joined chunk read whose readiness event has been synchronized. `finish` reports
-/// `observed_bytes` as 0; it does not measure device bytes.
+/// A joined read whose readiness event has been synchronized. `finish` reports `observed_bytes`
+/// as 0; it does not measure device bytes. `chunk` is the batch's first chunk and
+/// `observed_row_group_count` covers the whole batch.
 pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
     pub(in crate::exec) chunk: SourceChunk,
     pub(in crate::exec) frame: GpuDataFrame,
@@ -140,12 +182,12 @@ impl ReadinessEvent {
 fn observe_abandoned_readiness(
     result: Result<(GpuDataFrame, Option<ReadinessEvent>)>,
     chunk: &SourceChunk,
-    execution: &BoundedExecutionAttempt<'_>,
+    context: &ExecutionContext,
 ) {
     let Ok((_, readiness)) = result else { return };
     let Some(readiness) = readiness else { return };
     if let Err(error) = readiness.synchronize_for_commit(chunk) {
-        if let Some(scope) = execution.context().runtime_execution_scope() {
+        if let Some(scope) = context.runtime_execution_scope() {
             let summary = CleanupFailureSummary::from_native_error(CleanupFailurePhase::TaskExecution, &error);
             scope.observation().record_attempt_cleanup_failure(summary);
         } else {
@@ -345,17 +387,35 @@ where
 /// `Panicked` from `SourceReadWorkerGuard::drop` on unwind.
 fn read_local_parquet_chunk_worker(
     context: ExecutionContext,
-    source: LocalParquetSource,
-    chunk: SourceChunk,
-    budget_bytes: u64,
-    budget_boundary: &'static str,
+    read: ScheduledSourceRead,
     metrics: ExecutionMetrics,
 ) -> impl FnOnce(Duration, Option<Arc<SourceReadObservation>>) -> ScheduledLocalParquetReadResult + Send + 'static {
     move |_queue_wait, observation| {
         let read_started_at = Instant::now();
         let mut observation_guard = SourceReadWorkerGuard::new(observation);
-        let frame = read_local_parquet_chunk(&context, &source, &chunk, budget_bytes, budget_boundary, &metrics)
-            .and_then(|frame| {
+        let ScheduledSourceRead {
+            source,
+            batch,
+            budget_bytes,
+            budget_boundary,
+            reader_dynamic_filter_count,
+            scratch_limit_bytes,
+        } = read;
+        let chunk = batch.chunks.first().expect("a scheduled source read covers at least one chunk");
+        let frame = match injected_read_fault(budget_boundary) {
+            Some(error) => Err(error),
+            None => read_local_parquet_chunk_batch(
+                &context,
+                &source,
+                &batch,
+                budget_bytes,
+                budget_boundary,
+                reader_dynamic_filter_count,
+                scratch_limit_bytes,
+                &metrics,
+            ),
+        }
+        .and_then(|frame| {
                 // Device-side consumers order through the frame's retained provenance fences;
                 // the worker records readiness and does not block on its stream, so the pool
                 // slot recycles while decode drains. When the event cannot be recorded, the
@@ -374,7 +434,7 @@ fn read_local_parquet_chunk_worker(
                                     "failed to synchronize scheduled source read worker stream",
                                     error,
                                 ),
-                                &chunk,
+                                chunk,
                             )
                         })?;
                         Ok((frame, None))
@@ -384,8 +444,14 @@ fn read_local_parquet_chunk_worker(
         // Comes from the chunk's metadata, or from the local file footer when the chunk reads
         // every row group; no metrics counter delta is involved.
         // The read succeeded only when `frame` is `Ok`.
-        let observed_row_group_count =
-            frame.is_ok().then(|| observed_chunk_row_group_count(&chunk)).flatten().map(|count| count as u64);
+        let observed_row_group_count = frame
+            .is_ok()
+            .then(|| {
+                batch.chunks.iter().try_fold(0u64, |total, chunk| {
+                    observed_chunk_row_group_count(chunk).map(|count| total.saturating_add(count as u64))
+                })
+            })
+            .flatten();
         let read_duration_ns = read_started_at.elapsed().as_nanos() as u64;
         match &frame {
             Ok(_) => observation_guard.terminal(SourceReadLifecycleState::ReadFinished { read_duration_ns }),
@@ -454,7 +520,7 @@ fn try_acquire_source_read_lease(
 }
 
 impl ScheduledLocalParquetRead {
-    /// Starts a required read of `chunk`.
+    /// Starts a required read.
     ///
     /// The calling thread never waits for an attempt auxiliary permit. From an attempt's root
     /// context with a permit free, the read takes an attempt work lease, is submitted to the
@@ -463,93 +529,64 @@ impl ScheduledLocalParquetRead {
     /// that covers an attempt work lease context, which already holds a permit, and a root
     /// context whose permits are all held, possibly by lanes this same thread leased. Errors from
     /// lease acquisition or submission, including a submission refused during process exit, are
-    /// returned here and nothing is left running. `budget_bytes` and `budget_boundary` are
-    /// forwarded to the bounded chunk read unchanged.
+    /// returned here and nothing is left running.
     pub(in crate::exec) fn spawn(
         context: ExecutionContext,
         metrics: ExecutionMetrics,
-        source: LocalParquetSource,
-        chunk: SourceChunk,
-        budget_bytes: u64,
-        budget_boundary: &'static str,
+        read: ScheduledSourceRead,
         attempt: usize,
     ) -> Result<Self> {
+        let chunk = read.first_chunk().clone();
         if !context.is_attempt_work_lease_context()
             && let Some((lease, observation)) = try_acquire_source_read_lease(&context, &chunk, attempt)?
         {
-            return Self::submit_on_lease(
-                lease,
-                observation,
-                metrics,
-                source,
-                chunk,
-                budget_bytes,
-                budget_boundary,
-                false,
-            );
+            return Self::submit_on_lease(lease, observation, metrics, read, false);
         }
         let observation = SourceReadObservation::new(&context, &chunk, attempt);
-        Ok(Self::run_inline(context, observation, metrics, source, chunk, budget_bytes, budget_boundary, false))
+        Ok(Self::run_inline(context, observation, metrics, read, false))
     }
 
-    /// Starts an optional read of `chunk` ahead of its consumer, or returns `None` when that
-    /// would hold the calling thread.
+    /// Starts an optional read ahead of its consumer, or returns `None` when that would hold
+    /// the calling thread.
     ///
     /// From an attempt's root context the read runs only on a free attempt auxiliary permit,
     /// as in `spawn`; with none free nothing is started or recorded and the caller reads the
-    /// chunk later through `spawn`. From an attempt work lease context the read runs inline, as
-    /// in `spawn`.
+    /// chunks later itself. From an attempt work lease context the read runs inline, as in
+    /// `spawn`.
     pub(in crate::exec) fn spawn_prefetch(
         context: ExecutionContext,
         metrics: ExecutionMetrics,
-        source: LocalParquetSource,
-        chunk: SourceChunk,
-        budget_bytes: u64,
-        budget_boundary: &'static str,
+        read: ScheduledSourceRead,
         attempt: usize,
     ) -> Result<Option<Self>> {
+        let chunk = read.first_chunk().clone();
         if context.is_attempt_work_lease_context() {
             let observation = SourceReadObservation::new(&context, &chunk, attempt);
-            return Ok(Some(Self::run_inline(
-                context,
-                observation,
-                metrics,
-                source,
-                chunk,
-                budget_bytes,
-                budget_boundary,
-                true,
-            )));
+            return Ok(Some(Self::run_inline(context, observation, metrics, read, true)));
         }
         let Some((lease, observation)) = try_acquire_source_read_lease(&context, &chunk, attempt)? else {
             return Ok(None);
         };
-        Self::submit_on_lease(lease, observation, metrics, source, chunk, budget_bytes, budget_boundary, true).map(Some)
+        Self::submit_on_lease(lease, observation, metrics, read, true).map(Some)
     }
 
     // A read issued from an attempt work lease already holds that attempt's auxiliary permit,
     // and a root context with no permit free may be the holder of every one through its own
     // lanes. Leasing, or waiting for, another permit could then make a permit holder wait on
     // itself, so the read runs on the caller's own context and stream instead.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
-    )]
     fn run_inline(
         context: ExecutionContext,
         observation: Option<Arc<SourceReadObservation>>,
         metrics: ExecutionMetrics,
-        source: LocalParquetSource,
-        chunk: SourceChunk,
-        budget_bytes: u64,
-        budget_boundary: &'static str,
+        read: ScheduledSourceRead,
         prefetch: bool,
     ) -> Self {
+        let chunk = read.first_chunk().clone();
         let queue_start = SourceReadQueueStart::new(observation.as_deref());
         let result = run_source_read_worker(
             queue_start,
             observation.clone(),
-            read_local_parquet_chunk_worker(context, source, chunk.clone(), budget_bytes, budget_boundary, metrics),
+            read_local_parquet_chunk_worker(context, read, metrics),
         );
         Self {
             chunk,
@@ -558,20 +595,14 @@ impl ScheduledLocalParquetRead {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
-    )]
     fn submit_on_lease(
         source_read_lease: AttemptWorkLease,
         observation: Option<Arc<SourceReadObservation>>,
         metrics: ExecutionMetrics,
-        source: LocalParquetSource,
-        chunk: SourceChunk,
-        budget_bytes: u64,
-        budget_boundary: &'static str,
+        read: ScheduledSourceRead,
         prefetch: bool,
     ) -> Result<Self> {
+        let chunk = read.first_chunk().clone();
         let queue_start = SourceReadQueueStart::new(observation.as_deref());
         let thread_context = source_read_lease.context().clone();
         let worker_cancellation = thread_context.cancellation().clone();
@@ -581,14 +612,7 @@ impl ScheduledLocalParquetRead {
             observation.clone(),
             worker_cancellation,
             &worker_executor,
-            read_local_parquet_chunk_worker(
-                thread_context,
-                source,
-                chunk.clone(),
-                budget_bytes,
-                budget_boundary,
-                metrics,
-            ),
+            read_local_parquet_chunk_worker(thread_context, read, metrics),
         )?;
         Ok(Self {
             chunk,
@@ -693,12 +717,17 @@ impl ScheduledLocalParquetRead {
     /// still uses it. A read error or worker panic is not returned; a late decode failure is
     /// recorded as an attempt cleanup failure by `observe_abandoned_readiness`.
     pub(in crate::exec) fn abandon(self, execution: &mut BoundedExecutionAttempt<'_>) {
+        self.abandon_in(execution.context(), execution.metrics());
+    }
+
+    /// `abandon` for an owner that holds the context and metrics without an execution attempt.
+    pub(in crate::exec) fn abandon_in(self, context: &ExecutionContext, metrics: &ExecutionMetrics) {
         let ScheduledLocalParquetRead { chunk, state, .. } = self;
         match state {
             // The inline read already completed and reported itself; an
             // abandoned read's frame is discarded unconsumed.
             ScheduledLocalParquetReadState::Inline { result, observation, .. } => {
-                observe_abandoned_readiness(result.frame, &chunk, execution);
+                observe_abandoned_readiness(result.frame, &chunk, context);
                 if let Some(observation) = &observation {
                     observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
                     observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns: 0 });
@@ -714,7 +743,7 @@ impl ScheduledLocalParquetRead {
                 // readiness is still observed so a late decode failure is
                 // attributed to its chunk and does not leak to an unrelated later fence.
                 if let Some(SupervisedWorkerJoin::Completed(result)) = worker.join() {
-                    observe_abandoned_readiness(result.frame, &chunk, execution);
+                    observe_abandoned_readiness(result.frame, &chunk, context);
                 }
                 if let Some(observation) = &observation {
                     observation.record(SourceReadLifecycleState::ConsumerJoinFinished {
@@ -723,7 +752,82 @@ impl ScheduledLocalParquetRead {
                 }
             },
         }
-        execution.record_source_read(SourceReadFact::PrefetchAbandoned);
+        metrics.record_source_read(SourceReadFact::PrefetchAbandoned);
+    }
+}
+
+impl ScheduledSourceRead {
+    fn first_chunk(&self) -> &SourceChunk {
+        self.batch.chunks.first().expect("a scheduled source read covers at least one chunk")
+    }
+}
+
+#[cfg(not(test))]
+const fn injected_read_fault(_budget_boundary: &str) -> Option<QueryError> {
+    None
+}
+
+#[cfg(test)]
+fn injected_read_fault(budget_boundary: &str) -> Option<QueryError> {
+    read_fault::take(budget_boundary)
+}
+
+/// Test seam that fails the next scheduled read under one budget boundary, as a read that does
+/// not fit the grant or a read of a cancelled query would.
+#[cfg(test)]
+pub(in crate::exec) mod read_fault {
+    use std::sync::{Mutex, PoisonError};
+
+    use query_runtime::runtime::ExecutionCancellation;
+
+    use super::{QueryError, QueryErrorCode};
+
+    /// How the faulted read fails.
+    pub(in crate::exec) enum ReadFault {
+        /// A query-cap rejection, the retryable resource failure.
+        QueryCapRejection,
+        /// Cancels the token, then fails the read as cancelled.
+        Cancel(ExecutionCancellation),
+    }
+
+    static ARMED: Mutex<Vec<(&'static str, ReadFault)>> = Mutex::new(Vec::new());
+
+    /// Disarms its boundary when dropped, so a test that fails early leaves nothing armed.
+    pub(in crate::exec) struct ArmedReadFault(&'static str);
+
+    impl Drop for ArmedReadFault {
+        fn drop(&mut self) {
+            ARMED.lock().unwrap_or_else(PoisonError::into_inner).retain(|(armed, _)| *armed != self.0);
+        }
+    }
+
+    /// Fails the next scheduled read whose budget boundary is `budget_boundary`.
+    pub(in crate::exec) fn arm(budget_boundary: &'static str, fault: ReadFault) -> ArmedReadFault {
+        ARMED.lock().unwrap_or_else(PoisonError::into_inner).push((budget_boundary, fault));
+        ArmedReadFault(budget_boundary)
+    }
+
+    pub(super) fn take(budget_boundary: &str) -> Option<QueryError> {
+        let fault = {
+            let mut armed = ARMED.lock().unwrap_or_else(PoisonError::into_inner);
+            let position = armed.iter().position(|(armed, _)| *armed == budget_boundary)?;
+            armed.remove(position).1
+        };
+        Some(match fault {
+            ReadFault::QueryCapRejection => QueryError::new(
+                QueryErrorCode::QueryMemoryLimitExceeded,
+                "query_engine.source_scheduler.injected_read_fault",
+                "injected query memory limit rejection of a scheduled source read",
+            ),
+            ReadFault::Cancel(cancellation) => {
+                cancellation.cancel();
+                QueryError::new(
+                    QueryErrorCode::Cancelled,
+                    "query_engine.source_scheduler.injected_read_fault",
+                    "injected cancellation of a scheduled source read",
+                )
+            },
+        })
     }
 }
 

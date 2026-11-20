@@ -28,7 +28,9 @@ execution **lane** consists of one auxiliary permit, one leased CUDA stream, and
 a derived context. Its width is bounded by `source_work_per_attempt`, available
 permits, and pending work items; runs allocated fewer than two lanes execute
 inline on the coordinator. At the default `source_work_per_attempt = 1`, chunk
-work executes inline. The coordinator merges lane outputs in dispatch order
+work executes inline, and the attempt's auxiliary permit reads the next source
+chunk ahead of it ([source reads](./data-path.mdx#local-nvme-and-compatibility-mode)).
+The coordinator merges lane outputs in dispatch order
 under the required SQL semantics; DataFusion CPU partitions do not dictate
 lane allocation or stream width. A lane's stream lease remains held for the
 entire run, while chunk jobs may execute on any blocking-lane thread.
@@ -45,7 +47,11 @@ ownership lasts through final consumption, and all lanes allocate within
 [one query memory cap](./admission.mdx). An aggregate's source chunks on
 separate lanes are live at the same time, so its chunk target divides the
 grant by the regions one chunk keeps live times the run's lane width; two
-lanes halve the target a serial run plans. Within composed island executions,
+lanes halve the target a serial run plans. A serial run that reads one chunk
+ahead counts one more region for that chunk: five regions instead of four for
+an aggregate without source-adjacent stages. A grouped aggregate behind
+source-adjacent stages counts none and reads nothing ahead, because it may take
+the partitioned path, which sizes each batch after the previous one. Within composed island executions,
 shared execution scopes coordinate multi-reader lifecycles, retaining resident
 handles until the final reader completes.
 
