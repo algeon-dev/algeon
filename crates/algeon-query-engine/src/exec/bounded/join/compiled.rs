@@ -72,10 +72,10 @@ mod streamed;
 pub(in crate::exec) mod transaction;
 use cross::{execute_compiled_keyless_outer_cross_join_materialize, execute_compiled_projected_cross_join_materialize};
 use filtered::{
-    execute_compiled_filtered_join_build_from_resident_frame, execute_compiled_filtered_join_materialize,
-    execute_compiled_filtered_join_probe_chunk_from_resident_frame,
-    execute_compiled_filtered_join_probe_from_resident_frame, filtered_parallel_probe_supported,
-    parallel_filtered_probe_frames, release_compiled_filtered_join_build_state,
+    FilteredJoinFrameStreamProbeState, execute_compiled_filtered_join_build_from_resident_frame,
+    execute_compiled_filtered_join_materialize, execute_compiled_filtered_join_probe_chunk_from_resident_frame,
+    execute_compiled_filtered_join_probe_from_resident_frame, filtered_join_frame_stream_probe_to_payload,
+    filtered_probe_chunks_independent, parallel_filtered_probe_frames, release_compiled_filtered_join_build_state,
     release_compiled_filtered_join_probe_state,
 };
 use keyless::execute_compiled_keyless_join_materialize;
@@ -173,6 +173,7 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
         build: BoundedCompiledFilteredJoinBuildState,
         outputs: Vec<ResidentGpuFrame>,
     },
+    FilteredLazyStream(FilteredJoinFrameStreamProbeState),
     Prepared(BoundedCompiledPreparedJoinProbeState),
     LeftMatched(BoundedCompiledLeftMatchJoinProbeState),
     MixedStreamed {
@@ -254,14 +255,52 @@ pub(in crate::exec::bounded) fn stateless_streaming_probe_supported(node: &JoinN
         || (node.spec.join_type == JoinType::Left && node.spec.build_side == JoinSide::Right)
 }
 
+/// How the join's materialize output is read, from the compiled resource
+/// contract (`compiled/executor/routing.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::exec::bounded) enum JoinOutputConsumer {
+    /// One frame, or a copy several consumers share.
+    Frame,
+    /// One consumer pulls the output frame by frame.
+    Stream,
+    /// One join probe pulls the output frame by frame, directly or through
+    /// unary maps. That probe runs a stream of resident frames on execution
+    /// lanes (`probe_parallel`) and a lazy stream serially.
+    JoinProbe,
+}
+
+impl JoinOutputConsumer {
+    pub(in crate::exec::bounded) fn is_stream(self) -> bool {
+        self != Self::Frame
+    }
+}
+
+/// Whether a filtered semi, anti or mark probe defers each chunk to its
+/// consumer's pull, holding the build and one output piece at a time.
+///
+/// Every filtered join builds its right side without a residual, and its
+/// chunks are independent (`filtered_probe_chunks_independent`), including
+/// the null-aware anti join, whose restriction was fixed at build. Dynamic
+/// filter routes are produced from the build input before the build state
+/// exists and never read it. A frame consumer collects every chunk either way,
+/// so its chunks stay on the probe task. A join probe consumer keeps resident
+/// chunks too: it probes them on execution lanes, and a lazy input would
+/// serialize that probe. As in the lazy hash probe, a retryable failure while
+/// probing a pulled chunk reaches the consumer; only the eager push loop
+/// splits that source chunk and probes the halves.
+fn filtered_lazy_probe(node: &JoinNode, output: JoinOutputConsumer) -> bool {
+    output == JoinOutputConsumer::Stream && filtered_probe_chunks_independent(node)
+}
+
 /// Build side of a semi, anti or mark join: a membership structure over the
 /// right input that each probe chunk tests its rows against.
 ///
 /// Fields are visible across the join owner so the parallel probe path can
 /// share one immutable build among lanes. `null_aware_probe` is decided once
 /// from the complete right input, so every probe chunk applies the same
-/// `NOT IN` rewrite. `timer` starts at the build and is read by materialize so
-/// operator time covers build, every probe and the final concatenation.
+/// `NOT IN` rewrite. `timer` starts at the build and is read by the
+/// single-probe materialize, so its operator time covers build, probe and
+/// gather. A chunked probe charges each chunk's own probe time instead.
 pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinBuildState {
     pub(in crate::exec::bounded) left_keys: Vec<String>,
     pub(in crate::exec::bounded) left_columns: Vec<String>,
@@ -663,6 +702,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
             node,
             build,
             ResidentFrameStreamPayload::new(vec![input]),
+            JoinOutputConsumer::Frame,
             None,
         ),
     }
@@ -670,11 +710,11 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
 
 /// Runs the probe stage over a deferred Parquet leaf.
 ///
-/// `lazy_output` says the join output is consumed as a stream. Stateless
-/// probes pull leaf chunks on demand and yield outputs one by one. Outputs are
-/// not collected as a whole before the materialize task runs. Partitioned
-/// build sides always probe lazily: their partition outputs are already
-/// bounded per probe chunk.
+/// `output` says how the join output is consumed. Stateless probes whose
+/// output is consumed as a stream pull leaf chunks on demand and yield outputs
+/// one by one. Outputs are not collected as a whole before the materialize
+/// task runs. Partitioned build sides always probe lazily: their partition
+/// outputs are already bounded per probe chunk.
 ///
 /// A leaf with zero planned chunks (every row group pruned) is materialized
 /// into its empty frame first, so the schema still reaches the join. On `Err`
@@ -685,7 +725,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     node: &JoinNode,
     build: BoundedCompiledJoinBuildState,
     stream: BoundedJoinLeafLocalParquetSourceStream,
-    lazy_output: bool,
+    output: JoinOutputConsumer,
 ) -> Result<BoundedCompiledJoinProbeState> {
     if stream.chunk_count() == 0 {
         let input = materialize_bounded_join_leaf_local_parquet_source_stream(execution, stream)?;
@@ -693,20 +733,22 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     }
 
     let lazy_probe_supported = match &build {
-        BoundedCompiledJoinBuildState::Hash(_) => lazy_output && stateless_streaming_probe_supported(node),
+        BoundedCompiledJoinBuildState::Hash(_) => output.is_stream() && stateless_streaming_probe_supported(node),
         BoundedCompiledJoinBuildState::Prepared(build) => {
             build.left_match()
-                || (lazy_output
+                || (output.is_stream()
                     && stateless_streaming_probe_supported(node)
                     && matches!(build.strategy, JoinStrategy::OneShotEqui | JoinStrategy::PartitionedHashEqui)
                     && node.spec.residual_predicate.is_none())
         },
         BoundedCompiledJoinBuildState::Partitioned(_) => true,
-        BoundedCompiledJoinBuildState::Filtered(_) => false,
+        BoundedCompiledJoinBuildState::Filtered(_) => filtered_lazy_probe(node, output),
     };
     if lazy_probe_supported {
         let inputs = bounded_join_leaf_local_parquet_source_frame_stream(execution, stream);
-        return execute_bounded_compiled_join_probe_from_frame_stream(execution, node_id, node, build, inputs, None);
+        return execute_bounded_compiled_join_probe_from_frame_stream(
+            execution, node_id, node, build, inputs, output, None,
+        );
     }
 
     match build {
@@ -729,7 +771,9 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
         },
         // Semi/anti/mark membership is decided per probe row, so leaf chunks
         // stream through the filtered build the same way a frame stream does.
-        // The whole leaf is not materialized first.
+        // The whole leaf is not materialized first. This push loop keeps every
+        // chunk output for a consumer `filtered_lazy_probe` excludes, and a
+        // retryable probe failure splits the source chunk.
         BoundedCompiledJoinBuildState::Filtered(build) => {
             let mut outputs = Vec::new();
             let stream_result = stream_bounded_join_leaf_local_parquet_source(execution, stream, |input, execution| {
@@ -789,15 +833,17 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
 /// execution lanes when the strategy's outputs concatenate chunk by chunk
 /// (`probe_parallel`); `outer` lends the enclosing compiled run's lane
 /// dispatcher for that. Lazy streams and single frames keep a serial or
-/// pull-driven probe. Strategies that need both whole inputs drain the stream
-/// into one frame first and record why in the join strategy decision. On
-/// `Err` the build state and the stream have been released.
+/// pull-driven probe; `output` decides whether a filtered probe drains them
+/// here or on its consumer's pulls. Strategies that need both whole inputs
+/// drain the stream into one frame first and record why in the join strategy
+/// decision. On `Err` the build state and the stream have been released.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     build: BoundedCompiledJoinBuildState,
     mut inputs: ResidentFrameStreamPayload,
+    output: JoinOutputConsumer,
     outer: Option<&AggregateLaneDispatch>,
 ) -> Result<BoundedCompiledJoinProbeState> {
     match build {
@@ -825,9 +871,10 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
         BoundedCompiledJoinBuildState::Filtered(build) => {
             // One filtered build serves many probe chunks; membership is per
             // probe row, so parallel chunks merge by concatenation. Eager
-            // multi-frame inputs use lanes, otherwise keep the serial stream
-            // drain.
-            if filtered_parallel_probe_supported(node) && inputs.len() > 1 {
+            // multi-frame inputs use lanes; other inputs probe on the
+            // consumer's pulls when `filtered_lazy_probe` allows it and are
+            // drained serially here otherwise.
+            if filtered_probe_chunks_independent(node) && inputs.len() > 1 {
                 let frames = match inputs.into_remaining_frames_owned(execution) {
                     Ok(frames) => frames,
                     Err(error) => {
@@ -842,6 +889,11 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                         Err(error)
                     },
                 }
+            } else if filtered_lazy_probe(node, output) {
+                Ok(BoundedCompiledJoinProbeState::FilteredLazyStream(FilteredJoinFrameStreamProbeState {
+                    build,
+                    inputs,
+                }))
             } else {
                 let mut outputs = Vec::new();
                 while let Some(input) = inputs.next_frame(execution) {
@@ -947,6 +999,11 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
             release_compiled_filtered_join_build_state(build);
             concatenate_streamed_hash_join_outputs(execution, node_id, outputs)
         },
+        BoundedCompiledJoinProbeState::FilteredLazyStream(probe) => {
+            let stream = filtered_join_frame_stream_probe_to_payload(node_id, node, probe);
+            let outputs = stream.into_remaining_frames_owned(execution)?;
+            concatenate_streamed_hash_join_outputs(execution, node_id, outputs)
+        },
         BoundedCompiledJoinProbeState::Prepared(probe) => {
             execute_compiled_prepared_join_materialize(execution, node_id, node, probe)
         },
@@ -1026,6 +1083,11 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
         BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs } => {
             release_compiled_filtered_join_build_state(build);
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
+        },
+        BoundedCompiledJoinProbeState::FilteredLazyStream(probe) => {
+            Ok(BoundedCompiledJoinMaterializeOutput::LazyStream(filtered_join_frame_stream_probe_to_payload(
+                node_id, node, probe,
+            )))
         },
         BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, summary } => {
             let BoundedCompiledPreparedJoinBuildState { side: build_side, input, .. } = build;
@@ -1147,6 +1209,10 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
         },
         BoundedCompiledJoinProbeState::FilteredStreamed { build, .. } => {
             release_compiled_filtered_join_build_state(build);
+        },
+        BoundedCompiledJoinProbeState::FilteredLazyStream(probe) => {
+            probe.inputs.release_all(execution);
+            release_compiled_filtered_join_build_state(probe.build);
         },
         BoundedCompiledJoinProbeState::Prepared(probe) => {
             let BoundedCompiledPreparedJoinProbeState { left, right, .. } = probe;

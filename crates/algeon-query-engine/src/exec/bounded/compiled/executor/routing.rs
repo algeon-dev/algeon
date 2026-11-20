@@ -5,6 +5,7 @@ use query_planning::{
 };
 
 use super::CompiledGpuTaskExecutor;
+use crate::exec::bounded::JoinOutputConsumer;
 
 impl CompiledGpuTaskExecutor<'_> {
     /// The compiled contract for how this resource's consumers read it.
@@ -37,19 +38,54 @@ impl CompiledGpuTaskExecutor<'_> {
 
     // The materialize task preserves chunks only when the compiled contract
     // lets its output stay a stream and one consumer owns it.
-    pub(super) fn join_probe_output_consumed_as_stream(&self, node_id: NodeId) -> bool {
+    pub(super) fn join_output_consumer(&self, node_id: NodeId) -> JoinOutputConsumer {
         let Some(materialize) = self
             .pipeline
             .tasks()
             .iter()
             .find(|task| task.kind() == PipelineTaskKind::JoinMaterialize && task.plan_node() == Some(node_id))
         else {
-            return false;
+            return JoinOutputConsumer::Frame;
         };
         let [output] = materialize.output_resources() else {
+            return JoinOutputConsumer::Frame;
+        };
+        if !self.single_consumed_frame_stream(*output) {
+            JoinOutputConsumer::Frame
+        } else if self.frame_stream_reaches_join_probe(*output) {
+            JoinOutputConsumer::JoinProbe
+        } else {
+            JoinOutputConsumer::Stream
+        }
+    }
+
+    fn single_consumed_frame_stream(&self, resource: ResidentResourceId) -> bool {
+        self.resource_data_form(resource) == ResidentDataForm::FrameStream
+            && self.resource_sharing(resource) == ResourceSharing::SingleConsume
+    }
+
+    // Unary maps over a single-consumer frame stream stay lazy, so the stream
+    // reaches the next task that collects or probes it.
+    fn frame_stream_reaches_join_probe(&self, resource: ResidentResourceId) -> bool {
+        let Some([consumer]) = self
+            .pipeline
+            .resources()
+            .iter()
+            .find(|candidate| candidate.id() == resource)
+            .map(|resource| resource.consumers())
+        else {
             return false;
         };
-        self.resource_data_form(*output) == ResidentDataForm::FrameStream
-            && self.resource_sharing(*output) == ResourceSharing::SingleConsume
+        let Some(consumer) = self.pipeline.tasks().iter().find(|task| task.id() == *consumer) else {
+            return false;
+        };
+        match consumer.kind() {
+            PipelineTaskKind::JoinProbe => true,
+            PipelineTaskKind::Unary => match consumer.output_resources() {
+                [output] => self.single_consumed_frame_stream(*output) && self.frame_stream_reaches_join_probe(*output),
+                _ => false,
+            },
+            _ => false,
+        }
     }
 }

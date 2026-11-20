@@ -190,7 +190,7 @@ impl CompiledGpuTaskExecutor<'_> {
         // before it reaches the hash table, so the filtered rows never pay for
         // a probe; the resident-frame arm filters in place, the stream arms
         // wrap lazily.
-        let lazy_output = self.join_probe_output_consumed_as_stream(node_id);
+        let output_consumer = self.join_output_consumer(node_id);
         let probe = match self.take_task_input(task, state, input)? {
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                 self.apply_dynamic_filters_to_join_leaf_stream(node_id, *stream).and_then(|stream| {
@@ -200,7 +200,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         node,
                         build,
                         stream,
-                        lazy_output,
+                        output_consumer,
                     )
                 })
             },
@@ -235,6 +235,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         node,
                         build,
                         stream,
+                        output_consumer,
                         self.aggregate_dispatch.as_ref(),
                     )
                 })

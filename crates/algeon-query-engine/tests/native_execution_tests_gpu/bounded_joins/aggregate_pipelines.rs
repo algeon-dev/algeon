@@ -597,8 +597,10 @@ fn bounded_stddev_join_aggregate_uses_exact_statistical_contract() {
 }
 
 /// Probe rows `(key, value = 1, d)` with `d` from `d_of_row`, written in row
-/// groups of `row_group_rows`, joined on `d` against a dimension holding
-/// `dimension_keys`, then grouped by `key` with `sum_count` SUMs of `value`.
+/// groups of `row_group_rows`, joined by `join_type` on `d` against a dimension
+/// holding `dimension_keys` and built on the dimension, then grouped by `key`
+/// with `sum_count` SUMs of `value`.
+#[expect(clippy::too_many_arguments, reason = "each fixture dimension is set by the calling test")]
 fn grouped_sums_over_dimension_join_plan(
     dir: &Path,
     rows: usize,
@@ -607,6 +609,7 @@ fn grouped_sums_over_dimension_join_plan(
     d_of_row: impl Fn(usize) -> i64,
     dimension_keys: &[i64],
     sum_count: usize,
+    join_type: JoinType,
 ) -> QueryPlan {
     let probe_path = dir.join("probe.parquet");
     let probe_schema = Arc::new(Schema::new(vec![
@@ -658,15 +661,12 @@ fn grouped_sums_over_dimension_join_plan(
         .add_join(
             probe,
             dimension,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
-            )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
-                JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
-            ])
-            .with_build_side(JoinSide::Right),
+            JoinSpec::new(join_type, vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+                ])
+                .with_build_side(JoinSide::Right),
             join_schema,
         )
         .unwrap();
@@ -715,6 +715,7 @@ fn bounded_join_aggregate_projects_a_single_partial_when_another_probe_chunk_joi
         |row| if row < row_group_rows { 0 } else { 1 + 2 * (row % 2) as i64 },
         &[0, 2],
         1,
+        JoinType::Inner,
     );
     let context = row_group_batched_join_context();
 
@@ -751,6 +752,7 @@ fn bounded_join_aggregate_sizes_final_merge_partitions_from_partial_bytes_not_pr
         |row| (row % 1024) as i64,
         &[0],
         256,
+        JoinType::Inner,
     );
     let context = row_group_batched_join_context();
 
@@ -770,4 +772,63 @@ fn bounded_join_aggregate_sizes_final_merge_partitions_from_partial_bytes_not_pr
     }
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+/// A semi or anti join that builds its right side probes each source chunk
+/// when the aggregate pulls it, so the query domain holds one chunk's join
+/// output at a time. Probing every chunk before the aggregate starts would
+/// hold all of them at once, a peak at least their sum.
+#[test]
+fn bounded_join_aggregate_pulls_right_built_semi_and_anti_output_one_chunk_at_a_time() {
+    let rows = 1 << 20;
+    let row_group_rows = 1 << 15;
+    let key_of_row = |row: usize| (row % 4) as i64;
+    let d_of_row = |row: usize| ((row / 4) % 8) as i64;
+    let dimension_keys = [0, 1, 2];
+    for (join_type, keep_matched) in
+        [(JoinType::LeftSemi, true), (JoinType::LEFT_ANTI, false), (JoinType::LeftAnti { null_aware: true }, false)]
+    {
+        let dir = unique_temp_dir("query-engine-bounded-filtered-join-aggregate-pull");
+        let plan = grouped_sums_over_dimension_join_plan(
+            &dir,
+            rows,
+            row_group_rows,
+            key_of_row,
+            d_of_row,
+            &dimension_keys,
+            1,
+            join_type.clone(),
+        );
+        let context = row_group_batched_join_context();
+
+        let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
+        let output = result.unwrap();
+        let chunk_rows = metrics
+            .operators
+            .iter()
+            .filter_map(|operator| operator.join.as_ref())
+            .filter(|join| join.execution_strategy == "bounded_reusable_filtered_join")
+            .collect::<Vec<_>>();
+        assert_eq!(chunk_rows.len(), rows / row_group_rows, "{join_type}: one probe per row group");
+        let join_output_bytes = chunk_rows.iter().map(|join| join.output_bytes).sum::<u64>();
+        assert!(
+            peak_bytes < join_output_bytes,
+            "{join_type}: query domain peak {peak_bytes} must stay below the {join_output_bytes} bytes of all chunk \
+             outputs"
+        );
+
+        let mut expected = [0_i64; 4];
+        for row in 0..rows {
+            if dimension_keys.contains(&d_of_row(row)) == keep_matched {
+                expected[key_of_row(row) as usize] += 1;
+            }
+        }
+        let QueryOutput::HostArrow(batch) = &output else {
+            panic!("host sink should materialize one RecordBatch");
+        };
+        assert_eq!(int64_array(batch, 0).values().as_ref(), &[0, 1, 2, 3], "{join_type}");
+        assert_eq!(int64_array(batch, 1).values().as_ref(), &expected, "{join_type}");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
