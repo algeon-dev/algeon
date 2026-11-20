@@ -11,8 +11,8 @@ use super::{
     execute_projection_with_budget_and_prepared, execution::read_bounded_chunk_source,
     execution_budget_token_for_boundary, is_retryable_chunk_error, is_source_adjacent_grouped_aggregate,
     observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint, plan_source_chunk_batches,
-    projection_regexp_replace_prepare, read_local_parquet_chunk_batch_required_only_no_commit,
-    record_chunk_retry_error,
+    projection_regexp_replace_prepare, read_ahead::ReadAheadStep,
+    read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
 };
 use crate::{
     exec::retry::{RetryLimits, backoff_before_retry},
@@ -83,12 +83,17 @@ pub(in crate::exec::bounded) struct SourceAdjacentBatchOutput {
 }
 
 /// Keeps all retry outputs private until the coordinator commits the batch.
+///
+/// With `read_ahead`, the batch comes from the read started for it when there is one, and the
+/// read of the step's next batch starts once this batch is decoded. A memory failure while
+/// that read is pending releases it and runs this batch again with no read ahead.
 pub(in crate::exec::bounded) fn execute_source_adjacent_batch_uncommitted(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     batch: SourceChunkBatch,
+    read_ahead: Option<ReadAheadStep<'_>>,
 ) -> Result<SourceAdjacentBatchOutput> {
-    execute_source_adjacent_batch_retry(execution, bounded, batch, 1)
+    execute_source_adjacent_batch_retry(execution, bounded, batch, 1, read_ahead.as_ref())
 }
 
 /// Reads, filters and partially aggregates one batch, splitting on a
@@ -100,15 +105,29 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_batch_uncommitted(
 /// a singleton splits its chunk by row group while `attempt` is below the
 /// limit. Partials from the halves are concatenated in file order, and the
 /// planned `chunk_count` is restored so the caller commits the batch once.
+///
+/// `read_ahead` applies to this call's own read only. A memory failure while its next read is
+/// pending releases that read and runs this batch again, unsplit and with no read ahead, as the
+/// join scheduler's serial fallback does; the split halves of a retry run with none.
 fn execute_source_adjacent_batch_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     batch: SourceChunkBatch,
     attempt: usize,
+    read_ahead: Option<&ReadAheadStep<'_>>,
 ) -> Result<SourceAdjacentBatchOutput> {
     execution.context().check_cancellation("query_engine.exec.bounded.source_adjacent_chunk_batch_retry")?;
     let RetryLimits { max_attempts, min_split_row_groups } = RetryLimits::of(execution.context());
-    let source = if batch.is_singleton() {
+    let prefetched = match read_ahead {
+        Some(step) => step.read_ahead.finish(&batch.chunks)?,
+        None => None,
+    };
+    let source = if let Some(mut output) = prefetched {
+        observe_device_memory_bytes(&output.frame, execution.metrics()).map(|bytes| {
+            output.observed_bytes = bytes;
+            output
+        })
+    } else if batch.is_singleton() {
         read_bounded_chunk_source(execution, bounded.source, &batch.chunks[0]).map_err(|error| {
             attach_chunk_resource_facts(
                 error,
@@ -122,9 +141,20 @@ fn execute_source_adjacent_batch_retry(
     } else {
         read_local_parquet_chunk_batch_required_only_no_commit(execution, bounded.source, &batch, "source_chunk_read")
     };
+    let source = match (source, read_ahead) {
+        (Ok(source), Some(step)) => step.start_next(execution, bounded.source, 0).map(|()| source),
+        (source, _) => source,
+    };
     let result = source.and_then(|source| {
         execute_source_adjacent_batch_operator_uncommitted(execution, bounded, &batch, source, attempt, max_attempts)
     });
+    // The failed attempt ran next to a pending read ahead, so a memory failure may not be this
+    // batch's own; the batch reruns as the join scheduler's serial fallback would.
+    if let Err(error) = &result
+        && read_ahead.is_some_and(|step| step.release_after_failure(error))
+    {
+        return execute_source_adjacent_batch_retry(execution, bounded, batch, attempt, None);
+    }
     match result {
         Ok(output) => Ok(output),
         Err(error) if is_retryable_chunk_error(&error) => {
@@ -160,8 +190,8 @@ fn execute_source_adjacent_batch_retry(
                 execution.context(),
                 "query_engine.exec.bounded.source_adjacent_chunk_batch_split_retry",
             )?;
-            let mut output = execute_source_adjacent_batch_retry(execution, bounded, left, next_attempt)?;
-            let right = match execute_source_adjacent_batch_retry(execution, bounded, right, next_attempt) {
+            let mut output = execute_source_adjacent_batch_retry(execution, bounded, left, next_attempt, None)?;
+            let right = match execute_source_adjacent_batch_retry(execution, bounded, right, next_attempt, None) {
                 Ok(right) => right,
                 Err(error) => {
                     return Err(error);

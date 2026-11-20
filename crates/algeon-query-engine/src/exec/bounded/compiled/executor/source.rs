@@ -1,12 +1,18 @@
+use std::collections::BTreeSet;
+
 use query_planning::{
     error::Result,
-    pipeline::{PipelineTask, ResidentResourceId, ResourceSharing, SourceOutput, TaskPhysical},
-    plan::{NodeId, PlanNode},
+    pipeline::{
+        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId, ResourceSharing,
+        SourceOutput, TaskPhysical,
+    },
+    plan::{AggregateNode, NodeId, PlanNode},
     source::{LocalParquetSource, SourceNode},
 };
 
 use super::{CompiledGpuResource, CompiledGpuTaskExecutor};
 use crate::exec::bounded::{
+    aggregate_source_stream_reads_ahead,
     compiled::{
         helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
         lanes::AggregateLaneDispatch,
@@ -15,7 +21,8 @@ use crate::exec::bounded::{
     materialize_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_shared_join_aggregate_local_parquet_source_stream,
-    plan_bounded_unary_chain_local_parquet_source_stream, try_start_bounded_join_leaf_local_parquet_source_prefetch,
+    plan_bounded_unary_chain_local_parquet_source_stream, source_read_ahead_applies,
+    try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 
 impl CompiledGpuTaskExecutor<'_> {
@@ -85,8 +92,15 @@ impl CompiledGpuTaskExecutor<'_> {
         };
         let shared = self.resource_sharing(output) != ResourceSharing::SingleConsume;
         // An aggregate consuming this stream may run one chunk on each of the run's lanes at once,
-        // so the chunk target counts the regions of all of them.
+        // so the chunk target counts the regions of all of them. A run without lanes keeps one
+        // read ahead of a streamed source instead, which the target counts as one more slot,
+        // unless an aggregate consumer may take the one path that reads no chunk ahead.
         let aggregate_lane_width = self.aggregate_dispatch.as_ref().map_or(1, AggregateLaneDispatch::width);
+        let read_ahead = source_read_ahead_applies(&self.execution);
+        let aggregate_read_ahead = read_ahead
+            && self.consuming_aggregates(task.id()).iter().all(|(aggregate, has_source_adjacent_stages)| {
+                aggregate_source_stream_reads_ahead(aggregate, *has_source_adjacent_stages)
+            });
         let context = self.execution.context();
         let metrics = self.execution.metrics();
         let (stream, join_leaf_adjacent_stages) = match read.output {
@@ -95,11 +109,14 @@ impl CompiledGpuTaskExecutor<'_> {
                     .map(CompiledGpuResource::new);
             },
             SourceOutput::JoinLeafFrame { adjacent_stages } => {
+                // The materialized leaf keeps every chunk until it concatenates them, so no read
+                // ahead adds to its live chunks.
                 let mut stream = plan_bounded_join_leaf_local_parquet_source_stream(
                     context,
                     source,
                     node_id,
                     adjacent_stages,
+                    false,
                     metrics,
                 )?;
                 // Route producers precede this task through compiled control edges, so a
@@ -112,7 +129,14 @@ impl CompiledGpuTaskExecutor<'_> {
                     .map(CompiledGpuResource::new);
             },
             SourceOutput::JoinLeafStream { adjacent_stages } => (
-                plan_bounded_join_leaf_local_parquet_source_stream(context, source, node_id, adjacent_stages, metrics)?,
+                plan_bounded_join_leaf_local_parquet_source_stream(
+                    context,
+                    source,
+                    node_id,
+                    adjacent_stages,
+                    read_ahead,
+                    metrics,
+                )?,
                 Some(adjacent_stages),
             ),
             SourceOutput::AggregateInputStream { adjacent_stages, chunk_hints } => (
@@ -123,6 +147,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     adjacent_stages,
                     chunk_hints,
                     aggregate_lane_width,
+                    aggregate_read_ahead,
                     metrics,
                 )?,
                 None,
@@ -135,6 +160,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     adjacent_stages,
                     chunk_hints,
                     aggregate_lane_width,
+                    aggregate_read_ahead,
                     metrics,
                 )?,
                 None,
@@ -168,5 +194,38 @@ impl CompiledGpuTaskExecutor<'_> {
                 .map(CompiledGpuResource::new);
         }
         Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream))
+    }
+
+    /// The aggregates the task's output reaches through unary stages, each with whether a
+    /// unary stage sits between the source and that aggregate.
+    fn consuming_aggregates(&self, task: PipelineTaskId) -> Vec<(&AggregateNode, bool)> {
+        let mut aggregates = Vec::new();
+        let mut pending = vec![(task, false)];
+        let mut visited = BTreeSet::new();
+        while let Some((current, through_unary)) = pending.pop() {
+            if !visited.insert((current, through_unary)) {
+                continue;
+            }
+            for edge in self.pipeline.edges().iter().filter(|edge| {
+                edge.from() == current
+                    && matches!(edge.kind(), PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer)
+            }) {
+                let Some(consumer) = self.pipeline.tasks().iter().find(|consumer| consumer.id() == edge.to()) else {
+                    continue;
+                };
+                match consumer.kind() {
+                    PipelineTaskKind::Aggregate => {
+                        if let Some(PlanNode::Aggregate(aggregate)) =
+                            consumer.plan_node().and_then(|node| self.plan.node(node)).map(|node| &node.kind)
+                        {
+                            aggregates.push((aggregate, through_unary));
+                        }
+                    },
+                    PipelineTaskKind::Unary => pending.push((edge.to(), true)),
+                    _ => {},
+                }
+            }
+        }
+        aggregates
     }
 }

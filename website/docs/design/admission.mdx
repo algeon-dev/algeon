@@ -103,7 +103,7 @@ each device derives these counts from `A_d` and `S_d`.
 | Attempt lanes | `A_d` | Device | One index per admitted attempt (`lane_count`). |
 | Auxiliary slots | `S_d` | Attempt | Permits behind each [execution lane](./gpu-execution.mdx#cuda-streams-and-dependencies) and source read. |
 | Native fork streams | `S_d + 1` | Attempt | Streams for libcudf's `fork_streams`, one reserved for the root stream. |
-| Source reads | `max_source_reads_in_flight`, default 2 | Attempt | A value above 1 enables source-read prefetch. |
+| Source reads | `max_source_reads_in_flight`, default 2 | Attempt | A value above 1 lets a consumer keep one source read ahead of itself on an auxiliary permit. |
 | Source I/O threads | 64 | Process | KvikIO pool shared by local and S3 reads; `KVIKIO_NTHREADS` overrides. |
 
 ### The allocation path {/* #allocation-enforcement */}
@@ -126,8 +126,13 @@ execution lanes. An allocation exceeding the cap returns a typed failure at
 its source. Chunking can reduce live intermediates. When the cap rejects an
 allocation while a source chunk is read, staged through the filters and
 projections that run on it, or partitioned for an aggregate, the chunk splits
-in half by row group and runs again, up to the configured retry attempts. An
-input, hash table or result that cannot fit can still fail. A projection of a
+in half by row group and runs again, up to the configured retry attempts. A
+source read started ahead of its consumer is released before that retry. The
+chunk target reserves one chunk for that read. Where a cap rejection ends the
+query without a retry while such a read is pending, its bytes count against the
+same cap: an aggregate committing a chunk's partials, and work of a pull-stream
+consumer that is not retried. An input, hash table or result that cannot fit can
+still fail. A projection of a
 source larger than the cap fails at the last chunk read, because the device
 result is complete before egress copies it to the client. Native execution
 does not provide general disk spilling.

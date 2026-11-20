@@ -61,11 +61,18 @@ pub(in crate::exec) fn record_retryable_resource_error(error: &QueryError, metri
     }
 }
 
-/// Waits before a retry. Cancellation or the deadline ends the wait at once.
+/// Releases the attempt's source reads started ahead of their consumers, then waits before a
+/// retry. Cancellation or the deadline ends the wait at once.
 ///
-/// Blocks the calling thread for a fixed 50 ms between two cancellation checks. Returns the
-/// cancellation or deadline error with `stage` as its operation.
+/// The split retries of the bounded boundaries pass through here, so the unit they retry runs
+/// with no read ahead holding part of the grant; the owners of released reads continue without
+/// one. A memory failure that ends without a retry does not reach this point (see
+/// `bounded::chunks::read_ahead`). The release blocks until each
+/// released read's worker has returned. The wait blocks the calling thread for a fixed 50 ms
+/// between two cancellation checks. Returns the cancellation or deadline error with `stage` as
+/// its operation.
 pub(in crate::exec) fn backoff_before_retry(context: &ExecutionContext, stage: &'static str) -> Result<()> {
+    context.release_read_ahead();
     context.check_cancellation(stage)?;
     context.cancellation().sleep(BOUNDED_RETRY_BACKOFF, stage)?;
     context.check_cancellation(stage)

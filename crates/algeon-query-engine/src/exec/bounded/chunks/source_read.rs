@@ -245,6 +245,7 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
         source_token_budget,
         memory_boundary,
         0,
+        None,
         execution.metrics(),
     ) {
         Ok(frame) => frame,

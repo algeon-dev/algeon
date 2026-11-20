@@ -62,6 +62,8 @@ pub use cache::{
 };
 pub(crate) use cache_fill::CacheFillByteBudget;
 pub use cache_fill::{CacheFillBytePermit, LakehouseCacheFillConfig};
+#[doc(hidden)]
+pub use context::ReadAheadRelease;
 pub use context::{ExecutionCancellation, ExecutionContext};
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]

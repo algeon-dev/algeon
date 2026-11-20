@@ -50,6 +50,7 @@ query_runtime::runtime::AttemptStreamProviderRoute	cross-crate	query-runtime run
 query_runtime::runtime::AttemptWorkLease	cross-crate	query-runtime runtime	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_runtime::runtime::PoolBlockingWork	cross-crate	query-runtime runtime	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_runtime::runtime::QueryService	test-hooks	query-runtime runtime	tests: algeon-query-engine, algeon-query-runtime	delete once no test or tool names it
+query_runtime::runtime::ReadAheadRelease	cross-crate	query-runtime runtime	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_runtime::runtime::RetryFacts	cross-crate	query-runtime runtime	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_runtime::runtime::RuntimeObservationBuildError	test-hooks	query-runtime runtime	tests: algeon-query-engine	delete once no test or tool names it
 query_runtime::runtime::RuntimeObservedExecutionContext	test-hooks	query-runtime runtime	tests: algeon-query-engine	delete once no test or tool names it
@@ -102,6 +103,8 @@ query_runtime::runtime::context::ExecutionContext::attempt_id	cross-crate	query-
 query_runtime::runtime::context::ExecutionContext::attempt_stream_provider_route	cross-crate	query-runtime runtime::context	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_runtime::runtime::context::ExecutionContext::begin_cache_scope_allocator_correlation	cross-crate	query-runtime runtime::context	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_runtime::runtime::context::ExecutionContext::begin_runtime_execution_observation	cross-crate	query-runtime runtime::context	prod: algeon-query-engine; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_runtime::runtime::context::ExecutionContext::register_read_ahead	cross-crate	query-runtime runtime::context	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_runtime::runtime::context::ExecutionContext::release_read_ahead	cross-crate	query-runtime runtime::context	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_runtime::runtime::context::ExecutionContext::resident_graph_cache	cross-crate	query-runtime runtime::context	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_runtime::runtime::context::ExecutionContext::resident_source_cache	cross-crate	query-runtime runtime::context	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_runtime::runtime::context::ExecutionContext::retain_resident_output_owner	cross-crate	query-runtime runtime::context	prod: algeon-datafusion, algeon-query-engine	narrow to pub(crate) once no other workspace crate names it

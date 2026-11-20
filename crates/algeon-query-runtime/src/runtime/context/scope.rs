@@ -36,7 +36,7 @@ use super::{
         object_store::SourceObjectStoreRegistry,
     },
     ActivatedDeferredResidentPhase, AdmittedPlanIdentities, AttemptAuxiliaryPermit, AttemptAuxiliarySlots,
-    ExecutionCancellation, QueryResourceAnchor, QueryResourceEpoch, QueryServiceEpoch,
+    ExecutionCancellation, QueryResourceAnchor, QueryResourceEpoch, QueryServiceEpoch, ReadAheadRegistry,
 };
 use crate::{
     attempt::AttemptHandle,
@@ -101,6 +101,7 @@ pub(super) struct StandaloneQuery {
     pub(super) memory_control_policy: MemoryControlPolicy,
     pub(super) cancellation: ExecutionCancellation,
     pub(super) parquet_footers: ParquetFooterCache,
+    pub(super) read_ahead: ReadAheadRegistry,
     /// Present when the standalone context owns its runtime observation; the
     /// context then terminalizes the query itself.
     pub(super) observation_owner: Option<RuntimeObservationOwner>,
@@ -175,6 +176,9 @@ pub(in crate::runtime) struct AdmittedAttempt {
     /// Parquet footers the attempt's source reads share; a retry attempt
     /// starts empty.
     pub(in crate::runtime) parquet_footers: ParquetFooterCache,
+    /// Source reads started ahead of their consumer, released before any
+    /// query-cap retry of the attempt.
+    pub(in crate::runtime) read_ahead: ReadAheadRegistry,
     pub(in crate::runtime) allocation_domain: AttemptAllocationDomain,
     /// Declared after the allocation domain so the domain's native resources
     /// release before this grant clone returns capacity to the ledger.

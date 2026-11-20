@@ -4,7 +4,9 @@
 //! memory-control policy, planning mode, a `SourceTaskMemoryModel` for the consumer and the
 //! row-group metadata that sizes the chunks, and plans chunks. The aggregate variants take the
 //! number of chunks their consumer may run at once on execution lanes, and every such chunk keeps
-//! its own model slots live. Planning may load Parquet footers on the calling thread. The stream
+//! its own model slots live. The streaming variants take whether their consumer keeps one read
+//! ahead (`source_read_ahead_applies`), which adds the model's read-ahead slot. Planning may load
+//! Parquet footers on the calling thread. The stream
 //! starts with no stages or dynamic filters; later builders add them. The aggregate variants also
 //! cap chunk sizes from the aggregate input hints. Every planned chunk is counted in the
 //! source metrics, and the retry limits of the context are copied into the stream.
@@ -26,6 +28,7 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
     source: &LocalParquetSource,
     node_id: NodeId,
     has_source_adjacent_stages: bool,
+    read_ahead: bool,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
@@ -33,11 +36,16 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
         source,
         node_id,
         SourceTaskMemoryModel::join_leaf_stream(has_source_adjacent_stages),
+        read_ahead,
         None,
         metrics,
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the consumer's lane width and read ahead size the chunks beside the source identity"
+)]
 pub(in crate::exec::bounded) fn plan_bounded_aggregate_input_local_parquet_source_stream(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -45,6 +53,7 @@ pub(in crate::exec::bounded) fn plan_bounded_aggregate_input_local_parquet_sourc
     has_source_adjacent_stages: bool,
     chunk_cap_hints: AggregateInputHints,
     concurrent_chunks: usize,
+    read_ahead: bool,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
@@ -52,11 +61,16 @@ pub(in crate::exec::bounded) fn plan_bounded_aggregate_input_local_parquet_sourc
         source,
         node_id,
         SourceTaskMemoryModel::aggregate_pipeline(has_source_adjacent_stages).with_concurrent_chunks(concurrent_chunks),
+        read_ahead,
         Some(chunk_cap_hints),
         metrics,
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the consumer's lane width and read ahead size the chunks beside the source identity"
+)]
 pub(in crate::exec::bounded) fn plan_bounded_shared_join_aggregate_local_parquet_source_stream(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -64,6 +78,7 @@ pub(in crate::exec::bounded) fn plan_bounded_shared_join_aggregate_local_parquet
     has_source_adjacent_stages: bool,
     chunk_cap_hints: AggregateInputHints,
     concurrent_chunks: usize,
+    read_ahead: bool,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
@@ -72,6 +87,7 @@ pub(in crate::exec::bounded) fn plan_bounded_shared_join_aggregate_local_parquet
         node_id,
         SourceTaskMemoryModel::shared_join_aggregate_stream(has_source_adjacent_stages)
             .with_concurrent_chunks(concurrent_chunks),
+        read_ahead,
         Some(chunk_cap_hints),
         metrics,
     )
@@ -88,6 +104,7 @@ pub(in crate::exec::bounded) fn plan_bounded_unary_chain_local_parquet_source_st
         source,
         node_id,
         SourceTaskMemoryModel::unary_chain_frame(),
+        false,
         None,
         metrics,
     )
@@ -98,9 +115,11 @@ fn plan_bounded_local_parquet_source_stream(
     source: &LocalParquetSource,
     node_id: NodeId,
     memory_model: SourceTaskMemoryModel,
+    read_ahead: bool,
     chunk_cap_hints: Option<AggregateInputHints>,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
+    let memory_model = memory_model.with_read_ahead(read_ahead);
     validate_local_parquet_source(source, rapids_analysis_context(context.planning_policy()))?;
     let (mut chunk_plan, planning_policy) = plan_local_parquet_source_chunks_with_derived_policy(
         node_id,
@@ -133,6 +152,7 @@ fn plan_bounded_local_parquet_source_stream(
         stages: Vec::new(),
         reader_dynamic_filters: Vec::new(),
         planning_policy,
+        read_ahead,
         max_attempts,
         min_retry_chunk_row_groups,
     })

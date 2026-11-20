@@ -19,8 +19,10 @@ use super::*;
 type ExecutionParts = (Result<QueryOutput>, SealedRuntimeObservationSnapshot);
 
 /// A hash join over two local Parquet leaves, executing on a standalone context
-/// whose one-stream service pool the test has exhausted. The join's first source
-/// read is blocked in its stream-lease wait once `start` returns.
+/// whose one-stream service pool the test has exhausted. Each leaf reads its own
+/// chunks on the executing thread; the left leaf's read of its second chunk, the
+/// first read started ahead of its consumer, is blocked in its stream-lease wait
+/// once `start` returns.
 struct JoinBehindStreamLease {
     owner: RuntimeObservationOwner,
     execution: JoinHandle<ExecutionParts>,
@@ -37,6 +39,7 @@ impl JoinBehindStreamLease {
         let left_path = dir.join("left.parquet");
         let right_path = dir.join("right.parquet");
         write_join_parquets(&left_path, &right_path);
+        write_wide_row_group_left_parquet(&left_path);
         let plan = root_join_data_plan(&left_path, &right_path);
         let observed = RuntimeObservedExecutionContext::standalone(
             StandaloneConfig {
@@ -44,9 +47,10 @@ impl JoinBehindStreamLease {
                 service_stream_pool: Some(pool.clone()),
                 memory_control_policy: MemoryControlPolicy {
                     device_budget_bytes: 256 * 1024 * 1024,
-                    // A byte target below any two row groups keeps each row group its own
-                    // read batch, so the multi-chunk leaves read through the source scheduler.
-                    max_source_chunk_bytes: 1,
+                    // The target admits the decoder's minimum read budget, so the left leaf
+                    // reads ahead, and stays below two of its row groups, so each of them is
+                    // its own read batch.
+                    max_source_chunk_bytes: 64 * 1024,
                     max_row_groups_per_chunk: 1,
                     max_retry_attempts: 1,
                     min_retry_chunk_row_groups: 1,
@@ -76,6 +80,27 @@ impl JoinBehindStreamLease {
     fn finish(self) -> ExecutionParts {
         self.execution.join().expect("join execution thread")
     }
+}
+
+/// Rewrites the left leaf as four row groups of 20,000 rows, each larger than the 64 KiB
+/// source byte target. Ids are unique and skip 5, so the join matches the same two right rows.
+fn write_wide_row_group_left_parquet(path: &Path) {
+    const ROWS_PER_ROW_GROUP: usize = 20_000;
+    let ids = (1..=4 * ROWS_PER_ROW_GROUP as i32 + 1).filter(|id| *id != 5).collect::<Vec<_>>();
+    let values = ids.iter().map(|id| id * 10).collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(ids)), Arc::new(Int32Array::from(values))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(ROWS_PER_ROW_GROUP)).build();
+    let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
 
 fn source_read_states(events: &[RuntimeTimelineEvent]) -> Vec<SourceReadLifecycleState> {

@@ -137,13 +137,35 @@ pub(in crate::exec::bounded) fn should_execute_partitioned_source_adjacent_group
     // Admission uses the max live incremental working set; whole-input retention and
     // fixed chunk or row-group counts are not admission inputs. Source-adjacent group-key
     // partition is the high-cardinality path for multi-chunk string grouped aggregates.
-    bounded.has_source_adjacent_stages()
-        && !bounded.aggregate.0.spec.group_exprs.is_empty()
-        && !aggregate_spec_has_floating_statistical_aggregate(&bounded.aggregate.0.spec)
-        && !aggregate_spec_has_median(&bounded.aggregate.0.spec)
-        && bounded.aggregate.0.spec.grouping_sets.is_none()
+    source_adjacent_partitioned_aggregate_shape(&bounded.aggregate.0.spec, bounded.has_source_adjacent_stages())
         && chunks.len() > 1
         && source_adjacent_partitioned_live_working_set_fits_budget(context, bounded, chunks)
+}
+
+/// The plan-shape half of `should_execute_partitioned_source_adjacent_grouped_aggregate`: a
+/// grouped aggregate with source-adjacent stages and no floating statistical aggregate, median
+/// or grouping sets. The other half reads the planned chunks, so only this half is known when a
+/// source's chunks are planned.
+fn source_adjacent_partitioned_aggregate_shape(spec: &AggregateSpec, has_source_adjacent_stages: bool) -> bool {
+    has_source_adjacent_stages
+        && !spec.group_exprs.is_empty()
+        && !aggregate_spec_has_floating_statistical_aggregate(spec)
+        && !aggregate_spec_has_median(spec)
+        && spec.grouping_sets.is_none()
+}
+
+/// Whether the aggregate's driver over a source stream can keep a read ahead, decided before
+/// the stream's chunks are planned.
+///
+/// Every source-stream path reads ahead except the partitioned source-adjacent one, which
+/// sizes each raw batch from the previous batch's retained partitions. That path is chosen
+/// from the planned chunks (`should_execute_partitioned_source_adjacent_grouped_aggregate`),
+/// so an aggregate whose plan shape admits it plans no read-ahead slot.
+pub(in crate::exec::bounded) fn aggregate_source_stream_reads_ahead(
+    aggregate: &AggregateNode,
+    has_source_adjacent_stages: bool,
+) -> bool {
+    !source_adjacent_partitioned_aggregate_shape(&aggregate.spec, has_source_adjacent_stages)
 }
 
 /// Estimates the live working set of the partitioned path and compares it with the attempt's device

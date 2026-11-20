@@ -16,7 +16,7 @@
 //! `website/docs/design/admission.mdx#from-capability-validation-to-admission` and
 //! `website/docs/design/admission.mdx#resident-handoff-and-release`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use arrow::datatypes::SchemaRef;
 use cudf::{DeviceId, Error as CudfError, Runtime as CudfRuntime, io::parquet::ParquetFooterCache};
@@ -55,6 +55,7 @@ mod cancellation;
 mod epoch;
 mod lakehouse;
 mod leases;
+mod read_ahead;
 mod scope;
 #[cfg(any(test, feature = "test-hooks"))]
 mod standalone;
@@ -66,6 +67,8 @@ pub use cancellation::ExecutionCancellation;
 pub(crate) use epoch::{
     QueryResourceAnchor, QueryResourceEpoch, QueryServiceEpoch, QueryServiceEpochUser, QueryServiceResourceEpoch,
 };
+pub(in crate::runtime) use read_ahead::ReadAheadRegistry;
+pub use read_ahead::ReadAheadRelease;
 use scope::QueryScope;
 pub(in crate::runtime) use scope::{AdmittedAttempt, DeviceRuntime, PlanScope, StreamBinding};
 #[cfg(any(test, feature = "test-hooks"))]
@@ -589,6 +592,30 @@ impl ExecutionContext {
         match &self.query {
             QueryScope::Standalone(query) => &query.parquet_footers,
             QueryScope::Admitted(attempt) => &attempt.parquet_footers,
+        }
+    }
+
+    /// Registers a source read started ahead of its consumer with this
+    /// context's attempt. The attempt holds it weakly; see `release_read_ahead`.
+    #[doc(hidden)]
+    pub fn register_read_ahead(&self, entry: Weak<dyn ReadAheadRelease>) {
+        self.read_ahead_registry().register(entry);
+    }
+
+    /// Releases every source read the attempt started ahead of its consumer.
+    ///
+    /// A query-cap retry calls this first, so the retried work runs with the
+    /// memory it would have had with no read ahead. Blocks until each released
+    /// read's worker has returned.
+    #[doc(hidden)]
+    pub fn release_read_ahead(&self) {
+        self.read_ahead_registry().release_all();
+    }
+
+    fn read_ahead_registry(&self) -> &ReadAheadRegistry {
+        match &self.query {
+            QueryScope::Standalone(query) => &query.read_ahead,
+            QueryScope::Admitted(attempt) => &attempt.read_ahead,
         }
     }
 

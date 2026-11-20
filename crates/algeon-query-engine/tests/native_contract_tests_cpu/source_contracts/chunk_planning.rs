@@ -46,6 +46,15 @@ fn source_task_memory_model_derives_chunk_target_from_live_budget_slots() {
     let lane_aggregate = SourceChunkPlanningPolicy::for_source_task(memory_policy, lane_aggregate_model);
     assert_eq!(lane_aggregate.max_source_chunk_bytes, Some(142));
 
+    // A consumer that reads one chunk ahead keeps that chunk's decoded output live next to the
+    // current chunk's regions: one more slot, and nothing changes without the read ahead.
+    let read_ahead_aggregate_model = SourceTaskMemoryModel::aggregate_pipeline(true).with_read_ahead(true);
+    assert_eq!(read_ahead_aggregate_model.live_slot_count(), 8);
+    let read_ahead_aggregate = SourceChunkPlanningPolicy::for_source_task(memory_policy, read_ahead_aggregate_model);
+    assert_eq!(read_ahead_aggregate.max_source_chunk_bytes, Some(250));
+    assert_eq!(SourceTaskMemoryModel::aggregate_pipeline(true).with_read_ahead(false), aggregate_model);
+    assert_eq!(SourceTaskMemoryModel::join_leaf_stream(true).with_read_ahead(true).live_slot_count(), 7);
+
     let join_model = SourceTaskMemoryModel::join_leaf_stream(true);
     assert_eq!(join_model.source_read_slots(), 1);
     assert_eq!(join_model.source_adjacent_operator_slots(), 1);

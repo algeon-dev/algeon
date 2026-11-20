@@ -17,7 +17,7 @@ use super::RuntimeTerminalOutcome;
 use super::{
     AdmissionRequestId, AdmittedAttempt, AggregateStrategyExecutionOptions, AttemptCapabilityEvidence,
     ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool, MemoryControlPolicy, PlanScope,
-    QueryError, QueryExecutionConfig, QueryId, QueryService, QueryServiceInner, QueueBounds, Result,
+    QueryError, QueryExecutionConfig, QueryId, QueryService, QueryServiceInner, QueueBounds, ReadAheadRegistry, Result,
     SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
     StreamBinding, memory_control_policy_for_grant, resources::QueryServiceResources,
     validate_service_stream_pool_device,
@@ -476,6 +476,7 @@ impl QueryHandle {
             memory_control_policy: memory_control_policy_for_grant(self.memory_control_policy(), &memory_grant),
             auxiliary_slots: Arc::clone(&self.lifetime.attempt_auxiliary_slots),
             parquet_footers: ParquetFooterCache::new(),
+            read_ahead: ReadAheadRegistry::default(),
             allocation_domain,
             memory_grant,
         };
