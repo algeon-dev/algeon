@@ -21,8 +21,9 @@
 //! The deduplicated build frame and the filtered join object stay resident across probes, held
 //! together in `BoundedCompiledFilteredJoinBuildState`. Membership is decided per probe row. Chunks
 //! are therefore independent, and the build state is read-only while they run, which lets
-//! `parallel_filtered_probe_frames` probe chunks on separate lanes. A chunk's probe frame, probe
-//! state and gather map live only until its output frame is returned.
+//! `parallel_filtered_probe_frames` probe chunks on separate lanes and
+//! `FilteredJoinProbeStreamSource` probe each chunk when its consumer pulls it. A chunk's probe
+//! frame, probe state and gather map live only until its output frame is returned.
 
 use std::time::Instant;
 
@@ -38,7 +39,10 @@ use super::{
     observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame, projected_input_columns,
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, validate_executable_join_subset,
 };
-use crate::exec::{bounded::compiled::lanes::AggregateLaneDispatch, join::NullAwareAntiProbe};
+use crate::exec::{
+    bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource, lanes::AggregateLaneDispatch},
+    join::NullAwareAntiProbe,
+};
 
 /// Build task: projects the right input to its key columns, deduplicates the keys and builds the
 /// filtered join. Consumes `input`.
@@ -265,7 +269,8 @@ fn begin_filtered_join_probe_state(
 /// Membership is per probe row. The output is a complete result for the chunk, and chunk outputs
 /// concatenate. All chunk-local GPU state is released on return, on success and on error, and the
 /// build is untouched. Each call writes its own `bounded_reusable_filtered_join` metric row for the
-/// chunk.
+/// chunk and adds the chunk's probe time, not the time since the build, to operator time: a lazy
+/// probe runs between its consumer's pulls, and that span includes the consumer's own work.
 pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -277,6 +282,7 @@ pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_
         prepare_bounded_join_side_input_from_resident_frame(execution, input, &build.left_columns, JoinSide::Left)?;
     let exec_runtime = execution.context().runtime()?;
     let overrides = exec_runtime.exec();
+    let timer = Instant::now();
     let probe = null_aware_anti_probe_side(execution, build, probe, overrides)?;
     let (probe_state, probe_state_bytes) = begin_filtered_join_probe_state(
         execution,
@@ -359,6 +365,7 @@ pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_
         );
         ResidentGpuFrame::with_device_bytes(GpuDataFrame::new(output), output_bytes)
     };
+    execution.metrics().add_operator_time(timer.elapsed());
     Ok(output)
 }
 
@@ -503,14 +510,90 @@ pub(super) fn release_compiled_filtered_join_probe_state(probe: BoundedCompiledF
     release_bounded_join_side_frame(probe);
 }
 
-/// Whether a filtered probe may run chunks in parallel with concatenation.
+/// Whether each probe chunk's output depends only on that chunk and the immutable build, so chunks
+/// may be probed in parallel or one per consumer pull and their outputs concatenated.
 ///
-/// Membership is per probe row into private probe state; null-aware anti
-/// facts are build-time. Only right-build semi/anti/mark shares the
-/// chunk-independent contract.
-pub(in crate::exec::bounded) fn filtered_parallel_probe_supported(node: &JoinNode) -> bool {
+/// Membership and the mark column are per probe row into private probe state, and the null-aware
+/// anti restriction was decided from the complete right input at build. A semi or anti join that
+/// builds its left side keeps match flags across chunks and never reaches this strategy; it runs
+/// as `left_match` on a prepared build.
+pub(in crate::exec::bounded) fn filtered_probe_chunks_independent(node: &JoinNode) -> bool {
     matches!(node.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. })
         && node.spec.build_side == JoinSide::Right
+}
+
+/// Probe state that holds the filtered build and the undrained probe stream; chunks are probed
+/// when the consumer pulls them.
+pub(in crate::exec::bounded) struct FilteredJoinFrameStreamProbeState {
+    pub(in crate::exec::bounded) build: BoundedCompiledFilteredJoinBuildState,
+    pub(in crate::exec::bounded) inputs: ResidentFrameStreamPayload,
+}
+
+/// Wraps a lazy filtered probe as the join's output stream. The byte and row hints are the probe
+/// input's: a semi or anti join only removes probe rows, and a mark join adds one Boolean column.
+pub(super) fn filtered_join_frame_stream_probe_to_payload(
+    node_id: NodeId,
+    node: &JoinNode,
+    probe: FilteredJoinFrameStreamProbeState,
+) -> ResidentFrameStreamPayload {
+    let max_frame_bytes_hint = probe.inputs.max_frame_bytes_hint();
+    let total_bytes_hint = probe.inputs.total_bytes_hint();
+    let aggregate_num_rows = probe.inputs.num_rows();
+    let num_columns = node.spec.output_projection.len() + usize::from(node.spec.join_type.mark_column().is_some());
+    ResidentFrameStreamPayload::from_producer(
+        max_frame_bytes_hint,
+        total_bytes_hint,
+        aggregate_num_rows,
+        num_columns,
+        Box::new(FilteredJoinProbeStreamSource {
+            node_id,
+            node: node.clone(),
+            build: Some(probe.build),
+            inputs: Some(probe.inputs),
+        }),
+    )
+}
+
+/// Lazy producer that probes one pulled input frame against the filtered build and yields that
+/// chunk's output, so a consumer holds at most one output piece besides the build. A failed chunk
+/// returns its error without splitting the chunk. The build and the input stream are released
+/// when the input is exhausted and again, idempotently, by the payload's `release`.
+struct FilteredJoinProbeStreamSource {
+    node_id: NodeId,
+    node: JoinNode,
+    build: Option<BoundedCompiledFilteredJoinBuildState>,
+    inputs: Option<ResidentFrameStreamPayload>,
+}
+
+impl ResidentFrameStreamSource for FilteredJoinProbeStreamSource {
+    fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
+        let inputs = self.inputs.as_mut()?;
+        let input = match inputs.next_frame(execution) {
+            Some(Ok(input)) => input,
+            Some(Err(error)) => return Some(Err(error)),
+            None => {
+                self.release(execution);
+                return None;
+            },
+        };
+        let build = self.build.as_ref().expect("filtered join build state released before stream end");
+        Some(execute_compiled_filtered_join_probe_chunk_from_resident_frame(
+            execution,
+            self.node_id,
+            &self.node,
+            build,
+            input,
+        ))
+    }
+
+    fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
+        if let Some(input) = self.inputs.take() {
+            input.release_all(execution);
+        }
+        if let Some(build) = self.build.take() {
+            release_compiled_filtered_join_build_state(build);
+        }
+    }
 }
 
 struct FilteredProbeWorkState {

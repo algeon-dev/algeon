@@ -39,7 +39,7 @@ mod probe_parallel;
 
 pub(in crate::exec::bounded) use compiled::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
-    BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
+    BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome, JoinOutputConsumer,
     PartitionedJoinBuildCommitment, consume_bounded_join_build_input_stream,
     execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
     execute_bounded_compiled_join_materialize_preserving_stream, execute_bounded_compiled_join_probe_from_frame_stream,
