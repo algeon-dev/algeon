@@ -765,7 +765,11 @@ fn stream_compaction_helpers_require_explicit_execution_options() {
         body.contains("exec_options: &cudf_sys::cudf_exec_options_t"),
         "drop_nulls_impl must require an explicit options reference"
     );
-    for required in ["cudf_sys::cudf_unique_ex(", "cudf_sys::cudf_ordered_unique_indices_ex("] {
+    for required in [
+        "cudf_sys::cudf_unique_ex(",
+        "cudf_sys::cudf_ordered_unique_indices_ex(",
+        "cudf_sys::cudf_ordered_unique_indices_by_value_ex(",
+    ] {
         assert!(STREAM_COMPACTION_RS.contains(required), "stream compaction helpers must retain `{required}`");
     }
 

@@ -2994,6 +2994,17 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Return one row index for each run of equal key rows in a retained order.\n `row_order` must be a non-null INT32 permutation of the input row indices,\n and equal key rows must be adjacent in that order. Within a run, the rows\n are ranked by column `value_column`, which must not be nested, as\n libcudf's stable ascending sort with nulls last ranks them, ties in their\n order in `row_order`. `keep` must be KEEP_FIRST, which returns the first\n row of that ranking, or KEEP_LAST, which returns the last. Indices are\n returned in run order.\n All input handles and execution resources must remain alive through completion."]
+    pub fn cudf_ordered_unique_indices_by_value_ex(
+        input: cudf_table_view_handle,
+        row_order: cudf_column_view_handle,
+        keys: *const core::ffi::c_int,
+        num_keys: core::ffi::c_int,
+        value_column: core::ffi::c_int,
+        keep: cudf_duplicate_keep_option_t,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
     #[doc = " Convert string column to lowercase.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_to_lower_ex(
         input: cudf_column_view_handle,

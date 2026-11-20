@@ -270,6 +270,40 @@ pub(crate) fn ordered_unique_indices_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
 }
 
+pub(crate) fn ordered_unique_indices_by_value_impl(
+    input: &TableView<'_>,
+    row_order: &ColumnView<'_>,
+    keys: &[usize],
+    value: usize,
+    keep: DuplicateKeepOption,
+    execution: StreamCompactionExecution<'_>,
+) -> Result<Column> {
+    let operation = execution.operation;
+    let keys_i32 = checked_key_indices_i32(input, keys, operation)?;
+    let keys_count = error::usize_to_i32(keys_i32.len(), operation, "keys_count")?;
+    let value_i32 = checked_key_indices_i32(input, &[value], operation)?[0];
+    let mut out = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_ordered_unique_indices_by_value_ex(
+            input.raw_handle(),
+            row_order.raw_handle(),
+            keys_i32.as_ptr(),
+            keys_count,
+            value_i32,
+            keep.to_raw(),
+            &mut out,
+            execution.exec_options,
+        )
+    };
+    check_status_with_keys_count(
+        status,
+        operation,
+        keys_i32.len(),
+        [("keep", format!("{keep:?}").to_lowercase()), ("execution_authority", "retained_domain".to_string())],
+    )?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::check_status_with_keys_count;

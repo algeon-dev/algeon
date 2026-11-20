@@ -1590,6 +1590,7 @@ pub fn cudf::DataFramePreparedSort::into_parts(self) -> (cudf::DataFrame, cudf::
 pub fn cudf::DataFramePreparedSort::is_empty(&self) -> bool
 pub fn cudf::DataFramePreparedSort::materialize(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::DataFramePreparedSort::materialize_drop_consecutive_duplicates(self, cudf::frame::dataframe::DropDuplicatesOptions, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
+pub fn cudf::DataFramePreparedSort::materialize_drop_consecutive_duplicates_by_value(self, cudf::frame::dataframe::DropDuplicatesOptions, &str, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::DataFramePreparedSort::materialize_with_budget(self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::DataFrame>>
 pub fn cudf::DataFramePreparedSort::output_rows(&self) -> usize
 pub fn cudf::DataFramePreparedSort::retained_sorted_order_device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
@@ -5242,6 +5243,7 @@ pub fn cudf::DataFramePreparedSort::into_parts(self) -> (cudf::DataFrame, cudf::
 pub fn cudf::DataFramePreparedSort::is_empty(&self) -> bool
 pub fn cudf::DataFramePreparedSort::materialize(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::DataFramePreparedSort::materialize_drop_consecutive_duplicates(self, cudf::frame::dataframe::DropDuplicatesOptions, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
+pub fn cudf::DataFramePreparedSort::materialize_drop_consecutive_duplicates_by_value(self, cudf::frame::dataframe::DropDuplicatesOptions, &str, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::DataFramePreparedSort::materialize_with_budget(self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::DataFrame>>
 pub fn cudf::DataFramePreparedSort::output_rows(&self) -> usize
 pub fn cudf::DataFramePreparedSort::retained_sorted_order_device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
