@@ -63,8 +63,10 @@ impl BoundedPartitionTargetPolicy {
     }
 
     /// Bytes of partition hash tables that the attempt's partitioned hash joins
-    /// may keep across probe pieces, in total. The rest of the cap stays for
-    /// the build partitions, the deferred probe slices, the probe piece and its
+    /// may keep across probe pieces, in total, together with the slices
+    /// grouped aggregates hold on the same retained-state ledger
+    /// (`BoundedExecutionAttempt::retained_state_charge`). The rest of the cap
+    /// stays for the build partitions, the deferred probe slices, the probe piece and its
     /// gather maps and output; a partition whose table does not fit is joined
     /// with a table built for one batch of deferred probe slices and dropped
     /// after it. The share is the retained-state share of

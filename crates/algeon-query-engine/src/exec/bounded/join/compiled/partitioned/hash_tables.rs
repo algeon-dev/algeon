@@ -6,7 +6,8 @@
 //! multiply that again by its own piece count. The probe owner therefore builds each partition's
 //! table once, when the first probe piece arrives, and joins every later piece against it.
 //!
-//! Kept tables count against two limits. The attempt's retained total stays within the share that
+//! Kept tables count against two limits. The attempt's retained-state total, which kept tables
+//! share with the slices grouped aggregates hold, stays within the share that
 //! `BoundedPartitionTargetPolicy::partitioned_join_retained_hash_table_bytes` sets
 //! (`BoundedExecutionAttempt::charge_retained_join_table`), with each table charged at its
 //! pre-build reservation size plus the key columns the table copies. The query domain's allocator
@@ -41,7 +42,7 @@ use super::{
     compiled_keyed_equality_hash_join_options, cudf_query_error, join_keys_for_side, observe_device_memory_bytes,
 };
 use crate::exec::{
-    bounded::{DeferredJoinProbeCharge, RetainedJoinTableCharge, join::hash::build_bounded_hash_join},
+    bounded::{RetainedJoinTableCharge, RetentionCharge, join::hash::build_bounded_hash_join},
     retry::{is_retryable_resource_error, record_retryable_resource_error},
 };
 
@@ -195,7 +196,7 @@ impl DeferredProbeSlices {
 /// attempt's deferred total.
 pub(super) struct DeferredProbePartitions {
     held: DeferredProbeSlices,
-    charge: DeferredJoinProbeCharge,
+    charge: RetentionCharge,
 }
 
 /// Arriving slices whose batches `DeferredProbePartitions::admit` joined, to be committed once the

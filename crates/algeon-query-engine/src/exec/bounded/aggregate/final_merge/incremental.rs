@@ -3,16 +3,25 @@
 //! `should_execute_incremental_partitioned_final_aggregate_merge` selects it when the aggregate
 //! capability decision picks the partitioned merge for the final stage and the aggregate has no
 //! grouping sets. The retained merge in `compiled.rs` keeps every partial until the stream ends.
-//! This merge folds partials as they arrive. Retained bytes track the merged state plus the
-//! pending batch.
+//! This merge folds partials into per-partition states while they arrive.
 //!
 //! `push` collects raw partials in `pending_raw`. When the next partial would pass the batch byte
-//! threshold, or `MAX_PENDING_PARTIALS` partials are waiting, the batch is concatenated and
+//! threshold, or the policy's pending count is reached, the batch is concatenated and
 //! hash-partitioned on the final group keys (`partition_pending_raw`), and each partition receives
-//! one slice. Slices wait in `pending[partition]` until `flush_ready_partitions` sees enough bytes,
-//! meaning at least the partition's merged state and the minimum flush size, or the pending count
-//! limit. `flush_partition` then merges the slices into the partition's merged state in
+//! one slice. Slices wait in `pending[partition]` until
+//! `BoundedFinalMergePolicy::incremental_partition_fold` folds them: when they fill one aggregate
+//! partition target or match the partition's merged state, whichever is larger, or reach the slice
+//! count bound. `flush_partition` then merges the slices into the partition's merged state in
 //! `merged[partition]`. The partition count is fixed from the first batch.
+//!
+//! Each fold hashes the merged state again, so a partition whose input stays below one target is
+//! folded once, at the end of the stream. Slices kept past the eager threshold that the merge used
+//! before (the merged state, or the minimum flush bytes when larger) are charged to the attempt's
+//! retained-state ledger (`BoundedExecutionAttempt::retained_state_charge`), which kept join
+//! tables share. When the ledger refuses a hold, that partition folds as it would have without
+//! one. Retained bytes are therefore the merged state, the pending slices up to the eager
+//! threshold, and the held slices within the ledger's cap. A fold releases the hold on the slices
+//! it consumed, and dropping the merge releases the rest.
 //!
 //! Because raw slices and merged states differ in column shape for COUNT and AVG, a merge input set
 //! never mixes them. The consumed inputs are released only after the merged output exists.
@@ -32,8 +41,8 @@ use query_runtime::runtime::resident::GpuDataFrame;
 
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateNode, ArrowSchemaRef, BoundedExecutionAttempt,
-    BoundedFinalMergePolicy, CommittedPartial, ExecutionContext, MemoryControlPolicy, NodeId, QueryError,
-    QueryErrorCode, Result, aggregate_strategy_capability_decision,
+    BoundedFinalMergePolicy, CommittedPartial, ExecutionContext, IncrementalPartitionFold, MemoryControlPolicy, NodeId,
+    QueryError, QueryErrorCode, Result, aggregate_strategy_capability_decision,
     compiled::{
         convert_key_distinct_partial_to_merged_state, execute_compiled_final_aggregate_projection,
         execute_compiled_key_distinct_partial_projection, execute_compiled_merged_state_projection,
@@ -46,14 +55,11 @@ use super::{
 };
 use crate::exec::{
     bounded::{
-        BoundedPartitionTargetPolicy, ResidentGpuFrame,
+        BoundedPartitionTargetPolicy, ResidentGpuFrame, RetentionCharge,
         compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
     },
     retry::{RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
 };
-
-/// Raw partials per batch, and pending slices per partition, before a merge is forced.
-const MAX_PENDING_PARTIALS: usize = 16;
 
 /// Whether a compiled aggregate over a partial stream should merge its partials
 /// incrementally into group-key-aligned partition states. The other path retains
@@ -76,9 +82,10 @@ pub(in crate::exec::bounded::aggregate) fn should_execute_incremental_partitione
 ///
 /// Partials arrive one chunk at a time. They are batched, hash-partitioned by
 /// the final group keys, and folded into one merged partial state per
-/// partition once a partition's pending slices reach its merged state's size,
-/// so the retained bytes never exceed the true merged state plus one batch of
-/// pending slices and each merge copies at most twice the partition it folds.
+/// partition once a partition's pending slices reach the larger of one
+/// aggregate partition target and its merged state's size. A fold therefore
+/// reads about twice that size at most, and the slices held beyond the eager
+/// threshold stay within the attempt's retained-state share (module doc).
 /// Raw slices are first merged among themselves and the result is then merged
 /// with the partition's earlier merged state, mirroring the levels of the
 /// whole-set merge. Finalized partitions can be pulled independently;
@@ -93,8 +100,9 @@ pub(in crate::exec::bounded::aggregate) struct CompiledIncrementalPartitionedMer
     expected_partials: usize,
     expected_input_rows: Option<u64>,
     partition_count: Option<usize>,
+    policy: BoundedFinalMergePolicy,
+    partition_target_bytes: u64,
     partition_batch_bytes: u64,
-    min_flush_bytes: u64,
     max_attempts: usize,
     pending_raw: Vec<CommittedPartial>,
     /// The first zero-row partial, kept only while no partial has rows, so an
@@ -107,6 +115,13 @@ pub(in crate::exec::bounded::aggregate) struct CompiledIncrementalPartitionedMer
     /// merge's column shape, which differs from raw partial state for COUNT
     /// and AVG, so raw slices and merged states are never merged in one set.
     merged: Vec<Vec<CommittedPartial>>,
+    /// Pending bytes of each partition charged to `hold`. A partition's held
+    /// bytes never exceed its pending bytes.
+    held_bytes: Vec<u64>,
+    /// The attempt's retained-state charge for every held partition, taken on
+    /// the first hold. `None` before it, and on a lane attempt, which cannot
+    /// hold.
+    hold: Option<RetentionCharge>,
     input_rows: u64,
     partial_count: usize,
     flush_count: usize,
@@ -157,8 +172,9 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             expected_partials: expected_partials.max(1),
             expected_input_rows: expected_input_rows.filter(|rows| *rows > 0),
             partition_count: None,
+            policy,
+            partition_target_bytes,
             partition_batch_bytes: policy.incremental_partition_batch_bytes(partition_target_bytes),
-            min_flush_bytes: policy.incremental_min_flush_bytes(partition_target_bytes),
             max_attempts: RetryLimits::of(context).max_attempts,
             pending_raw: Vec::new(),
             empty_partial: None,
@@ -166,6 +182,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             pending: Vec::new(),
             pending_bytes: Vec::new(),
             merged: Vec::new(),
+            held_bytes: Vec::new(),
+            hold: None,
             input_rows: 0,
             partial_count: 0,
             flush_count: 0,
@@ -207,6 +225,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             self.pending = (0..partition_count).map(|_| Vec::new()).collect();
             self.pending_bytes = vec![0; partition_count];
             self.merged = (0..partition_count).map(|_| Vec::new()).collect();
+            self.held_bytes = vec![0; partition_count];
         }
         let expected_count = self.partition_count.expect("aligned merge has a fixed partition count");
         let expected_keys = self.aligned_key_columns.as_ref().expect("aligned merge has fixed keys");
@@ -226,10 +245,23 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             return Ok(());
         }
         let bytes = partial.device_bytes();
-        if !self.pending[partition_index].is_empty()
-            && (self.pending[partition_index].len() >= MAX_PENDING_PARTIALS
-                || self.pending_bytes[partition_index].saturating_add(bytes) > self.partition_batch_bytes)
-        {
+        let fold = self.policy.incremental_aligned_partition_fold_before_push(
+            self.pending[partition_index].len(),
+            self.pending_bytes[partition_index],
+            self.merged_bytes(partition_index),
+            bytes,
+            self.partition_target_bytes,
+        );
+        let fold = match fold {
+            IncrementalPartitionFold::Fold => true,
+            IncrementalPartitionFold::FoldUnlessHeld => !self.hold_pending(
+                execution,
+                partition_index,
+                self.pending_bytes[partition_index].saturating_add(bytes),
+            ),
+            IncrementalPartitionFold::Keep => false,
+        };
+        if fold {
             self.flush_partition(execution, partition_index)?;
         }
         self.input_rows = self.input_rows.saturating_add(partial.frame.num_rows() as u64);
@@ -294,7 +326,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         self.empty_partial = None;
         let partial_bytes = partial.device_bytes();
         if !self.pending_raw.is_empty()
-            && (self.pending_raw.len() >= MAX_PENDING_PARTIALS
+            && (self.policy.incremental_pending_partials_full(self.pending_raw.len())
                 || self.pending_raw_bytes.saturating_add(partial_bytes) > self.partition_batch_bytes)
         {
             self.partition_pending_raw(execution, false)?;
@@ -478,6 +510,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
                 self.pending = (0..count).map(|_| Vec::new()).collect();
                 self.pending_bytes = vec![0; count];
                 self.merged = (0..count).map(|_| Vec::new()).collect();
+                self.held_bytes = vec![0; count];
                 count
             },
         };
@@ -515,7 +548,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             if partition.frame.num_rows() == 0 {
                 continue;
             }
-            if self.pending[partition_index].len() >= MAX_PENDING_PARTIALS {
+            if self.policy.incremental_pending_partials_full(self.pending[partition_index].len()) {
                 self.flush_partition(execution, partition_index)?;
             }
             self.pending_bytes[partition_index] =
@@ -528,14 +561,62 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
 
     fn flush_ready_partitions(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<()> {
         for partition_index in 0..self.pending.len() {
-            let merged_bytes = self.merged[partition_index].iter().map(CommittedPartial::device_bytes).sum::<u64>();
-            if self.pending[partition_index].len() >= MAX_PENDING_PARTIALS
-                || self.pending_bytes[partition_index] >= merged_bytes.max(self.min_flush_bytes)
-            {
+            let pending_bytes = self.pending_bytes[partition_index];
+            let fold = match self.policy.incremental_partition_fold(
+                self.pending[partition_index].len(),
+                pending_bytes,
+                self.merged_bytes(partition_index),
+                self.partition_target_bytes,
+            ) {
+                IncrementalPartitionFold::Fold => true,
+                IncrementalPartitionFold::FoldUnlessHeld => {
+                    !self.hold_pending(execution, partition_index, pending_bytes)
+                },
+                IncrementalPartitionFold::Keep => false,
+            };
+            if fold {
                 self.flush_partition(execution, partition_index)?;
             }
         }
         Ok(())
+    }
+
+    fn merged_bytes(&self, partition_index: usize) -> u64 {
+        self.merged[partition_index].iter().map(CommittedPartial::device_bytes).sum()
+    }
+
+    /// Charges `bytes` of one partition's pending slices to the attempt's
+    /// retained-state ledger, replacing that partition's earlier charge. Returns
+    /// false, with the charges unchanged, when the ledger refuses the growth or
+    /// the attempt has no ledger.
+    fn hold_pending(&mut self, execution: &BoundedExecutionAttempt<'_>, partition_index: usize, bytes: u64) -> bool {
+        let total = self.held_bytes.iter().sum::<u64>() - self.held_bytes[partition_index] + bytes;
+        if self.hold.is_none() {
+            self.hold = execution.retained_state_charge();
+        }
+        let Some(hold) = self.hold.as_mut() else {
+            return false;
+        };
+        if !hold.try_resize(total) {
+            return false;
+        }
+        self.held_bytes[partition_index] = bytes;
+        true
+    }
+
+    /// Lowers one partition's held bytes to what is still pending after a fold
+    /// consumed some of its slices, and shrinks the charge to match.
+    fn release_folded_hold(&mut self, partition_index: usize) {
+        let held = self.held_bytes[partition_index].min(self.pending_bytes[partition_index]);
+        if held == self.held_bytes[partition_index] {
+            return;
+        }
+        self.held_bytes[partition_index] = held;
+        let total = self.held_bytes.iter().sum::<u64>();
+        if let Some(hold) = self.hold.as_mut() {
+            let shrunk = hold.try_resize(total);
+            debug_assert!(shrunk, "shrinking a retained-state charge cannot fail");
+        }
     }
 
     /// Folds one partition's pending slices into its merged state.
@@ -653,6 +734,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
                     self.pending[partition_index].drain(..take).map(|slice| slice.partial.device_bytes()).sum::<u64>();
                 self.pending_bytes[partition_index] =
                     self.pending_bytes[partition_index].saturating_sub(released_bytes);
+                self.release_folded_hold(partition_index);
             },
             MergeInputs::MergedStates => self.merged[partition_index].drain(..take).for_each(drop),
         }

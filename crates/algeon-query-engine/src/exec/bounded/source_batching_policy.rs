@@ -27,7 +27,6 @@ pub(in crate::exec::bounded) struct BoundedSourceBatchingPolicy {
     source_batch_read_max_planned_bytes: u64,
     source_adjacent_grouped_aggregate_max_operator_row_groups: usize,
     source_adjacent_partitioned_aggregate_max_batch_fan_in: usize,
-    source_adjacent_partitioned_aggregate_max_batch_row_groups: u64,
     source_adjacent_partitioned_aggregate_max_batch_bytes: u64,
     source_adjacent_partitioned_aggregate_min_batch_bytes: u64,
     source_adjacent_partitioned_aggregate_batch_budget_divisor: u64,
@@ -45,7 +44,6 @@ impl BoundedSourceBatchingPolicy {
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_BATCH_READ_MAX_PLANNED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS: usize = 1024;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_FAN_IN: usize = 64;
-    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_ROW_GROUPS: u64 = 64;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES: u64 =
         1024 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_BATCH_BYTES: u64 =
@@ -154,27 +152,25 @@ impl BoundedSourceBatchingPolicy {
     /// and partially aggregated now.
     ///
     /// The first bound reached releases the batch. The input count bounds the
-    /// `concat_many` fan-in, the row-group count bounds how much source a retry
-    /// of that partial has to redo, and the observed device bytes bound the
+    /// `concat_many` fan-in and the observed device bytes bound the
     /// concatenated frame. Callers report zero observed bytes for a single
-    /// pending input, so a lone input waits for company unless its row groups
-    /// alone reach the cap.
+    /// pending input, so a lone input waits for company. A partition that
+    /// reaches neither bound is aggregated once, when the source ends.
     pub(in crate::exec::bounded) fn source_adjacent_partition_batch_ready(
         self,
         input_count: usize,
-        source_row_group_count: u64,
         observed_device_bytes: u64,
         device_budget_bytes: u64,
     ) -> bool {
         input_count >= self.source_adjacent_partitioned_aggregate_max_batch_fan_in
-            || source_row_group_count >= self.source_adjacent_partitioned_aggregate_max_batch_row_groups
             || observed_device_bytes >= self.source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes)
     }
 
     /// Device-byte bound for one partition batch, a fixed share of the cap
-    /// clamped to the min and max batch bytes. The same bound applies to all
-    /// retained partitions together (`source_adjacent_pending_partitions_ready`),
-    /// since their resident partials share one grant.
+    /// clamped to the min and max batch bytes. Up to the same bound, the
+    /// retained partitions together are kept without a charge; past it they
+    /// stay only as a hold on the attempt's retained-state ledger
+    /// (`source_adjacent_hold_pending_partitions`).
     pub(in crate::exec::bounded) fn source_adjacent_partition_batch_byte_limit_for_budget(
         self,
         device_budget_bytes: u64,
@@ -269,8 +265,6 @@ impl Default for BoundedSourceBatchingPolicy {
                 Self::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS,
             source_adjacent_partitioned_aggregate_max_batch_fan_in:
                 Self::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_FAN_IN,
-            source_adjacent_partitioned_aggregate_max_batch_row_groups:
-                Self::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_ROW_GROUPS,
             source_adjacent_partitioned_aggregate_max_batch_bytes:
                 Self::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES,
             source_adjacent_partitioned_aggregate_min_batch_bytes:

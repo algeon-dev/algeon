@@ -132,19 +132,35 @@ source larger than the cap fails at the last chunk read, because the device
 result is complete before egress copies it to the client. Native execution
 does not provide general disk spilling.
 
-### Kept join tables {/* #kept-join-tables */}
+### Kept join tables and held aggregate input {/* #kept-join-tables */}
 
 A [partitioned hash join](./gpu-execution.mdx#partitioned-joins) that streams
 its probe side keeps the hash table of each build partition from its first
 probe piece until the probe ends. The tables are allocations of the attempt's
 query domain and count against its grant like any other allocation. In
-addition, the tables an attempt keeps at one time total at most a quarter of
-its grant. Each table is charged at cuDF's pre-build size plus the key columns
-the table copies, before it is built. A partition whose charge does not fit
-keeps no table. When the allocator rejects a kept table, that partition and the
-ones after it keep none. The tables are released with the build partitions when
-the probe stream ends, stops early or fails, and their charge returns to the
-attempt then.
+addition, the tables an attempt keeps and the input its grouped aggregates
+hold total at most a quarter of its grant at one time. Each table is charged at
+cuDF's pre-build size plus the key columns the table copies, before it is
+built. A partition whose charge does not fit keeps no table. When the allocator
+rejects a kept table, that partition and the ones after it keep none. The
+tables are released with the build partitions when the probe stream ends,
+stops early or fails, and their charge returns to the attempt then.
+
+A grouped aggregate keeps input until a merge consumes it. When it partitions
+a Parquet source by group key, it keeps each partition's slices until they
+reach the partition batch size, an eighth of the grant clamped to between
+64 MiB and 1 GiB, and aggregates the remaining slices when the source ends.
+Its final merge keeps each partition's partial results until they reach 16
+partials or the larger of one aggregate partition target and the partition's
+merged state. The target is a thirty-second of the grant, clamped to between
+128 MiB and 1 GiB. Held input carries no charge up to a smaller amount. For
+the source it is the partition batch size across all partitions; for the final
+merge it is the larger of an eighth of the target and the merged state. Held
+input beyond that amount counts toward the quarter. When the quarter is full, the
+source aggregates every partition and the final merge merges that partition at
+once. The charge returns when a merge consumes the held input, or when the
+aggregate fails or is dropped. The merged state is the aggregate's result and
+carries no charge.
 
 The same quarter of the grant bounds the build chunks that a
 [streaming join build](./gpu-execution.mdx#partitioned-joins) holds whole while

@@ -1,6 +1,7 @@
 //! GPU cases for the final merge's groupby skips: a key-distinct partial converted without the
 //! final groupby must equal the groupby's output, and the incremental merge must still group every
-//! input set that can repeat a key.
+//! input set that can repeat a key. The incremental merge's fold cadence and the group-key
+//! partitioned single-frame aggregate are counted here by the same final groupbys.
 
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ use super::{
     },
     execution_budget_token_for_boundary, observe_device_memory_bytes,
 };
+use crate::exec::bounded::aggregate::partitioned::execute_compiled_bounded_partitioned_aggregate_from_frame;
 
 const FINAL_GROUPBY_OPERATION: &str = "query_engine.final_merge.aggregate";
 
@@ -41,6 +43,21 @@ impl Fixture {
     fn new() -> Self {
         Self {
             context: ExecutionContext::standalone(StandaloneConfig::default()).expect("standalone execution context"),
+            metrics: ExecutionMetrics::detached("final_merge_execution_tests"),
+        }
+    }
+
+    /// A context whose memory policy sets the device budget, which sizes the aggregate partition
+    /// target and the retained-state share.
+    fn with_device_budget(device_budget_bytes: u64) -> Self {
+        let memory_control_policy =
+            MemoryControlPolicy { device_budget_bytes, ..StandaloneConfig::default().memory_control_policy };
+        Self {
+            context: ExecutionContext::standalone(StandaloneConfig {
+                memory_control_policy,
+                ..StandaloneConfig::default()
+            })
+            .expect("standalone execution context"),
             metrics: ExecutionMetrics::detached("final_merge_execution_tests"),
         }
     }
@@ -540,6 +557,110 @@ fn aligned_merge_converts_lone_slices_and_merges_shared_keys() {
     );
 }
 
+/// A 4 GiB budget sets a 128 MiB aggregate partition target, 16 MiB minimum flush bytes, a 32 MiB
+/// incremental batch and a 1 GiB retained-state share. Each slice below is about 21 MB, so three
+/// slices of one partition pass the eager threshold and stay below one target.
+const HOLD_CASE_DEVICE_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const HOLD_CASE_SLICE_ROWS: i64 = 600_000;
+
+/// Three key-distinct aligned slices of one partition, overlapping by half, fold once at the end
+/// while the retained-state ledger holds them. With the ledger already full, the partition folds
+/// whenever its slices match the merged state, as it does without holds, and the merged state is
+/// grouped again at the end.
+fn aligned_merge_holds_slices_below_one_partition_target() {
+    let case = incremental_case();
+    let keys = ["k".to_string()];
+    for (ledger_full, expected_groupbys) in [(false, 1), (true, 2)] {
+        let fixture = Fixture::with_device_budget(HOLD_CASE_DEVICE_BUDGET_BYTES);
+        let mut execution = fixture.attempt();
+        let _occupied = ledger_full.then(|| {
+            execution
+                .charge_retained_join_table(MemoryControlPolicy::retained_state_share_bytes(
+                    HOLD_CASE_DEVICE_BUDGET_BYTES,
+                ))
+                .expect("an empty ledger accepts its whole share")
+        });
+        let mut merge = CompiledIncrementalPartitionedMerge::new_aligned(
+            &fixture.context,
+            NodeId::from_index_for_test(1),
+            &case.aggregate,
+            &case.input_schema,
+            &case.output_schema,
+            &keys,
+        )
+        .expect("aligned merge");
+        for slice in 0..3 {
+            let start = slice * HOLD_CASE_SLICE_ROWS / 2;
+            merge
+                .push_aligned(
+                    &mut execution,
+                    0,
+                    1,
+                    &keys,
+                    fixture.partial(&raw_partial(start..start + HOLD_CASE_SLICE_ROWS)),
+                )
+                .expect("aligned slice");
+        }
+        let states = merge.finish_partition_states(&mut execution).expect("partition states");
+        assert_eq!(fixture.final_groupby_count(), expected_groupbys, "ledger full: {ledger_full}");
+        let [(0, state)] = states.partitions.as_slice() else { panic!("one merged partition") };
+        let rows = output_rows(&state.frame);
+        let half = HOLD_CASE_SLICE_ROWS / 2;
+        assert_eq!(rows.len() as i64, 4 * half);
+        assert!(rows.iter().all(|&(key, total, low, high, n)| {
+            let copies = if (half..3 * half).contains(&key) { 2 } else { 1 };
+            total == key * copies && low == key && high == key && n == copies
+        }));
+    }
+}
+
+/// A group-only aggregate over one resident frame larger than the aggregate partition target is
+/// hash-partitioned on its key. Each partition's partial holds every row of its keys, so the
+/// partitions are finalized without a final groupby.
+fn partitioned_frame_aggregate_finalizes_partitions_without_a_final_groupby() {
+    let fixture = Fixture::with_device_budget(HOLD_CASE_DEVICE_BUDGET_BYTES);
+    let mut execution = fixture.attempt();
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("k", ArrowDataType::Int64, true),
+        Field::new("v", ArrowDataType::Int64, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("k", ArrowDataType::Int64, true)]));
+    let aggregate = AggregateNode {
+        input: NodeId::from_index_for_test(0),
+        spec: AggregateSpec::new(vec![Expr::column("k")], Vec::new()),
+    };
+    // 9M rows of two Int64 columns are 144 MB, two partitions of the 128 MiB target.
+    let rows = 9_000_000i64;
+    let distinct_keys = 3_000_000i64;
+    let input = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Int64Array::from_iter_values((0..rows).map(|row| row % distinct_keys))) as ArrayRef,
+            Arc::new(Int64Array::from_iter_values(0..rows)) as ArrayRef,
+        ],
+    )
+    .expect("input batch");
+    let input = fixture.partial(&input);
+    let input_bytes = input.device_bytes();
+    let output = execute_compiled_bounded_partitioned_aggregate_from_frame(
+        &mut execution,
+        NodeId::from_index_for_test(1),
+        &aggregate,
+        &input_schema,
+        &output_schema,
+        input.frame,
+        input_bytes,
+    )
+    .expect("partitioned aggregate");
+    assert_eq!(fixture.final_groupby_count(), 0);
+    assert_eq!(fixture.metrics.snapshot().final_merge_attempts, 0);
+    let batch = output.frame.frame().to_record_batch().expect("output download");
+    let keys = batch.column_by_name("k").expect("key column").as_any().downcast_ref::<Int64Array>().expect("int64");
+    let mut keys = keys.values().to_vec();
+    keys.sort_unstable();
+    assert_eq!(keys, (0..distinct_keys).collect::<Vec<_>>());
+}
+
 #[test]
 fn final_merge_groupby_skip_cases() {
     run_named_cases(&[
@@ -574,6 +695,14 @@ fn final_merge_groupby_skip_cases() {
         (
             "exec::bounded::aggregate::final_merge::execution_tests::aligned_merge_converts_lone_slices_and_merges_shared_keys",
             aligned_merge_converts_lone_slices_and_merges_shared_keys,
+        ),
+        (
+            "exec::bounded::aggregate::final_merge::execution_tests::aligned_merge_holds_slices_below_one_partition_target",
+            aligned_merge_holds_slices_below_one_partition_target,
+        ),
+        (
+            "exec::bounded::aggregate::final_merge::execution_tests::partitioned_frame_aggregate_finalizes_partitions_without_a_final_groupby",
+            partitioned_frame_aggregate_finalizes_partitions_without_a_final_groupby,
         ),
     ]);
 }

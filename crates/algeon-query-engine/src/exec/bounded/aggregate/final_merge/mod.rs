@@ -33,7 +33,8 @@ use super::{
     execute_aggregate_with_budget, execute_compiled_bounded_aggregate_from_empty_input,
     execute_final_aggregate_projection, execute_final_sort_node_with_retry, execute_global_aggregate_with_budget,
     execute_groupby_aggregate_with_budget_observed, execution_budget_token_for_boundary, final_global_aggregate_spec,
-    final_global_aggregate_state_output_schema, final_merge_policy::BoundedFinalMergePolicy,
+    final_global_aggregate_state_output_schema,
+    final_merge_policy::{BoundedFinalMergePolicy, IncrementalPartitionFold},
     finalize_avg_output_columns_with_budget, lower_column_expr, lower_final_aggregate_spec,
     observe_device_memory_bytes, partitioned_aggregate_partition_count,
     record_default_grouped_aggregate_strategy_decision, record_device_memory_observation,
@@ -50,7 +51,8 @@ mod tests;
 
 pub(in crate::exec::bounded) use compiled::execute_compiled_bounded_final_aggregate_merge;
 pub(in crate::exec::bounded::aggregate) use compiled::{
-    execute_compiled_final_merge_group_attempt, normalize_compiled_aggregate_partial,
+    execute_compiled_final_merge_group_attempt, execute_compiled_key_distinct_partial_projection,
+    normalize_compiled_aggregate_partial,
 };
 pub(in crate::exec::bounded::aggregate) use incremental::{
     CompiledIncrementalPartitionedMerge, should_execute_incremental_partitioned_final_aggregate_merge,
