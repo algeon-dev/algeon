@@ -2954,6 +2954,15 @@ unsafe extern "C" {
         out: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " BOOL8 mask of the rows a single-key sort places among its first `k`, plus\n every row equal to the `k`-th, with explicit execution context.\n\n `order` and `null_order` mean what they mean for one key of\n `cudf_sort_ex`; `null_order` is relative to ascending values. Equality is\n the sort's: nulls equal nulls, NaNs equal NaNs and sort after every other\n value, and -0.0 equals 0.0. The mask has no nulls. `k >= rows` selects every\n row and `k == 0` none. `input` must be fixed-width (numeric, BOOL8,\n timestamp, duration or decimal); other types fail with `CUDF_ERROR_TYPE`,\n and a negative `k` with `CUDF_ERROR_INVALID_ARGUMENT`. The `k`-th value comes\n from a partial selection, also for floating point; no call sorts every row.\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned column."]
+    pub fn cudf_top_k_with_ties_mask_ex(
+        input: cudf_column_view_handle,
+        k: i32,
+        order: cudf_order_t,
+        null_order: cudf_null_order_t,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
     #[doc = " Drop rows from a table when their non-null key count is below `keep_threshold`.\n\n `keys` is an array of column indices, `num_keys` is its length.\n `keep_threshold` is the minimum number of non-null key values required\n to keep a row.\n\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
     pub fn cudf_drop_nulls_ex(
         input: cudf_table_view_handle,

@@ -505,7 +505,8 @@ impl FinalSortExecutor<'_, '_, '_> {
     }
 
     /// Candidate for one row range of a retained frame, sliced on the coordinator stream under
-    /// the sort's token.
+    /// the sort's token. A range covering the whole frame reads the frame in place: the
+    /// candidate only reads its input, and a slice would copy every column.
     fn topk_slice_attempt(&mut self, input: &CommittedPartial, slice: TopKSliceAttempt) -> Result<CommittedPartial> {
         const BOUNDARY: &str = "final_sort_topk_chunk";
         self.sort_and_limit_topk_candidate(
@@ -514,6 +515,9 @@ impl FinalSortExecutor<'_, '_, '_> {
             slice.keep_rows,
             TopKWorkTokenFailureMode::Direct,
             |work_token| {
+                if slice.offset == 0 && slice.length == input.frame.num_rows() {
+                    return Ok(input.frame.clone());
+                }
                 input
                     .frame
                     .frame()
@@ -557,7 +561,9 @@ impl FinalSortExecutor<'_, '_, '_> {
         )
     }
 
-    /// Sorts the frame produced by `frame_for_sort` and truncates it to `keep_rows`.
+    /// Sorts the frame produced by `frame_for_sort` and truncates it to `keep_rows`; the sort
+    /// first drops the rows whose first key cannot reach the first `keep_rows`
+    /// (`topk_candidate`).
     ///
     /// `frame_for_sort` runs under the sort's budget token; a slice or concatenation is
     /// attributed to that stage. The truncation uses a second token. A sort failure gains the
@@ -594,6 +600,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                 sort_topk_candidate_with_budget(
                     self.sort,
                     frame,
+                    keep_rows,
                     &work_token,
                     memory_boundary,
                     self.execution.metrics(),

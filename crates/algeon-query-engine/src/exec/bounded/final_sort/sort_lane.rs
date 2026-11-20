@@ -107,6 +107,7 @@ pub(super) fn execute_sort_lane_candidate(
     let sorted = match sort_topk_candidate_with_budget(
         &params.sort,
         frame,
+        params.keep_rows,
         &work_token,
         candidate.boundary,
         execution.metrics(),

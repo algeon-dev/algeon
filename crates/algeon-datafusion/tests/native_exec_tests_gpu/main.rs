@@ -25,7 +25,7 @@ use arrow::{
         ListArray, StringArray, StringViewArray,
     },
     buffer::{OffsetBuffer, ScalarBuffer},
-    compute::SortOptions as ArrowSortOptions,
+    compute::{SortOptions as ArrowSortOptions, concat_batches},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
     util::pretty::pretty_format_batches,
@@ -1441,6 +1441,137 @@ fn sort_by_keys_outside_the_output_matches_datafusion_row_order() {
     ] {
         let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
         assert_eq!(actual, expected, "{query}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// `ORDER BY ... LIMIT` returns the rows of the native full sort at the same offset. Every
+/// key list ends in the unique `id`, so each expected row set and order is exact. The top-k
+/// candidate keeps only the rows whose first key reaches the limit's boundary value, so
+/// these cases put that boundary inside runs of equal first keys (resolved by `id`), at
+/// NaN, infinities and both zeros, and among null runs shorter than, as long as and longer
+/// than the limit, in both directions and null placements. `g` and `t` take libcudf's
+/// top-k selection, `d`, `f` (FLOAT32), `z` and `e` the shim's floating-point selection,
+/// and `s` the full sort.
+#[test]
+fn order_by_limit_matches_the_native_full_sort_prefix() {
+    const ROWS: i64 = 4096;
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-topk-prefilter");
+    let path = dir.join("input.parquet");
+    {
+        let ids = (0..ROWS).map(|row| (row * 2731) % ROWS).collect::<Vec<_>>();
+        let float = |id: i64| match id % 512 {
+            1 => Some(f64::NAN),
+            2 => Some(f64::INFINITY),
+            3 => Some(f64::NEG_INFINITY),
+            4 if id % 1024 == 4 => None,
+            _ if id % 256 == 5 => Some(-0.0),
+            _ if id % 256 == 6 => Some(0.0),
+            _ => Some(((id * 7919) % 1000) as f64 / 10.0 - 50.0),
+        };
+        let zeros = |id: i64| match id % 64 {
+            0 => -1.0,
+            1 => -0.0,
+            2 => 0.0,
+            _ => (id % 61) as f64 + 1.0,
+        };
+        let mostly_nan = |id: i64| match id % 16 {
+            0 => Some(id as f64),
+            1 => None,
+            _ => Some(f64::NAN),
+        };
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("g", DataType::Int32, false),
+            Field::new("t", DataType::Int64, false),
+            Field::new("c", DataType::Int32, false),
+            Field::new("n", DataType::Int32, true),
+            Field::new("m", DataType::Int32, true),
+            Field::new("d", DataType::Float64, true),
+            Field::new("f", DataType::Float32, true),
+            Field::new("z", DataType::Float64, false),
+            Field::new("e", DataType::Float64, true),
+            Field::new("s", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(ids.clone())),
+                Arc::new(Int32Array::from_iter_values(ids.iter().map(|id| (id % 8) as i32))),
+                Arc::new(Int64Array::from_iter_values(ids.iter().map(|id| id / 3))),
+                Arc::new(Int32Array::from_iter_values(ids.iter().map(|_| 7))),
+                Arc::new(Int32Array::from_iter(
+                    ids.iter().map(|id| (id % 683 != 0).then_some(((id * 37) % 101) as i32)),
+                )),
+                Arc::new(Int32Array::from_iter(ids.iter().map(|id| [5, 900, 3000].contains(id).then_some(*id as i32)))),
+                Arc::new(Float64Array::from_iter(ids.iter().map(|id| float(*id)))),
+                Arc::new(Float32Array::from_iter(ids.iter().map(|id| float(*id).map(|value| value as f32)))),
+                Arc::new(Float64Array::from_iter_values(ids.iter().map(|id| zeros(*id)))),
+                Arc::new(Float64Array::from_iter(ids.iter().map(|id| mostly_nan(*id)))),
+                Arc::new(StringArray::from_iter_values(ids.iter().map(|id| format!("k{:03}", id % 50)))),
+            ],
+        )
+        .unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+    let config = SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+    let required = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config)
+            .with_algeon_native(native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired))
+            .build(),
+    );
+    block_on(required.register_parquet("input", path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    let run = |query: &str| {
+        let plan = block_on(block_on(required.sql(query)).unwrap().create_physical_plan())
+            .unwrap_or_else(|error| panic!("NativeRequired plans {query}: {error}"));
+        let batches = block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap();
+        concat_batches(&batches[0].schema(), &batches).unwrap()
+    };
+
+    for (columns, order, skip, fetch) in [
+        ("id, g", "g DESC, id", 0, 10),
+        ("id, t", "t DESC, id", 0, 10),
+        ("id, t", "t, id DESC", 20, 10),
+        ("id, c", "c, id DESC", 0, 5),
+        ("id, n", "n NULLS FIRST, id", 0, 3),
+        ("id, n", "n NULLS FIRST, id", 0, 6),
+        ("id, n", "n NULLS FIRST, id", 0, 9),
+        ("id, n", "n DESC NULLS FIRST, id", 0, 4),
+        ("id, n", "n DESC NULLS LAST, id", 0, 9),
+        ("id, m", "m NULLS LAST, id", 0, 10),
+        ("id, m", "m DESC NULLS LAST, id DESC", 0, 10),
+        ("id, m", "m NULLS FIRST, id DESC", 0, 10),
+        ("id, d", "d DESC NULLS LAST, id", 0, 5),
+        ("id, d", "d DESC NULLS LAST, id", 0, 10),
+        ("id, d", "d DESC NULLS FIRST, id", 0, 3),
+        ("id, d", "d DESC NULLS FIRST, id", 0, 4),
+        ("id, d", "d DESC NULLS FIRST, id", 0, 6),
+        ("id, d", "d DESC NULLS FIRST, id", 0, 10),
+        ("id, f", "f DESC NULLS LAST, id", 0, 10),
+        ("id, f", "f DESC NULLS FIRST, id", 0, 10),
+        ("id, f", "f NULLS FIRST, id", 0, 30),
+        ("id, d", "d NULLS LAST, id", 0, 12),
+        ("id, d", "d NULLS LAST, id", 5, 30),
+        ("id, z", "z, id", 0, 100),
+        ("id, z", "z DESC, id DESC", 0, 40),
+        ("id, e", "e NULLS LAST, id", 0, 300),
+        ("id, e", "e NULLS FIRST, id", 0, 600),
+        ("id, e", "e DESC NULLS LAST, id", 0, 50),
+        ("id, s", "s DESC, id", 0, 10),
+        ("id, g", "g, id", 0, 5000),
+    ] {
+        let limited = run(&format!("SELECT {columns} FROM input ORDER BY {order} LIMIT {fetch} OFFSET {skip}"));
+        let full = run(&format!("SELECT {columns} FROM input ORDER BY {order}"));
+        let expected = full.slice(skip, fetch.min(full.num_rows() - skip));
+        assert_eq!(
+            pretty_format_batches(&[limited]).unwrap().to_string(),
+            pretty_format_batches(&[expected]).unwrap().to_string(),
+            "ORDER BY {order} LIMIT {fetch} OFFSET {skip}"
+        );
     }
     fs::remove_dir_all(dir).unwrap();
 }

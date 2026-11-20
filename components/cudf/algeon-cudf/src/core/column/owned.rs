@@ -39,7 +39,7 @@ fn type_id_label(type_id: TypeId) -> String {
     type_id.to_string()
 }
 
-fn fixed_width_type_required_error(
+pub(crate) fn fixed_width_type_required_error(
     operation: &'static str,
     message: &'static str,
     type_id: TypeId,

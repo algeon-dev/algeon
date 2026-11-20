@@ -2,9 +2,11 @@
 //!
 //! A global order cannot come from independently sorted chunks. The final sort either sorts
 //! the whole input at once (`full_sort`) or, when a finite limit makes it cheaper, runs a
-//! hierarchical top-k (`hierarchical_topk`). A top-k sorts row ranges into candidates of
+//! hierarchical top-k (`hierarchical_topk`). A top-k turns row ranges into candidates of
 //! `skip + fetch` rows, then merges candidate groups level by level, where each merge
-//! concatenates, sorts and truncates to the same bound. `sort_lane` states why the final
+//! concatenates and builds a candidate under the same bound. Building a candidate keeps the
+//! rows whose first sort key is no worse than the bound-th value of that key, sorts those
+//! by every key and truncates (`topk_candidate`). `sort_lane` states why the final
 //! candidate equals the global top rows; only the closing limit applies the offset. Neither
 //! path asks for a stable sort; rows tied on the sort key have no defined order.
 //!

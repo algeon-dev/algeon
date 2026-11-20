@@ -100,6 +100,49 @@ fn bounded_offset_only_limit_runs_below_a_full_sort() {
 }
 
 #[test]
+fn bounded_sort_over_a_gpu_resident_source_fuses_a_fetch_limit() {
+    // A GPU-resident input is one whole frame; the fused top-k still keeps only
+    // the rows whose first key reaches the limit before the multi-key sort, so a
+    // fetch limit fuses as it does over any other input. An offset-only limit
+    // has no candidate bound and stays below a full sort.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Int64, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    for (limit_spec, fused) in [(LimitSpec::new(0, 10), true), (LimitSpec::offset(10), false)] {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("ranks", Arc::clone(&schema))));
+        let sort = builder
+            .add_sort(
+                source,
+                SortSpec::new(vec![
+                    SortExpr::new(Expr::column("value"), true, false),
+                    SortExpr::new(Expr::column("vertex"), false, false),
+                ]),
+            )
+            .unwrap();
+        let limit = builder.add_limit(sort, limit_spec).unwrap();
+        let plan = builder.finish_with_host_sink(limit).unwrap();
+
+        let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
+        let pipeline = compile_pipeline(&plan, &analysis).expect("resident sort limit should compile");
+        let sort_task = pipeline
+            .tasks()
+            .iter()
+            .find(|task| task.kind() == PipelineTaskKind::FinalSort)
+            .expect("one final sort task");
+        let limit_task =
+            pipeline.tasks().iter().find(|task| task.kind() == PipelineTaskKind::Limit).expect("one limit task");
+        let expected = if fused {
+            SortStrategy::FusedTopK { limit_task: limit_task.id(), limit_node: limit }
+        } else {
+            SortStrategy::FullSort
+        };
+        assert_eq!(sort_task.sort_strategy(), Some(expected), "{limit_spec:?}");
+    }
+}
+
+#[test]
 fn bounded_sort_strategy_records_fused_binding_once() {
     // The fused top-k decision is recorded in exactly one place; the sort
     // task's strategy; with the consuming limit task and plan node bound to

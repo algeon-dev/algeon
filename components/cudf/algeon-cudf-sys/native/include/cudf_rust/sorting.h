@@ -88,6 +88,25 @@ cudf_status_t cudf_is_sorted_ex(cudf_table_view_handle input,
                                 int32_t num_keys, int32_t *out,
                                 cudf_exec_options_t const *options);
 
+/// BOOL8 mask of the rows a single-key sort places among its first `k`, plus
+/// every row equal to the `k`-th, with explicit execution context.
+///
+/// `order` and `null_order` mean what they mean for one key of
+/// `cudf_sort_ex`; `null_order` is relative to ascending values. Equality is
+/// the sort's: nulls equal nulls, NaNs equal NaNs and sort after every other
+/// value, and -0.0 equals 0.0. The mask has no nulls. `k >= rows` selects every
+/// row and `k == 0` none. `input` must be fixed-width (numeric, BOOL8,
+/// timestamp, duration or decimal); other types fail with `CUDF_ERROR_TYPE`,
+/// and a negative `k` with `CUDF_ERROR_INVALID_ARGUMENT`. The `k`-th value comes
+/// from a partial selection, also for floating point; no call sorts every row.
+/// `options` must be non-NULL and carry an explicit device, stream, and memory
+/// resource. `options->mr` must outlive the returned column.
+cudf_status_t cudf_top_k_with_ties_mask_ex(cudf_column_view_handle input,
+                                           int32_t k, cudf_order_t order,
+                                           cudf_null_order_t null_order,
+                                           cudf_column_handle *out,
+                                           cudf_exec_options_t const *options);
+
 #ifdef __cplusplus
 }
 #endif

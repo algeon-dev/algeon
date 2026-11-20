@@ -17,6 +17,7 @@ pub(crate) use convert::{copy_view_in, copy_view_to_owned};
 pub use device_buffer::{DeviceBuffer, ValidatedFloat32DeviceBuffer, ValidatedInt64DeviceBufferRange};
 pub use device_slice::DeviceSlice;
 pub use owned::Column;
+pub(crate) use owned::fixed_width_type_required_error;
 pub(crate) use sequence::position_sequence_in_domain;
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use testing_hooks::slice_view_for_test;
