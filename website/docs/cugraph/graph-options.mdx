@@ -96,7 +96,9 @@ source is already canonical for the requested `directed` and edge-column shape.
 The planner proves that each `(src, dst)` pair appears once when the edge
 relation groups on `src` and `dst` (`SELECT DISTINCT src, dst` or
 `GROUP BY src, dst`), or reads one complete Parquet file whose footer carries
-the `algeon.graph.simple_directed_edge_topology` certificate. With that proof
+the `algeon.graph.simple_directed_edge_topology` certificate. An integer
+offset on a grouped key keeps the proof: `user_id + 1000000000 AS src` above
+`GROUP BY user_id, item_id` is still distinct on `(src, dst)`. With that proof
 an unweighted `directed => true` call is canonical and `EdgeNormalize` is
 skipped. A weighted `directed => true` call keeps the step, which then has
 nothing to deduplicate.
