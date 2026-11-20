@@ -22,7 +22,9 @@
 //! `CompiledStreamPartials::new` picks the accumulator. When the aggregate capability decision
 //! selects the partitioned merge for the final stage and the aggregate has no grouping sets, the
 //! incremental partitioned merge (`final_merge/incremental.rs`) folds partials into per-partition
-//! states while chunks arrive; retained bytes then follow the merged state.
+//! states while chunks arrive. A partition folds once its pending slices fill one aggregate
+//! partition target or match its merged state, and slices held past the merge's eager threshold
+//! count against the attempt's retained-state share.
 //! Otherwise the partials are retained, or folded in a binary carry, and
 //! `execute_compiled_bounded_final_aggregate_merge` (`final_merge/compiled.rs`) runs at the end. It
 //! partitions by group key when the same capability decision and the partial sizes allow it, and

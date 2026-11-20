@@ -10,7 +10,11 @@
 //! batches, hash-partitions each by group key, retains the slices of every
 //! partition until the batching policy releases them, aggregates each
 //! partition's slices together, and feeds an incremental merge that keeps one
-//! merged state per partition.
+//! merged state per partition. Slices retained past the partition batch byte
+//! limit, across all partitions, are a hold on the attempt's retained-state
+//! ledger (`source_adjacent_hold_pending_partitions`); a refused hold
+//! aggregates every partition at once. A partition that reaches neither bound
+//! is aggregated once, from the slices of every batch, when the source ends.
 //!
 //! The partitioned path sizes its next raw batch from what the previous
 //! batches decoded and staged (`SourceAdjacentRawBatchFeedback`), and from the
@@ -54,6 +58,7 @@ use super::{
 use crate::{
     exec::{
         bounded::{
+            RetentionCharge,
             chunks::{
                 bounded_source_adjacent_chunk_batches_for_work_width, bounded_source_adjacent_chunk_batching_enabled,
                 chunk_retry_facts, execute_source_adjacent_batch_uncommitted, split_retryable_chunk,
@@ -193,14 +198,15 @@ struct SourceAdjacentPartitionInput {
 
 /// Inputs of one raw batch worker.
 ///
-/// `pending` carries the retained partition inputs only on the inline path;
-/// lane workers receive `None` because the coordinator keeps the retained
-/// inputs and folds each worker's new slices in afterwards. `partition_count`
-/// is `None` only before the first batch has fixed it, and `local_reduction`
-/// only before any batch has been observed.
+/// `pending` carries the retained partition inputs, and `hold` their charge,
+/// only on the inline path; lane workers receive `None` because the
+/// coordinator keeps the retained inputs and folds each worker's new slices in
+/// afterwards. `partition_count` is `None` only before the first batch has
+/// fixed it, and `local_reduction` only before any batch has been observed.
 struct PartitionedSourceBatchWork {
     batch: SourceChunkBatch,
     pending: Option<Vec<Vec<SourceAdjacentPartitionInput>>>,
+    hold: Option<RetentionCharge>,
     partition_count: Option<usize>,
     local_reduction: Option<bool>,
     estimated_input_bytes: u64,
@@ -208,11 +214,12 @@ struct PartitionedSourceBatchWork {
 }
 
 /// Outputs of one raw batch worker: partials ready for the final merge,
-/// slices still pending per partition, one feedback sample per raw input, and
+/// slices still pending per partition with the work's hold, one feedback sample per raw input, and
 /// the (chunk count, row group count) commit the coordinator records once
 /// the outputs are accepted.
 struct PartitionedSourceBatchOutput {
     pending: Option<Vec<Vec<SourceAdjacentPartitionInput>>>,
+    hold: Option<RetentionCharge>,
     partition_count: Option<usize>,
     outputs: Vec<SourceAdjacentAlignedPartial>,
     samples: Vec<SourceAdjacentRawBatchSample>,
@@ -510,6 +517,7 @@ fn execute_partitioned_source_adjacent_aggregate(
     let device_budget_bytes = execution.device_budget_bytes();
     let mut partition_count = None;
     let mut partition_inputs: Option<Vec<Vec<SourceAdjacentPartitionInput>>> = None;
+    let mut hold = execution.retained_state_charge();
     let mut final_merge = SourceAdjacentPartitionedFinal::new(
         execution,
         bounded,
@@ -560,6 +568,7 @@ fn execute_partitioned_source_adjacent_aggregate(
                         PartitionedSourceBatchWork {
                             batch,
                             pending: None,
+                            hold: None,
                             partition_count,
                             local_reduction,
                             estimated_input_bytes,
@@ -598,7 +607,7 @@ fn execute_partitioned_source_adjacent_aggregate(
             );
             result?;
             if let Some(inputs) = &mut partition_inputs {
-                let flush_all = source_adjacent_pending_partitions_ready(execution.context(), inputs);
+                let flush_all = !source_adjacent_hold_pending_partitions(execution.context(), inputs, &mut hold);
                 let ready = inputs
                     .iter_mut()
                     .map(|inputs| {
@@ -619,6 +628,7 @@ fn execute_partitioned_source_adjacent_aggregate(
                         Some(dispatch),
                         owned.as_ref(),
                     )?;
+                    source_adjacent_hold_pending_partitions(execution.context(), inputs, &mut hold);
                     final_merge.accept(execution, outputs)?;
                 }
             }
@@ -631,6 +641,7 @@ fn execute_partitioned_source_adjacent_aggregate(
         let work = PartitionedSourceBatchWork {
             batch: lane_batches.into_iter().next().expect("one unsplit raw batch remains"),
             pending: partition_inputs.take(),
+            hold: hold.take(),
             partition_count,
             local_reduction,
             estimated_input_bytes,
@@ -652,6 +663,7 @@ fn execute_partitioned_source_adjacent_aggregate(
         };
         partition_count = output.partition_count;
         partition_inputs = output.pending;
+        hold = output.hold;
         final_merge.accept(execution, output.outputs)?;
         let (chunk_count, row_group_count) = output.commit;
         committed_source_chunks = committed_source_chunks.saturating_add(chunk_count);
@@ -672,6 +684,9 @@ fn execute_partitioned_source_adjacent_aggregate(
         dispatch,
         owned.as_ref(),
     );
+    // The final work consumed the held slices, and the merge below holds its
+    // own slices on the same ledger.
+    drop(hold);
     match final_outputs {
         Ok(outputs) => final_merge.accept(execution, outputs)?,
         Err(error) => {
@@ -754,6 +769,7 @@ fn process_partitioned_source_adjacent_batch(
     let PartitionedSourceBatchWork {
         batch,
         mut pending,
+        mut hold,
         mut partition_count,
         local_reduction,
         estimated_input_bytes,
@@ -788,7 +804,7 @@ fn process_partitioned_source_adjacent_batch(
                         });
                     }
                 }
-                let flush_all = source_adjacent_pending_partitions_ready(execution.context(), inputs);
+                let flush_all = !source_adjacent_hold_pending_partitions(execution.context(), inputs, &mut hold);
                 for (partition_index, partition_inputs) in inputs.iter_mut().enumerate() {
                     if partition_inputs.is_empty()
                         || (!flush_all && !source_adjacent_partition_batch_ready(execution.context(), partition_inputs))
@@ -806,6 +822,7 @@ fn process_partitioned_source_adjacent_batch(
                     observe_aligned_partial_outputs(&mut sample, &reduced);
                     outputs.extend(reduced);
                 }
+                source_adjacent_hold_pending_partitions(execution.context(), inputs, &mut hold);
             },
         }
         samples.push(sample);
@@ -813,7 +830,7 @@ fn process_partitioned_source_adjacent_batch(
     // A batch split by retry still commits its planned chunks once, with the
     // row groups of every piece.
     let commit = (planned_chunk_count, committed_row_groups);
-    Ok(PartitionedSourceBatchOutput { pending, partition_count, outputs, samples, commit })
+    Ok(PartitionedSourceBatchOutput { pending, hold, partition_count, outputs, samples, commit })
 }
 
 fn execute_partitioned_source_adjacent_final_work(
@@ -1365,22 +1382,29 @@ fn source_adjacent_partitioned_aggregate_input_evidence(
     }
 }
 
-/// Applies the batch byte target to all retained partitions together; their
-/// resident bytes share one query grant even when individual partitions are small.
-fn source_adjacent_pending_partitions_ready(
+/// Sizes `hold` to the slices all retained partitions keep, and returns
+/// whether they may stay. Their resident bytes share one query grant even when
+/// individual partitions are small. Up to the partition batch byte limit the
+/// slices stay uncharged. Past it they stay only while the attempt's
+/// retained-state ledger accepts their bytes; a refusal, or an attempt without
+/// a ledger, returns false with the hold unchanged, and the caller aggregates
+/// every partition. Called again after partitions were aggregated, it only
+/// shrinks the hold, which always succeeds.
+fn source_adjacent_hold_pending_partitions(
     context: &ExecutionContext,
     inputs: &[Vec<SourceAdjacentPartitionInput>],
+    hold: &mut Option<RetentionCharge>,
 ) -> bool {
     let bytes = inputs.iter().flatten().fold(0u64, |bytes, input| bytes.saturating_add(input.partial.device_bytes()));
-    bytes
-        >= BoundedSourceBatchingPolicy::default()
-            .source_adjacent_partition_batch_byte_limit_for_budget(context.device_budget_bytes())
+    let limit = BoundedSourceBatchingPolicy::default()
+        .source_adjacent_partition_batch_byte_limit_for_budget(context.device_budget_bytes());
+    let charged = if bytes >= limit { bytes } else { 0 };
+    hold.as_mut().map_or(charged == 0, |hold| hold.try_resize(charged))
 }
 
 fn source_adjacent_partition_batch_ready(context: &ExecutionContext, inputs: &[SourceAdjacentPartitionInput]) -> bool {
     BoundedSourceBatchingPolicy::default().source_adjacent_partition_batch_ready(
         inputs.len(),
-        inputs.iter().map(|input| input.source_row_group_count).sum(),
         source_adjacent_partition_batch_observed_device_bytes(inputs),
         context.device_budget_bytes(),
     )

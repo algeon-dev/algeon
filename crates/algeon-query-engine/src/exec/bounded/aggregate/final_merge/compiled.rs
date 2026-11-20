@@ -848,7 +848,7 @@ pub(super) fn execute_compiled_merged_state_projection(
 /// `convert_key_distinct_partial_to_merged_state` under a `final_aggregate_projection` token; that
 /// state already has the output columns because the spec has no AVG. Otherwise the partial takes
 /// `execute_compiled_final_aggregate_projection`.
-pub(super) fn execute_compiled_key_distinct_partial_projection(
+pub(in crate::exec::bounded::aggregate) fn execute_compiled_key_distinct_partial_projection(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,

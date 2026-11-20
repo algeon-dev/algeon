@@ -1131,6 +1131,89 @@ fn assert_bounded_native_query_combines_nullable_integer_groups_across_source_la
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// Raw source batches of many row groups each keep their group-key slices until the source ends,
+/// so every partition is aggregated once from the slices of every batch. Each key occurs once in
+/// each half of the file, which the two raw batches read, and each key reaches the partials once.
+#[test]
+fn bounded_native_query_aggregates_each_source_adjacent_partition_once_across_wide_raw_batches() {
+    let dir = unique_temp_dir("query-engine-source-adjacent-wide-raw-batches");
+    let path = dir.join("input.parquet");
+    let row_groups = 256;
+    let rows_per_group = 256;
+    let rows = row_groups * rows_per_group;
+    let distinct_keys = rows / 2;
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int64, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let input = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Int64Array::from_iter_values((0..rows).map(|row| (row % distinct_keys) as i64))),
+            Arc::new(Int64Array::from_iter_values((0..rows).map(|row| row as i64))),
+        ],
+    )
+    .unwrap();
+    let properties = WriterProperties::builder().set_max_row_group_row_count(Some(rows_per_group)).build();
+    let mut writer =
+        ArrowWriter::try_new(File::create(&path).unwrap(), Arc::clone(&input_schema), Some(properties)).unwrap();
+    writer.write(&input).unwrap();
+    writer.close().unwrap();
+    // Declared row-group sizes and the 16 MiB source chunk target make each raw batch read 128 row
+    // groups, half of the file.
+    let row_group_bytes = 128 * 1024;
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![row_group_bytes; row_groups])
+                .with_projected_row_group_bytes(vec![row_group_bytes; row_groups], vec![row_group_bytes; row_groups])
+                .with_row_group_decoded_bytes(vec![row_group_bytes; row_groups])
+                .with_row_group_rows(vec![rows_per_group as u64; row_groups]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "value".to_string()],
+    );
+    let projected_schema = Arc::new(Schema::new(vec![Field::new("group_key", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(vec![Expr::column("key").alias("group_key")], Arc::clone(&projected_schema)),
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(projection, AggregateSpec::new(vec![Expr::column("group_key")], Vec::new()), projected_schema)
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 256 * 1024 * 1024,
+        max_source_chunk_bytes: 16 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.row_groups_committed, row_groups as u64);
+    let raw_batches =
+        metrics.task_runtime_metrics.keys().filter(|task_id| task_id.contains("source_adjacent_raw_batch")).count();
+    assert_eq!(raw_batches, 2, "each raw batch reads half of the file");
+    assert_eq!(metrics.partial_aggregate_rows, distinct_keys as u64, "each key is aggregated once");
+    assert!(metrics.aggregate_strategy_decisions.iter().any(|decision| {
+        decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) == Some("group_key")
+            && decision.facts.get("source_adjacent_max_partition_fan_in").map(String::as_str) == Some("2")
+    }));
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let mut keys = int64_array(batch, 0).values().to_vec();
+    keys.sort_unstable();
+    assert_eq!(keys, (0..distinct_keys as i64).collect::<Vec<_>>());
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinality_avg_sum_count() {
     let dir = unique_temp_dir("query-engine-bounded-source-adjacent-preflight-handle");

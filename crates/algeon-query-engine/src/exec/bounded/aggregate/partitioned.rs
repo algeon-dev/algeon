@@ -2,19 +2,24 @@
 //!
 //! When a grouped aggregate's input is larger than the aggregate partition byte target
 //! (`BoundedPartitionTargetPolicy::aggregate_partition_target_bytes`, scaled by the device budget),
-//! the input is hash-partitioned on the group keys, each partition gets its own partial aggregate,
-//! and `execute_compiled_bounded_final_aggregate_merge` combines the partials. A group lands in one
-//! partition only. Each partition is therefore a self-contained aggregate input, and the aggregate
-//! kernel's working set is one partition. Floating statistical aggregates, medians and global
-//! aggregates never take this path (`should_partition_compiled_grouped_aggregate`).
+//! the input is hash-partitioned on the group keys and each partition gets its own partial
+//! aggregate. A group lands in one partition only. Each partition is therefore a self-contained
+//! aggregate input, and the aggregate kernel's working set is one partition. Each partition's
+//! partial already holds every row of its groups, so it is finalized alone and the outputs are
+//! concatenated in partition order, without a cross-partition merge. Grouping sets are the
+//! exception: the partitioning key is the group expressions, and a grouping set that rolls a key up
+//! gathers rows from several partitions, so their partials still go through
+//! `execute_compiled_bounded_final_aggregate_merge`. Floating statistical aggregates, medians and
+//! global aggregates never take this path (`should_partition_compiled_grouped_aggregate`).
 
 use super::{
     AggregateNode, ArrowSchemaRef, BoundedExecutionAttempt, BoundedPartitionTargetPolicy, ExecutionContext,
     GpuDataFrame, MemoryControlPolicy, NodeId, ResidentGpuFrame, Result, RuntimeOperatorStageGuard,
     RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, aggregate_spec_has_floating_statistical_aggregate,
     aggregate_spec_has_median, attach_budget_token_failure_facts, bounded_invariant_violation, cudf_query_error,
-    execute_compiled_bounded_final_aggregate_merge, execution_budget_token_for_boundary, lower_aggregate_spec_keys,
-    observe_device_memory_bytes, stage_context_from_execution,
+    execute_compiled_bounded_final_aggregate_merge, execution_budget_token_for_boundary,
+    final_merge::{concatenate_partitioned_final_merge_outputs, execute_compiled_key_distinct_partial_projection},
+    lower_aggregate_spec_keys, observe_device_memory_bytes, stage_context_from_execution,
     stream::execute_compiled_bounded_partial_aggregate_from_frame,
 };
 
@@ -108,11 +113,12 @@ fn hash_partition_aggregate_input(
     Ok(PartitionedAggregateInput { frame: partitioned_frame, offsets, partition_count })
 }
 
-/// Aggregates a large grouped input partition by partition and merges the partials.
+/// Aggregates a large grouped input partition by partition.
 ///
 /// The partition count follows the input's device bytes (`partitioned_aggregate_partition_count`).
-/// Partials are computed one partition at a time and retained until the final merge. A failure
-/// drops the partials already computed.
+/// Without grouping sets each partition's partial is finalized as soon as it exists and the
+/// outputs are concatenated. With grouping sets the partials are retained until the final merge.
+/// A failure drops the outputs already computed.
 pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -126,6 +132,7 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     let PartitionedAggregateInput { frame: partitioned_frame, offsets, partition_count } =
         hash_partition_aggregate_input(execution, node_id, aggregate, input, partition_count)?;
 
+    let partials_merge_across_partitions = aggregate.spec.grouping_sets.is_some();
     let mut partials = Vec::with_capacity(partition_count);
     for partition in 0..partition_count {
         let partition_frame =
@@ -135,22 +142,39 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
                     return Err(error);
                 },
             };
-        match execute_compiled_bounded_partial_aggregate_from_frame(
+        let partial = execute_compiled_bounded_partial_aggregate_from_frame(
             execution,
             node_id,
             aggregate,
             input_schema,
             output_schema,
             partition_frame,
-        ) {
-            Ok(partial) => partials.push(partial),
-            Err(error) => {
-                return Err(error);
-            },
+        )?;
+        if partials_merge_across_partitions {
+            partials.push(partial);
+            continue;
         }
+        partials.push(execute_compiled_key_distinct_partial_projection(
+            execution,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            partial,
+        )?);
     }
 
-    execute_compiled_bounded_final_aggregate_merge(execution, node_id, aggregate, input_schema, output_schema, partials)
+    if partials_merge_across_partitions {
+        return execute_compiled_bounded_final_aggregate_merge(
+            execution,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            partials,
+        );
+    }
+    concatenate_partitioned_final_merge_outputs(execution, node_id, partials)
 }
 
 fn slice_compiled_aggregate_partition(
