@@ -1202,20 +1202,38 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
             .any(|join| join.execution_strategy == "bounded_partitioned_hash_equi_join")
     );
     assert_eq!(metrics.filtered_join_build_count, 1);
+    // Each probe row group is one probe piece and one semi join output frame,
+    // whether the semi join hands the frames over at once or yields them as the
+    // aggregate pulls. A partition holding slices of several frames shows the
+    // stream reached the aggregate without being concatenated into one frame.
+    let partial_decisions = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+        .collect::<Vec<_>>();
     assert!(
-        metrics.partial_aggregate_count > 1,
-        "filtered direct join-output aggregate should produce multiple streamed partials"
+        partial_decisions.iter().any(|decision| decision
+            .facts
+            .get("source_adjacent_max_partition_fan_in")
+            .and_then(|fan_in| fan_in.parse::<u64>().ok())
+            .is_some_and(|fan_in| fan_in > 1)),
+        "the aggregate should take a slice of each streamed join frame into its partitions: {partial_decisions:?}"
     );
-    // Each probe row group is one probe piece and one join output frame, so the
-    // joined rows reach several partials, which one merge level combines.
+    // Three joined rows fit in one hold, so each partition is aggregated once
+    // when the stream ends and one merge level combines the aligned partials.
+    let partition_count = partial_decisions
+        .iter()
+        .find_map(|decision| decision.facts.get("source_adjacent_partition_count")?.parse::<u64>().ok())
+        .expect("the partial stage should record its partition count");
+    assert!(
+        metrics.partial_aggregate_count <= partition_count,
+        "partials={}, partitions={partition_count}",
+        metrics.partial_aggregate_count
+    );
+    assert_eq!(metrics.partial_aggregate_input_rows, 3);
     assert_eq!(metrics.final_merge_attempts, 1);
     assert_eq!(metrics.final_merge_levels, 1);
-    assert!(
-        metrics.partial_aggregate_count <= metrics.source_chunks_committed.saturating_mul(2),
-        "filtered direct join-output aggregate should keep stream partial count proportional to source chunks, partials={}, source_chunks={}",
-        metrics.partial_aggregate_count,
-        metrics.source_chunks_committed
-    );
+    assert_partitioned_final_merge_strategy(metrics);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
