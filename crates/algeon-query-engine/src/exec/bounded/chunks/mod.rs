@@ -28,7 +28,7 @@ mod source_budget;
 mod source_read;
 
 pub(in crate::exec::bounded) use execution::{
-    RawSourceInput, execute_bounded_raw_source_chunk, execute_bounded_raw_source_chunk_batch,
+    execute_bounded_raw_source_chunk, execute_bounded_raw_source_chunk_batch,
 };
 pub(in crate::exec) use retry::record_chunk_retry_error;
 pub(super) use retry::{chunk_retry_facts, is_retryable_chunk_error, split_retryable_chunk};

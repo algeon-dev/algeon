@@ -26,8 +26,20 @@ pub(crate) fn incremental_partitioned_merge_builder(
     rows_per_row_group: usize,
     source_from_files: impl Fn(Vec<LocalParquetFile>, Arc<Schema>, Vec<String>) -> LocalParquetSource,
 ) -> (QueryPlanBuilder, NodeId, Arc<Schema>) {
-    let path = dir.join(format!("input-{row_groups}.parquet"));
-    let input_schema = write_unique_key_row_grouped_parquet(&path, row_groups, rows_per_row_group);
+    grouped_join_aggregate_builder(dir, row_groups, rows_per_row_group, 1, source_from_files)
+}
+
+/// The same plan over a file whose `key` repeats on `rows_per_key` consecutive rows, so each
+/// group reduces `rows_per_key` input rows.
+pub(crate) fn grouped_join_aggregate_builder(
+    dir: &Path,
+    row_groups: usize,
+    rows_per_row_group: usize,
+    rows_per_key: usize,
+    source_from_files: impl Fn(Vec<LocalParquetFile>, Arc<Schema>, Vec<String>) -> LocalParquetSource,
+) -> (QueryPlanBuilder, NodeId, Arc<Schema>) {
+    let path = dir.join(format!("input-{row_groups}-{rows_per_key}.parquet"));
+    let input_schema = write_row_grouped_parquet(&path, row_groups, rows_per_row_group, rows_per_key);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int64, false),
         Field::new("sum_value", DataType::Int64, true),
@@ -86,18 +98,23 @@ pub(crate) fn incremental_partitioned_merge_builder(
     (builder, aggregate, aggregated_schema)
 }
 
-/// Uncompressed row groups whose `key` is unique across the whole file, so
-/// every partial aggregate keeps all of its input rows and merging never
-/// shrinks the retained state: the shape of a high-cardinality group by.
-/// `d` is a constant join key so a one-row dimension keeps every row.
-fn write_unique_key_row_grouped_parquet(path: &Path, row_groups: usize, rows_per_row_group: usize) -> Arc<Schema> {
+/// Uncompressed row groups whose `key` repeats on `rows_per_key` consecutive rows. With one row
+/// per key every partial aggregate keeps all of its input rows and merging never shrinks the
+/// retained state: the shape of a high-cardinality group by. `d` is a constant join key so a
+/// one-row dimension keeps every row.
+fn write_row_grouped_parquet(
+    path: &Path,
+    row_groups: usize,
+    rows_per_row_group: usize,
+    rows_per_key: usize,
+) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int64, false),
         Field::new("value", DataType::Int64, false),
         Field::new("d", DataType::Int64, false),
     ]));
     let rows = row_groups * rows_per_row_group;
-    let keys = (0..rows).map(|row| row as i64).collect::<Vec<_>>();
+    let keys = (0..rows).map(|row| (row / rows_per_key) as i64).collect::<Vec<_>>();
     let values = (0..rows).map(|row| (row % 7) as i64).collect::<Vec<_>>();
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
@@ -121,7 +138,7 @@ fn write_unique_key_row_grouped_parquet(path: &Path, row_groups: usize, rows_per
 }
 
 /// One-row dimension whose `d` matches every row of
-/// [`write_unique_key_row_grouped_parquet`].
+/// [`write_row_grouped_parquet`].
 fn write_single_row_dimension_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![0i64]))]).unwrap();

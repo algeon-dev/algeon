@@ -839,6 +839,7 @@ impl cudf::core::types::TypeId
 pub fn cudf::core::types::TypeId::is_boolean(self) -> bool
 pub fn cudf::core::types::TypeId::is_decimal(self) -> bool
 pub fn cudf::core::types::TypeId::is_duration(self) -> bool
+pub fn cudf::core::types::TypeId::is_fixed_width(self) -> bool
 pub fn cudf::core::types::TypeId::is_float(self) -> bool
 pub fn cudf::core::types::TypeId::is_numeric(self) -> bool
 pub fn cudf::core::types::TypeId::is_signed_int(self) -> bool
@@ -1011,6 +1012,7 @@ impl cudf::core::types::TypeId
 pub fn cudf::core::types::TypeId::is_boolean(self) -> bool
 pub fn cudf::core::types::TypeId::is_decimal(self) -> bool
 pub fn cudf::core::types::TypeId::is_duration(self) -> bool
+pub fn cudf::core::types::TypeId::is_fixed_width(self) -> bool
 pub fn cudf::core::types::TypeId::is_float(self) -> bool
 pub fn cudf::core::types::TypeId::is_numeric(self) -> bool
 pub fn cudf::core::types::TypeId::is_signed_int(self) -> bool
@@ -2078,6 +2080,7 @@ pub fn cudf::SeriesOps<'_>::sub_scalar<T: cudf::core::types::CudfType>(&self, T)
 pub fn cudf::SeriesOps<'_>::tail(&self, usize) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesOps<'_>::to_datetime(&self, core::option::Option<cudf::core::types::TimestampResolution>) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesOps<'_>::to_numeric(&self, cudf::core::types::TypeId) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesOps<'_>::top_k_with_ties_mask(&self, usize, &cudf::ops::sorting::SortOptions) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesOps<'_>::unique(&self) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesOps<'_>::value_counts(&self) -> cudf::core::error::Result<cudf::DataFrame>
 impl<'a> cudf::SeriesOps<'a>
@@ -4831,6 +4834,7 @@ impl cudf::core::types::TypeId
 pub fn cudf::core::types::TypeId::is_boolean(self) -> bool
 pub fn cudf::core::types::TypeId::is_decimal(self) -> bool
 pub fn cudf::core::types::TypeId::is_duration(self) -> bool
+pub fn cudf::core::types::TypeId::is_fixed_width(self) -> bool
 pub fn cudf::core::types::TypeId::is_float(self) -> bool
 pub fn cudf::core::types::TypeId::is_numeric(self) -> bool
 pub fn cudf::core::types::TypeId::is_signed_int(self) -> bool
@@ -5913,6 +5917,7 @@ pub fn cudf::SeriesOps<'_>::sub_scalar<T: cudf::core::types::CudfType>(&self, T)
 pub fn cudf::SeriesOps<'_>::tail(&self, usize) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesOps<'_>::to_datetime(&self, core::option::Option<cudf::core::types::TimestampResolution>) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesOps<'_>::to_numeric(&self, cudf::core::types::TypeId) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::SeriesOps<'_>::top_k_with_ties_mask(&self, usize, &cudf::ops::sorting::SortOptions) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesOps<'_>::unique(&self) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::SeriesOps<'_>::value_counts(&self) -> cudf::core::error::Result<cudf::DataFrame>
 impl<'a> cudf::SeriesOps<'a>

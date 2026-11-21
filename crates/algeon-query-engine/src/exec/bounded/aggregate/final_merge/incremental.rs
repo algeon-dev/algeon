@@ -472,26 +472,19 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         ))
     }
 
-    /// Partition count from the first batch. With every partial pending
-    /// (`complete`), their bytes are the whole merge input. Otherwise the
-    /// pending bytes are scaled to the declared input rows when known, else to
-    /// the expected partial count. The row scaling compares the producer's
-    /// declared input rows with partial output rows, so it overestimates when
-    /// the aggregate reduces rows or a join or filter producer drops them; a
-    /// lazy producer that does not know its frame count has no other measure
-    /// of progress.
+    /// Partition count from the first batch (`first_batch_estimated_total_bytes`), with the pending
+    /// partials as the batch, at least the final merge's floor for the expected partials. The row
+    /// scaling compares the producer's declared input rows with partial output rows, so it
+    /// overestimates when the aggregate reduces rows or a join or filter producer drops them.
     fn partition_count_for_first_batch(&self, context: &ExecutionContext, complete: bool) -> usize {
-        let estimated_total_bytes = match self.expected_input_rows {
-            _ if complete => self.pending_raw_bytes,
-            Some(rows) if self.input_rows > 0 => (u128::from(self.pending_raw_bytes) * u128::from(rows)
-                / u128::from(self.input_rows))
-            .min(u128::from(u64::MAX)) as u64,
-            _ => self
-                .pending_raw_bytes
-                .div_ceil(self.pending_raw.len().max(1) as u64)
-                .saturating_mul(self.expected_partials as u64),
-        }
-        .max(1);
+        let estimated_total_bytes = first_batch_estimated_total_bytes(
+            self.pending_raw_bytes,
+            self.pending_raw.len(),
+            self.input_rows,
+            self.expected_input_rows,
+            self.expected_partials,
+            complete,
+        );
         partitioned_aggregate_partition_count(context, estimated_total_bytes).max(
             BoundedFinalMergePolicy::default().partitioned_final_merge_partial_partition_floor(self.expected_partials),
         )
@@ -743,6 +736,33 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         self.max_partition_fan_in = self.max_partition_fan_in.max(fan_in);
         Ok(())
     }
+}
+
+/// Total input bytes an accumulator estimates from its first batch: `batch_inputs` inputs of
+/// `batch_bytes` bytes holding `batch_rows` rows.
+///
+/// With every input in the batch (`complete`), its bytes are the whole input. Otherwise the batch
+/// bytes are scaled to the producer's declared input rows when known, else to the expected input
+/// count; a lazy producer that does not know its frame count has no other measure of progress.
+/// The estimate is never below the batch's own bytes: a producer can deliver more rows than it
+/// declares (a join that expands its probe rows) or declare none and report no frame count.
+pub(in crate::exec::bounded::aggregate) fn first_batch_estimated_total_bytes(
+    batch_bytes: u64,
+    batch_inputs: usize,
+    batch_rows: u64,
+    expected_input_rows: Option<u64>,
+    expected_inputs: usize,
+    complete: bool,
+) -> u64 {
+    match expected_input_rows {
+        _ if complete => batch_bytes,
+        Some(rows) if batch_rows > 0 => {
+            (u128::from(batch_bytes) * u128::from(rows) / u128::from(batch_rows)).min(u128::from(u64::MAX)) as u64
+        },
+        _ => batch_bytes.div_ceil(batch_inputs.max(1) as u64).saturating_mul(expected_inputs as u64),
+    }
+    .max(batch_bytes)
+    .max(1)
 }
 
 /// Producer that finalizes one merged partition state per pull; the output frames are

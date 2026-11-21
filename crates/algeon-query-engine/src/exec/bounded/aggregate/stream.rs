@@ -8,6 +8,10 @@
 //!   DataFusion-exact mode, DISTINCT) union their input and run one single-stage aggregate.
 //! - GPU-native statistical aggregates keep one statistical partial per frame and merge them in
 //!   one step.
+//! - A grouped frame stream whose keys partition by group key, lazy or of more than one frame,
+//!   goes through the partitioned accumulation of `source_adjacent.rs`, which stages every frame
+//!   like a raw source input and aggregates each group-key partition once where the held slices
+//!   allow it.
 //! - Everything else computes a partial per frame or chunk, with a proactive split when the
 //!   partial's size bound exceeds the device budget (`sizing.rs`). The partials enter a
 //!   `CompiledStreamPartials` accumulator, which merges them as described in `aggregate.rs`.
@@ -26,10 +30,11 @@ use super::{
     execute_bounded_union, execute_compiled_bounded_aggregate_consuming_frame,
     execute_compiled_bounded_aggregate_from_empty_input, execute_compiled_bounded_aggregate_from_frame,
     execute_compiled_bounded_final_aggregate_merge, execute_partial_aggregate_with_budget,
-    execution_budget_token_for_boundary,
+    execute_partitioned_frame_stream_aggregate, execution_budget_token_for_boundary,
     final_merge::{execute_compiled_final_merge_group_attempt, normalize_compiled_aggregate_partial},
     observe_device_memory_bytes, partial_aggregate_work_reservation_upper_bound_bytes, run_budgeted,
-    should_execute_incremental_partitioned_final_aggregate_merge, stream_bounded_join_leaf_local_parquet_source_chunks,
+    should_execute_incremental_partitioned_final_aggregate_merge, should_execute_partitioned_frame_stream_aggregate,
+    stream_bounded_join_leaf_local_parquet_source_chunks,
 };
 use crate::exec::{
     bounded::{
@@ -51,7 +56,7 @@ use crate::exec::{
 /// Consumes the stream. The frame stream's producer is released on every path, and frames not yet
 /// pulled are released when a partial or a merge step fails. Dispatch tests, in order, for an empty
 /// input, GPU-native statistical partials, whole-input aggregates (median and floating statistical
-/// aggregates), DISTINCT, and finally the partial and merge path.
+/// aggregates), DISTINCT, the partitioned accumulation, and finally the partial and merge path.
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -129,6 +134,21 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 frames,
             )
             .map(CompiledGpuResource::new);
+        }
+        if should_execute_partitioned_frame_stream_aggregate(node_id, aggregate, input_schema, output_schema, &inputs) {
+            let result = execute_partitioned_frame_stream_aggregate(
+                execution,
+                node_id,
+                aggregate,
+                input_schema,
+                output_schema,
+                &mut inputs,
+                preserve_output_stream,
+            );
+            if result.is_err() {
+                inputs.release_remaining_frames();
+            }
+            return result;
         }
 
         let mut partials = CompiledStreamPartials::new(
@@ -1049,3 +1069,6 @@ fn split_compiled_aggregate_stream_frame(
     let right_bytes = observe_device_memory_bytes(&right, execution.metrics())?;
     Ok((ResidentGpuFrame::with_device_bytes(left, left_bytes), ResidentGpuFrame::with_device_bytes(right, right_bytes)))
 }
+
+#[cfg(test)]
+mod tests;

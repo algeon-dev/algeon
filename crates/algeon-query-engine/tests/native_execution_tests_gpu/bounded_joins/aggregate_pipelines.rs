@@ -64,7 +64,9 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.partial_aggregate_count, 1);
-    assert_eq!(metrics.final_merge_attempts, 0);
+    // The lone partial reaches the aligned final merge as one slice and is converted, not grouped
+    // again.
+    assert_eq!(final_merge_fact(metrics, "partitioned_merge_max_partition_fan_in"), Some("1"));
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -713,8 +715,8 @@ fn final_merge_fact<'a>(metrics: &'a QueryMetrics, fact: &str) -> Option<&'a str
 }
 
 /// A probe chunk that joins to no rows still yields a zero-row partial. It
-/// must not count as a second partial, which would replace the single
-/// partial's direct projection with a partitioned final merge.
+/// must not reach the final merge as a second partial, which would group the
+/// single partial's partition again instead of converting it.
 #[test]
 fn bounded_join_aggregate_projects_a_single_partial_when_another_probe_chunk_joins_no_rows() {
     let dir = unique_temp_dir("query-engine-bounded-join-aggregate-empty-partial");
@@ -736,8 +738,8 @@ fn bounded_join_aggregate_projects_a_single_partial_when_another_probe_chunk_joi
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.partial_aggregate_count, 2, "each probe batch yields a partial");
-    assert_eq!(metrics.final_merge_attempts, 0);
-    assert_eq!(final_merge_fact(metrics, "partitioned_merge_partition_count"), None);
+    assert_eq!(final_merge_fact(metrics, "partitioned_merge_incremental_partials"), Some("1"));
+    assert_eq!(final_merge_fact(metrics, "partitioned_merge_max_partition_fan_in"), Some("1"));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -748,14 +750,14 @@ fn bounded_join_aggregate_projects_a_single_partial_when_another_probe_chunk_joi
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// The final merge sizes its partitions from the partial bytes it holds. The
-/// join declares its 1,048,576 probe rows, but only 1,024 rows match and the
-/// four partials hold 16 group rows (about 33 KB). Scaling those bytes by
-/// declared probe rows over partial rows (65,536x, about 2 GiB) against the
-/// 128 MiB aggregate partition target would select 17 partitions; the partial
-/// bytes select one.
+/// A small selective join output is sized from its measured input. The join
+/// declares its 1,048,576 probe rows, but only 1,024 rows match. Scaling the
+/// first streamed frame to the declared rows, with the 2 KiB partial state of
+/// its 256 SUMs, would select 17 partitions of the 128 MiB target. The whole
+/// stream fits the aggregate's hold before any frame is staged, so its
+/// measured bytes select one.
 #[test]
-fn bounded_join_aggregate_sizes_final_merge_partitions_from_partial_bytes_not_probe_rows() {
+fn bounded_join_aggregate_sizes_partitions_from_its_measured_input_not_probe_rows() {
     let dir = unique_temp_dir("query-engine-bounded-join-aggregate-selective-partition-count");
     let rows = 1 << 20;
     let plan = grouped_sums_over_dimension_join_plan(
@@ -771,9 +773,8 @@ fn bounded_join_aggregate_sizes_final_merge_partitions_from_partial_bytes_not_pr
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.partial_aggregate_count, 4);
+    assert_eq!(metrics.partial_aggregate_input_rows, 1024);
     assert_eq!(metrics.final_merge_attempts, 1);
-    assert_eq!(final_merge_fact(metrics, "partitioned_merge_incremental_partials"), Some("4"));
     assert_eq!(final_merge_fact(metrics, "partitioned_merge_partition_count"), Some("1"));
 
     let QueryOutput::HostArrow(batch) = result.output() else {

@@ -131,15 +131,16 @@ pub(in crate::exec) struct PartialAggregateInputEvidence {
     pub(in crate::exec) source_chunk_estimated_source_read_bytes: Option<u64>,
     /// True when chunk sizing relied on file-size estimates.
     pub(in crate::exec) source_chunk_size_estimate_based: bool,
-    /// Source-adjacent partitioning strategy applied before this partial aggregate.
+    /// Partitioning strategy applied before this partial aggregate by the partitioned
+    /// accumulation, over source batches or the frames of a resident stream.
     pub(in crate::exec) source_adjacent_partition_strategy: &'static str,
-    /// Number of source-adjacent partitions planned for the aggregate.
+    /// Number of partitions planned for the aggregate by the partitioned accumulation.
     pub(in crate::exec) source_adjacent_partition_count: Option<u64>,
-    /// Number of source-adjacent partitions that retained at least one input row.
+    /// Number of those partitions that retained at least one input row.
     pub(in crate::exec) source_adjacent_non_empty_partition_count: Option<u64>,
-    /// Number of grouping-key columns used by source-adjacent partitioning.
+    /// Number of grouping-key columns used by the partitioning.
     pub(in crate::exec) source_adjacent_partition_key_count: Option<u64>,
-    /// Largest number of chunk fragments feeding one source-adjacent partition.
+    /// Largest number of raw-input slices (source batches or frames) feeding one partition.
     pub(in crate::exec) source_adjacent_max_partition_fan_in: Option<u64>,
 }
 

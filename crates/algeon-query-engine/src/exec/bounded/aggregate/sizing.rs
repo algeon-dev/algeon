@@ -8,7 +8,9 @@
 //! runs. The bound is neither a reservation nor an admission check. The query allocator alone
 //! enforces the grant, and a frame that is not split but still does not fit fails at its
 //! allocation like any other. `None` means the byte model cannot bound the state (a median, or a
-//! dtype the model does not cover), and the frame runs whole.
+//! dtype the model does not cover), and the frame runs whole. `source_adjacent.rs` also compares
+//! the bound with `aggregate_input_upper_bound_bytes`, the same model applied to the input frame
+//! itself, to size the partitions of its accumulation.
 //!
 //! The bound applies the per-column formula of `crate::materialization_sizing` (shared with join
 //! output sizing) to the partial-state schema with the right row count:
@@ -59,6 +61,26 @@ pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
         return Ok(None);
     };
     partial_aggregate_upper_bound_bytes(shape, &columns)
+}
+
+/// Upper bound on the bytes of `input` itself under the byte model and row count of
+/// `partial_aggregate_work_reservation_upper_bound_bytes`, so the two bounds compare row for row.
+/// Every column of `input_schema` contributes its descriptor, and string columns are measured
+/// like string state. A group-only aggregate's state columns are a subset of these descriptors,
+/// so its state bound never exceeds this one.
+pub(super) fn aggregate_input_upper_bound_bytes(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    input_schema: &ArrowSchemaRef,
+    input: &GpuDataFrame,
+) -> Result<Option<u64>> {
+    let mut columns = Vec::with_capacity(input_schema.fields().len());
+    for field in input_schema.fields() {
+        columns.push(partial_column_for_field_and_input_column(execution, field, field.name(), input)?);
+    }
+    partial_aggregate_upper_bound_bytes(
+        PartialAggregateShape::Grouped { input_rows: input.num_rows() as u64 },
+        &columns,
+    )
 }
 
 fn partial_aggregate_upper_bound_columns(

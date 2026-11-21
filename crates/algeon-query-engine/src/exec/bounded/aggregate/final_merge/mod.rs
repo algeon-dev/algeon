@@ -55,7 +55,8 @@ pub(in crate::exec::bounded::aggregate) use compiled::{
     normalize_compiled_aggregate_partial,
 };
 pub(in crate::exec::bounded::aggregate) use incremental::{
-    CompiledIncrementalPartitionedMerge, should_execute_incremental_partitioned_final_aggregate_merge,
+    CompiledIncrementalPartitionedMerge, first_batch_estimated_total_bytes,
+    should_execute_incremental_partitioned_final_aggregate_merge,
 };
 pub(in crate::exec::bounded::aggregate) use partitioned::execute_incremental_source_adjacent_final_aggregate_merge;
 

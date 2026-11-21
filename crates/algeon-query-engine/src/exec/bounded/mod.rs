@@ -72,7 +72,7 @@ use aggregate::{
 pub(in crate::exec) use attempt::BoundedExecutionAttempt;
 pub(in crate::exec::bounded) use attempt::{RetainedJoinTableCharge, RetentionCharge};
 use chunks::{
-    RawSourceInput, chunk_retry_facts, concatenate_source_read_outputs, execute_bounded_raw_source_chunk,
+    chunk_retry_facts, concatenate_source_read_outputs, execute_bounded_raw_source_chunk,
     execute_bounded_raw_source_chunk_batch, is_retryable_chunk_error, join_leaf_prefetch_admitted,
     read_local_parquet_chunks_required_only, record_chunk_retry_error, split_retryable_chunk,
 };
