@@ -2228,6 +2228,8 @@ pub query_planning::plan::GraphAlgorithmParams::WeaklyConnectedComponents(query_
 impl query_planning::plan::GraphAlgorithmParams
 pub fn query_planning::plan::GraphAlgorithmParams::side_input_ordinals(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = usize> + '_)>
 pub const fn query_planning::plan::GraphAlgorithmParams::supports_algorithm(&self, query_planning::plan::GraphAlgorithm) -> bool
+pub fn query_planning::plan::GraphAlgorithmParams::vertex_dtype_side_input_columns(&self) -> alloc::vec::Vec<(usize, &str)>
+pub fn query_planning::plan::GraphAlgorithmParams::vertex_id_literals(&self) -> alloc::vec::Vec<i64>
 pub enum query_planning::plan::GraphBetweennessSeeds
 pub query_planning::plan::GraphBetweennessSeeds::I64(alloc::vec::Vec<i64>)
 pub query_planning::plan::GraphBetweennessSeeds::Input
@@ -2618,6 +2620,7 @@ pub query_planning::plan::EdgeNormalizeNode::spec: query_planning::plan::EdgeNor
 pub struct query_planning::plan::EdgeNormalizeSpec
 pub query_planning::plan::EdgeNormalizeSpec::add_reverse: bool
 pub query_planning::plan::EdgeNormalizeSpec::dedup: query_planning::plan::EdgeDedupStrategy
+pub query_planning::plan::EdgeNormalizeSpec::distinct_edge_pairs: bool
 pub query_planning::plan::EdgeNormalizeSpec::edge_columns: query_planning::plan::GraphEdgeColumnBindings
 pub query_planning::plan::EdgeNormalizeSpec::weight_combiner: query_planning::plan::EdgeWeightCombiner
 impl query_planning::plan::EdgeNormalizeSpec
@@ -2661,6 +2664,7 @@ impl query_planning::plan::GraphAlgorithmSpec
 pub fn query_planning::plan::GraphAlgorithmSpec::new(query_planning::plan::GraphAlgorithm, query_planning::plan::GraphEdgeColumnBindings, query_planning::plan::GraphConstructionOptions, query_planning::plan::GraphAlgorithmParams, arrow_schema::schema::SchemaRef) -> Self
 pub fn query_planning::plan::GraphAlgorithmSpec::unique_output_key_columns(&self) -> &'static [&'static str]
 pub fn query_planning::plan::GraphAlgorithmSpec::with_edge_normalize_inserted(self, bool) -> Self
+pub fn query_planning::plan::GraphAlgorithmSpec::with_output_vertex_type(&self, &arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::plan::GraphAlgorithmSpec::with_stable_schema(query_planning::plan::GraphAlgorithm, query_planning::plan::GraphEdgeColumnBindings, query_planning::plan::GraphConstructionOptions, query_planning::plan::GraphAlgorithmParams) -> Self
 pub struct query_planning::plan::GraphBetweennessCentralityParams
 pub query_planning::plan::GraphBetweennessCentralityParams::exact_vertex_threshold: u64
@@ -2691,6 +2695,7 @@ pub query_planning::plan::GraphBfsPredicateInputs::include_vertices: core::optio
 pub query_planning::plan::GraphBfsPredicateInputs::target_vertices: core::option::Option<query_planning::plan::GraphPredicateInput>
 pub struct query_planning::plan::GraphConstructionOptions
 pub query_planning::plan::GraphConstructionOptions::directed: bool
+pub query_planning::plan::GraphConstructionOptions::distinct_edge_pairs: bool
 pub query_planning::plan::GraphConstructionOptions::policy: query_planning::plan::GraphConstructionPolicy
 pub query_planning::plan::GraphConstructionOptions::renumber: bool
 impl core::default::Default for query_planning::plan::GraphConstructionOptions
@@ -2817,6 +2822,7 @@ pub const fn query_planning::plan::GraphOperationDefinition::output_schema_kind(
 pub const fn query_planning::plan::GraphOperationDefinition::required_graph_directedness(&self) -> core::option::Option<bool>
 pub fn query_planning::plan::GraphOperationDefinition::result_schema_for_params(&self, &query_planning::plan::GraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
 pub const fn query_planning::plan::GraphOperationDefinition::source_vertex_requirement(&self) -> query_planning::plan::GraphSourceVertexRequirement
+pub fn query_planning::plan::GraphOperationDefinition::unreachable_sentinel_columns(&self, &query_planning::plan::GraphAlgorithmParams) -> &'static [&'static str]
 pub const fn query_planning::plan::GraphOperationDefinition::weight_policy(&self) -> query_planning::plan::GraphWeightPolicy
 pub struct query_planning::plan::GraphOutDegreesAllParams
 pub struct query_planning::plan::GraphPageRankParams
@@ -3097,6 +3103,7 @@ pub fn query_planning::plan::QueryPlan::nodes(&self) -> &[query_planning::plan::
 pub fn query_planning::plan::QueryPlan::output_schema(&self) -> &arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::QueryPlan::root_id(&self) -> query_planning::plan::NodeId
 pub fn query_planning::plan::QueryPlan::root_node(&self) -> &query_planning::plan::QueryNode
+pub fn query_planning::plan::QueryPlan::root_output_is_unique_on(&self, &alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> bool
 pub fn query_planning::plan::QueryPlan::sink(&self) -> &query_planning::plan::ResultSink
 pub fn query_planning::plan::QueryPlan::with_appended_sort(self, query_planning::expr::SortSpec) -> Self
 pub fn query_planning::plan::QueryPlan::with_host_sink_schema(self, arrow_schema::schema::SchemaRef) -> query_planning::error::Result<Self>
@@ -3273,6 +3280,7 @@ pub fn query_planning::plan::graph_residency_descriptor_for_edge_plan(&query_pla
 pub fn query_planning::plan::graph_residency_descriptor_for_local_parquet_source(&query_planning::source::LocalParquetSource, &query_planning::plan::GraphAlgorithmSpec) -> query_planning::plan::GraphResidencyPlanAnalysis
 pub fn query_planning::plan::graph_result_schema_for_params(query_planning::plan::GraphAlgorithm, &query_planning::plan::GraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::graph_result_schema_for_vertex_type(query_planning::plan::GraphAlgorithm, &query_planning::plan::GraphAlgorithmParams, &arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
+pub fn query_planning::plan::graph_unreachable_vertex_sentinel(&arrow_schema::datatype::DataType) -> core::option::Option<i64>
 pub fn query_planning::plan::ml_classification_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_embedding_output_schema(arrow_schema::datatype::DataType, usize) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_forest_output_schema(arrow_schema::datatype::DataType, query_planning::plan::MlForestOutputContract) -> arrow_schema::schema::SchemaRef
