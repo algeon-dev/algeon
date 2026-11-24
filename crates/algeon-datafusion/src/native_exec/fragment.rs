@@ -38,9 +38,9 @@ use super::{
         NATIVE_ALGEON_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, comma_separated,
         conservative_properties, gpu_resident_source_names, mark_native_runtime_error, native_host_output_stream,
         native_plan_one_line, native_query_runtime_error, properties_with_equivalence, run_gpu_execution_task,
-        write_native_plan_tree,
     },
     config::AlgeonNativeExecutionConfig,
+    explain_display::write_compact_native_plan_tree,
     graph::graph_execution_plan,
     metrics::{
         AlgeonNativeMetrics, GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, SealedAttemptMetricsTarget,
@@ -773,49 +773,77 @@ impl GpuResidentProducer for AlgeonNativeExec {
     }
 }
 
-impl DisplayAs for AlgeonNativeExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl AlgeonNativeExec {
+    pub(super) fn summary_fields(&self) -> String {
         let plan = self.native_plan();
         let shape = self.shape();
         let input_name = self.gpu_resident_input_name().unwrap_or_default();
         let gpu_input_count = self.gpu_inputs.len();
-        let summary = match shape {
+        let sink = result_sink_label(plan.sink());
+        match shape {
             Shape::Host => format!(
-                "native_nodes={}, sink=host_arrow, native_pipeline_execution_mode=bounded, output_boundary=device_to_host, edge_normalize_inserted={}",
+                "native_nodes={}, sink={sink}, native_pipeline_execution_mode=bounded, output_boundary=device_to_host, edge_normalize_inserted={}",
                 plan.node_count(),
                 plan.contains_edge_normalize(),
             ),
             Shape::Composed => format!(
-                "native_nodes={}, gpu_input_count={gpu_input_count}, sink=host_arrow, native_pipeline_execution_mode=bounded, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}",
+                "native_nodes={}, gpu_input_count={gpu_input_count}, sink={sink}, native_pipeline_execution_mode=bounded, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}",
                 plan.node_count(),
                 plan.contains_edge_normalize(),
             ),
             Shape::Producer if self.shared_consumer_count > 1 => format!(
-                "input_name={input_name}, shared_consumers={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}",
+                "input_name={input_name}, shared_consumers={}, native_nodes={}, sink={sink}, output_boundary=device_resident, edge_normalize_inserted={}",
                 self.shared_consumer_count,
                 plan.node_count(),
                 plan.contains_edge_normalize(),
             ),
             Shape::Producer => format!(
-                "input_name={input_name}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}",
+                "input_name={input_name}, native_nodes={}, sink={sink}, output_boundary=device_resident, edge_normalize_inserted={}",
                 plan.node_count(),
                 plan.contains_edge_normalize(),
             ),
             Shape::ComposedProducer => format!(
-                "input_name={input_name}, native_nodes={}, gpu_input_count={gpu_input_count}, sink=gpu_resident, input_boundary=gpu_resident, output_boundary=device_resident",
+                "input_name={input_name}, native_nodes={}, gpu_input_count={gpu_input_count}, sink={sink}, input_boundary=gpu_resident, output_boundary=device_resident",
                 plan.node_count(),
             ),
-        };
+        }
+    }
+
+    pub(super) fn tree_render_fields(&self) -> Vec<(&'static str, String)> {
+        let plan = self.native_plan();
+        let mut fields = vec![
+            ("nodes", plan.node_count().to_string()),
+            ("sink", result_sink_label(plan.sink()).to_owned()),
+            ("boundary", if self.materializes_host() { "device_to_host" } else { "device_resident" }.to_owned()),
+        ];
+        if let Some(input_name) = self.gpu_resident_input_name() {
+            fields.push(("input", input_name.to_owned()));
+        }
+        if !self.gpu_inputs.is_empty() {
+            fields.push(("gpu_inputs", self.gpu_inputs.len().to_string()));
+        }
+        if self.shared_consumer_count > 1 {
+            fields.push(("shared_consumers", self.shared_consumer_count.to_string()));
+        }
+        fields
+    }
+}
+
+impl DisplayAs for AlgeonNativeExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let plan = self.native_plan();
+        let shape = self.shape();
+        let summary = self.summary_fields();
         match t {
             DisplayFormatType::Default => write!(f, "{}: {summary}", shape.name()),
             DisplayFormatType::Verbose => {
                 write!(f, "{}: {summary}, native_plan={}", shape.name(), native_plan_one_line(plan))
             },
             DisplayFormatType::TreeRender => {
-                for field in summary.split(", ") {
-                    writeln!(f, "{field}")?;
+                for (key, value) in self.tree_render_fields() {
+                    writeln!(f, "{key}={value}")?;
                 }
-                write_native_plan_tree(f, plan)
+                write_compact_native_plan_tree(f, plan)
             },
         }
     }

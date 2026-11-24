@@ -77,8 +77,11 @@ NativeAdmissionExec
 ```
 
 `AlgeonNativeExec` holds the native IR and compiled pipeline internally.
-The native operators are not DataFusion child nodes. A shorter `EXPLAIN` tree
-can therefore represent the same scan, filter and aggregation work.
+During execution, the native operators remain inside `AlgeonNativeExec` and are
+not DataFusion child nodes. For `EXPLAIN`, `EXPLAIN VERBOSE`, and
+`EXPLAIN FORMAT TREE`, `AlgeonQueryPlanner` projects each `AlgeonNativeExec`
+into a display-only subtree with one node per native IR operator and sink so
+indent depth, join branches, and tree boxes reflect the native plan structure.
 
 The
 [distributed aggregate lowering tests](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native/lowering_tests/sql_aggregate_shapes/default_distributed.rs)
@@ -272,9 +275,11 @@ inputs. Incompatible replacements remain on CPU execution.
 ## Connect the plan to an execution
 
 Use the same SQL and session settings when inspecting the example. On the
-Flight SQL server, `EXPLAIN VERBOSE` exposes physical-plan details, while
-`EXPLAIN GPU` returns native candidate outcomes and coverage of the completed
-plan:
+Flight SQL server, `EXPLAIN` displays the indented native IR tree under each
+`AlgeonNativeExec` wrapper, `EXPLAIN VERBOSE` adds the full per-node diagnostic
+fields and intermediate physical optimizer steps, and `EXPLAIN FORMAT TREE`
+renders each native IR node in its own box. `EXPLAIN GPU` returns native
+candidate outcomes and coverage of the completed plan:
 
 ```sql
 EXPLAIN GPU
@@ -289,7 +294,8 @@ carries no execution observations. After consuming the query's Flight `DoGet`
 result, retrieve `GetQueryStats` with that execution's query ID. Its
 `[planning]` section describes
 selection; `[execution]` contains the attempt's observed work. Available
-`[physical_plan]` and `[native_explain]` sections retain the textual plans.
+`[physical_plan]` and `[native_explain]` sections retain the projected textual
+plans in default and verbose forms.
 
 | Diagnostic focus | Fields to inspect | Interpretation |
 | --- | --- | --- |

@@ -20,7 +20,7 @@ use crate::server::{
         ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
         status_source_diagnostics,
     },
-    native_exec::contains_native_execution_wrapper,
+    native_exec::{contains_native_execution_wrapper, project_plan_for_display},
     native_report::{
         NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate,
         NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
@@ -626,14 +626,15 @@ impl CapturedQuery {
         max_bytes: usize,
         max_metric_records: usize,
     ) -> CapturedPlanningRender {
+        let display_plan = project_plan_for_display(&planned_plan);
         let physical_limit = max_bytes / 2;
         let mut physical_explain = BoundedText::new(physical_limit);
-        let _ = write!(physical_explain, "{}", displayable(planned_plan.as_ref()).indent(false));
+        let _ = write!(physical_explain, "{}", displayable(display_plan.as_ref()).indent(false));
         let native_limit = max_bytes.saturating_sub(physical_limit);
         let mut native_explain =
             contains_native_execution_wrapper(planned_plan.as_ref()).then(|| BoundedText::new(native_limit));
         if let Some(native_explain) = &mut native_explain {
-            let _ = write!(native_explain, "{}", displayable(planned_plan.as_ref()).indent(true));
+            let _ = write!(native_explain, "{}", displayable(display_plan.as_ref()).indent(true));
         }
         let mut diagnostics_probe = FormatLimitProbe { remaining: max_bytes, truncated: false };
         if let Some(diagnostics) = &diagnostics {
@@ -1478,5 +1479,50 @@ mod tests {
         assert!(payload.contains("# attempt_observation_degraded=false\n"), "{payload}");
         assert!(payload.contains("# attempt_native_fault_evidence=absent\n"), "{payload}");
         assert!(payload.contains("# attempt_resource_evidence=absent\n"), "{payload}");
+    }
+
+    #[test]
+    fn render_planning_projects_native_explain_per_node() {
+        use arrow::datatypes::{DataType, Field, Schema};
+        use query_planning::{
+            plan::QueryPlanBuilder,
+            source::{LocalParquetSource, SourceNode},
+        };
+
+        use crate::native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let scan = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "orders.parquet",
+            Arc::clone(&schema),
+            vec!["id".to_owned()],
+        )));
+        let plan = builder.finish_with_host_sink(scan).unwrap().clone_with_deferred_host_materialization_sink();
+        let exec: Arc<dyn ExecutionPlan> = Arc::new(
+            AlgeonNativeExec::try_new_host_for_test(
+                plan,
+                AlgeonNativeExecutionConfig::new(SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).unwrap()),
+            )
+            .unwrap(),
+        );
+
+        let rendered = CapturedQuery::render_planning("native-explain-test", None, exec, 16_384, 64);
+        let mut captured = CapturedQuery::new(
+            "native-explain-test".to_owned(),
+            "SELECT id FROM orders".to_owned(),
+            None,
+            Instant::now(),
+            16_384,
+            64,
+        );
+        captured.install_planning(rendered);
+        let payload = String::from_utf8(captured.to_query_stats_payload(16_384).bytes.to_vec()).unwrap();
+
+        assert!(payload.contains("\n[physical_plan]\nAlgeonNativeExec:"), "{payload}");
+        assert!(payload.contains("\n  Sink: mode=deferred_host_arrow\n    n0 LocalParquetSource:"), "{payload}");
+        assert!(payload.contains("\n[native_explain]\nAlgeonNativeExec:"), "{payload}");
+        assert!(payload.contains("\n  Sink: id=sink, input=n0, mode=deferred_host_arrow"), "{payload}");
+        assert!(!payload.contains("native_plan=QueryPlan"), "{payload}");
     }
 }
