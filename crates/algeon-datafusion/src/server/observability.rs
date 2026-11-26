@@ -627,12 +627,18 @@ impl CapturedQuery {
         max_metric_records: usize,
     ) -> CapturedPlanningRender {
         let display_plan = project_plan_for_display(&planned_plan);
-        let physical_limit = max_bytes / 2;
+        // The plan sections are retained before the query runs, so together
+        // they keep to half of the per-query bytes. The other half stays for
+        // what is recorded later, such as the structured error. Both sections
+        // render every projected native expression, so with a native wrapper
+        // the default form takes at most a quarter.
+        let plan_limit = max_bytes / 2;
+        let has_native_explain = contains_native_execution_wrapper(planned_plan.as_ref());
+        let physical_limit = if has_native_explain { plan_limit / 2 } else { plan_limit };
         let mut physical_explain = BoundedText::new(physical_limit);
         let _ = write!(physical_explain, "{}", displayable(display_plan.as_ref()).indent(false));
-        let native_limit = max_bytes.saturating_sub(physical_limit);
-        let mut native_explain =
-            contains_native_execution_wrapper(planned_plan.as_ref()).then(|| BoundedText::new(native_limit));
+        let native_limit = plan_limit.saturating_sub(physical_explain.text.len());
+        let mut native_explain = has_native_explain.then(|| BoundedText::new(native_limit));
         if let Some(native_explain) = &mut native_explain {
             let _ = write!(native_explain, "{}", displayable(display_plan.as_ref()).indent(true));
         }

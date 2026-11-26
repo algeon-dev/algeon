@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use datafusion::{
     catalog::Session,
     common::{DataFusionError, Result},
-    execution::{SessionState, SessionStateBuilder, context::QueryPlanner},
+    execution::context::QueryPlanner,
     logical_expr::{
         Explain, ExplainFormat, LogicalPlan, PlanType, StringifiedPlan, ToStringifiedPlan, planner::RelationPlanner,
     },
@@ -14,7 +14,7 @@ use datafusion::{
     physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner},
 };
 
-use crate::native_exec::{project_plan_for_display, project_plan_for_display_ref};
+use crate::native_exec::project_plan_for_display;
 
 /// Physical planner composing caller extension planners with the extension
 /// planner of each installed GPU SQL family.
@@ -101,7 +101,15 @@ impl QueryPlanner for AlgeonQueryPlanner {
 }
 
 /// Plans `EXPLAIN` while projecting native execution wrappers into per-node
-/// display trees for indent and tree formats.
+/// display trees for the default indent and tree formats.
+///
+/// Only the final physical plan is projected, and it is planned in `session`
+/// itself. `EXPLAIN VERBOSE` stays with DataFusion because it also prints the
+/// initial physical plan, and DataFusion builds that plan through a private
+/// planner entry point. Building it here would need a session without the
+/// physical optimizer rules, but extension planners read the native execution
+/// configuration from the installed native rule, so that plan would not be the
+/// one the query runs.
 async fn plan_explain(
     planner: &DefaultPhysicalPlanner,
     explain: &Explain,
@@ -112,6 +120,7 @@ async fn plan_explain(
     if !explain.logical_optimization_succeeded
         || config.logical_plan_only
         || matches!(explain.explain_format, ExplainFormat::PostgresJSON | ExplainFormat::Graphviz)
+        || (explain.verbose && matches!(explain.explain_format, ExplainFormat::Indent))
     {
         return planner.create_physical_plan(logical_plan, session).await;
     }
@@ -136,153 +145,29 @@ async fn plan_explain(
                 stringified_plans.clone_from(&explain.stringified_plans);
                 stringified_plans.push(explain.plan.to_stringified(PlanType::FinalLogicalPlan));
             }
-
-            // Build the unoptimized initial physical plan by running the
-            // planner on a clone of the session with no physical optimizer
-            // rules, then run `optimize_physical_plan` once so every optimizer
-            // trace and the final plan share one pass.
-            let initial_plan_result = if let Some(session_state) = session.as_any().downcast_ref::<SessionState>() {
-                let unoptimized_session = SessionStateBuilder::new_from_existing(session_state.clone())
-                    .with_physical_optimizer_rules(Vec::new())
-                    .build();
-                planner.create_physical_plan(explain.plan.as_ref(), &unoptimized_session).await
-            } else if !explain.verbose {
-                match planner.create_physical_plan(explain.plan.as_ref(), session).await {
-                    Ok(final_plan) => {
-                        let final_display = project_plan_for_display(&final_plan);
-                        stringified_plans.push(StringifiedPlan::new(
-                            PlanType::FinalPhysicalPlan,
-                            displayable(final_display.as_ref())
-                                .set_show_statistics(show_statistics)
-                                .set_show_schema(config.show_schema)
-                                .indent(false)
-                                .to_string(),
-                        ));
-                        return Ok(Arc::new(ExplainExec::new(
-                            Arc::clone(explain.schema.inner()),
-                            stringified_plans,
-                            false,
-                        )));
-                    },
-                    Err(DataFusionError::Context(optimizer_name, error)) => {
-                        stringified_plans.push(StringifiedPlan::new(
-                            PlanType::OptimizedPhysicalPlan { optimizer_name },
-                            error.to_string(),
-                        ));
-                        return Ok(Arc::new(ExplainExec::new(
-                            Arc::clone(explain.schema.inner()),
-                            stringified_plans,
-                            false,
-                        )));
-                    },
-                    Err(error) => {
-                        stringified_plans
-                            .push(StringifiedPlan::new(PlanType::PhysicalPlanError, error.strip_backtrace()));
-                        return Ok(Arc::new(ExplainExec::new(
-                            Arc::clone(explain.schema.inner()),
-                            stringified_plans,
-                            false,
-                        )));
-                    },
-                }
-            } else {
-                return planner.create_physical_plan(logical_plan, session).await;
-            };
-
-            match initial_plan_result {
-                Ok(input) => {
-                    let initial_display = project_plan_for_display(&input);
+            match planner.create_physical_plan(explain.plan.as_ref(), session).await {
+                Ok(final_plan) => {
+                    let final_display = project_plan_for_display(&final_plan);
                     stringified_plans.push(StringifiedPlan::new(
-                        PlanType::InitialPhysicalPlan,
-                        displayable(initial_display.as_ref())
+                        PlanType::FinalPhysicalPlan,
+                        displayable(final_display.as_ref())
                             .set_show_statistics(show_statistics)
                             .set_show_schema(config.show_schema)
-                            .indent(explain.verbose)
+                            .indent(false)
                             .to_string(),
                     ));
-
-                    if explain.verbose {
-                        if !show_statistics {
-                            stringified_plans.push(StringifiedPlan::new(
-                                PlanType::InitialPhysicalPlanWithStats,
-                                displayable(initial_display.as_ref())
-                                    .set_show_statistics(true)
-                                    .indent(explain.verbose)
-                                    .to_string(),
-                            ));
-                        }
-                        if !config.show_schema {
-                            stringified_plans.push(StringifiedPlan::new(
-                                PlanType::InitialPhysicalPlanWithSchema,
-                                displayable(initial_display.as_ref())
-                                    .set_show_schema(true)
-                                    .indent(explain.verbose)
-                                    .to_string(),
-                            ));
-                        }
-                    }
-
-                    let optimized_plan = planner.optimize_physical_plan(input, session, |plan, optimizer| {
-                        let optimizer_name = optimizer.name().to_string();
-                        let plan_type = PlanType::OptimizedPhysicalPlan { optimizer_name };
-                        let projected = project_plan_for_display_ref(plan);
-                        let rendered_plan = projected.as_deref().unwrap_or(plan);
-                        stringified_plans.push(StringifiedPlan::new(
-                            plan_type,
-                            displayable(rendered_plan)
-                                .set_show_statistics(show_statistics)
-                                .set_show_schema(config.show_schema)
-                                .indent(explain.verbose)
-                                .to_string(),
-                        ));
-                    });
-
-                    match optimized_plan {
-                        Ok(final_plan) => {
-                            let final_display = project_plan_for_display(&final_plan);
-                            stringified_plans.push(StringifiedPlan::new(
-                                PlanType::FinalPhysicalPlan,
-                                displayable(final_display.as_ref())
-                                    .set_show_statistics(show_statistics)
-                                    .set_show_schema(config.show_schema)
-                                    .indent(explain.verbose)
-                                    .to_string(),
-                            ));
-
-                            if explain.verbose {
-                                if !show_statistics {
-                                    stringified_plans.push(StringifiedPlan::new(
-                                        PlanType::FinalPhysicalPlanWithStats,
-                                        displayable(final_display.as_ref())
-                                            .set_show_statistics(true)
-                                            .indent(explain.verbose)
-                                            .to_string(),
-                                    ));
-                                }
-                                if !config.show_schema {
-                                    stringified_plans.push(StringifiedPlan::new(
-                                        PlanType::FinalPhysicalPlanWithSchema,
-                                        displayable(final_display.as_ref())
-                                            .set_show_schema(true)
-                                            .indent(explain.verbose)
-                                            .to_string(),
-                                    ));
-                                }
-                            }
-                        },
-                        Err(DataFusionError::Context(optimizer_name, error)) => {
-                            let plan_type = PlanType::OptimizedPhysicalPlan { optimizer_name };
-                            stringified_plans.push(StringifiedPlan::new(plan_type, error.to_string()));
-                        },
-                        Err(error) => return Err(error),
-                    }
+                },
+                Err(DataFusionError::Context(optimizer_name, error)) => {
+                    stringified_plans.push(StringifiedPlan::new(
+                        PlanType::OptimizedPhysicalPlan { optimizer_name },
+                        error.to_string(),
+                    ));
                 },
                 Err(error) => {
                     stringified_plans.push(StringifiedPlan::new(PlanType::PhysicalPlanError, error.strip_backtrace()));
                 },
             }
-
-            Ok(Arc::new(ExplainExec::new(Arc::clone(explain.schema.inner()), stringified_plans, explain.verbose)))
+            Ok(Arc::new(ExplainExec::new(Arc::clone(explain.schema.inner()), stringified_plans, false)))
         },
         ExplainFormat::PostgresJSON | ExplainFormat::Graphviz => unreachable!("delegated above"),
     }
