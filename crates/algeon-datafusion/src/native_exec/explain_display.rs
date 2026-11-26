@@ -99,7 +99,7 @@ fn project_native_exec(native_exec: &AlgeonNativeExec) -> Arc<dyn ExecutionPlan>
     for child in &native_exec.gpu_inputs {
         let projected = project_plan_for_display(child);
         if let Some(input_name) = gpu_resident_producer_input_name(child.as_ref()) {
-            gpu_inputs_by_name.insert(input_name.to_owned(), projected);
+            gpu_inputs_by_name.insert(input_name, projected);
         } else {
             unmatched_gpu_inputs.push(projected);
         }
