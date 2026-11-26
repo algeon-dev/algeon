@@ -61,37 +61,6 @@ pub(crate) fn project_plan_for_display(plan: &Arc<dyn ExecutionPlan>) -> Arc<dyn
     Arc::new(DisplayForwardNode { inner: Arc::clone(plan), children: projected_children })
 }
 
-/// Projects a borrowed `ExecutionPlan` when it contains an [`AlgeonNativeExec`].
-///
-/// Returns `None` when no [`AlgeonNativeExec`] appears in the subtree so
-/// callers can render `plan` directly without extra allocation.
-pub(crate) fn project_plan_for_display_ref(plan: &dyn ExecutionPlan) -> Option<Arc<dyn ExecutionPlan>> {
-    if let Some(native_exec) = plan.downcast_ref::<AlgeonNativeExec>() {
-        return Some(project_native_exec(native_exec));
-    }
-
-    let original_children = plan.children();
-    if original_children.is_empty() {
-        return None;
-    }
-
-    let mut changed = false;
-    let mut projected_children = Vec::with_capacity(original_children.len());
-    for child in original_children {
-        let projected = project_plan_for_display(child);
-        if !Arc::ptr_eq(&projected, child) {
-            changed = true;
-        }
-        projected_children.push(projected);
-    }
-
-    if !changed {
-        return None;
-    }
-
-    Some(Arc::new(DisplaySnapshotNode::from_plan(plan, projected_children)))
-}
-
 fn project_native_exec(native_exec: &AlgeonNativeExec) -> Arc<dyn ExecutionPlan> {
     let plan = native_exec.native_plan();
     let mut gpu_inputs_by_name = HashMap::<String, Arc<dyn ExecutionPlan>>::with_capacity(native_exec.gpu_inputs.len());
@@ -270,109 +239,6 @@ impl ExecutionPlan for DisplayForwardNode {
 
     fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<Statistics>> {
         StatisticsContext::new().compute(self.inner.as_ref(), &StatisticsArgs::new().with_partition(partition))
-    }
-}
-
-/// Snapshot wrapper used when projecting a borrowed `&dyn ExecutionPlan` root
-/// (such as inside `DefaultPhysicalPlanner::optimize_physical_plan` observers).
-#[derive(Debug)]
-struct DisplaySnapshotNode {
-    name: String,
-    default_text: String,
-    verbose_text: String,
-    tree_text: String,
-    properties: Arc<PlanProperties>,
-    metrics: Option<MetricsSet>,
-    statistics: Option<Arc<Statistics>>,
-    children: Vec<Arc<dyn ExecutionPlan>>,
-}
-
-impl DisplaySnapshotNode {
-    fn from_plan(plan: &dyn ExecutionPlan, children: Vec<Arc<dyn ExecutionPlan>>) -> Self {
-        Self {
-            name: plan.name().to_owned(),
-            default_text: render_display_as(plan, DisplayFormatType::Default),
-            verbose_text: render_display_as(plan, DisplayFormatType::Verbose),
-            tree_text: render_display_as(plan, DisplayFormatType::TreeRender),
-            properties: Arc::clone(plan.properties()),
-            metrics: plan.metrics(),
-            statistics: StatisticsContext::new().compute(plan, &StatisticsArgs::new()).ok(),
-            children,
-        }
-    }
-}
-
-fn render_display_as(plan: &dyn ExecutionPlan, format: DisplayFormatType) -> String {
-    struct Wrapper<'a>(&'a dyn ExecutionPlan, DisplayFormatType);
-    impl fmt::Display for Wrapper<'_> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            self.0.fmt_as(self.1, f)
-        }
-    }
-    Wrapper(plan, format).to_string()
-}
-
-impl DisplayAs for DisplaySnapshotNode {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match t {
-            DisplayFormatType::Default => f.write_str(&self.default_text),
-            DisplayFormatType::Verbose => f.write_str(&self.verbose_text),
-            DisplayFormatType::TreeRender => f.write_str(&self.tree_text),
-        }
-    }
-}
-
-impl ExecutionPlan for DisplaySnapshotNode {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        &self.properties
-    }
-
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
-    ) -> DataFusionResult<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        self.children.iter().collect()
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(Self {
-            name: self.name.clone(),
-            default_text: self.default_text.clone(),
-            verbose_text: self.verbose_text.clone(),
-            tree_text: self.tree_text.clone(),
-            properties: Arc::clone(&self.properties),
-            metrics: self.metrics.clone(),
-            statistics: self.statistics.clone(),
-            children,
-        }))
-    }
-
-    fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
-        Err(display_only_execute_error())
-    }
-
-    fn metrics(&self) -> Option<MetricsSet> {
-        self.metrics.clone()
-    }
-
-    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<Statistics>> {
-        if partition.is_none()
-            && let Some(statistics) = &self.statistics
-        {
-            return Ok(Arc::clone(statistics));
-        }
-        Ok(Arc::new(Statistics::new_unknown(self.schema().as_ref())))
     }
 }
 
@@ -1629,9 +1495,10 @@ mod tests {
             .find(|(kind, _)| kind == "physical_plan")
             .map(|(_, plan)| plan.as_str())
             .expect("EXPLAIN VERBOSE must emit physical_plan");
-        assert!(verbose_physical.contains("Sink: id=sink"), "{verbose_physical}");
-        assert!(verbose_physical.contains("LocalParquetSource: files=1, path="), "{verbose_physical}");
-        assert!(!verbose_physical.contains("native_plan=QueryPlan"), "{verbose_physical}");
+        // DataFusion plans and renders EXPLAIN VERBOSE, so the native IR stays
+        // on the AlgeonNativeExec line.
+        assert!(verbose_physical.contains("AlgeonNativeExec:"), "{verbose_physical}");
+        assert!(verbose_physical.contains("native_plan=QueryPlan"), "{verbose_physical}");
         assert!(
             verbose_rows.iter().any(|(kind, _)| kind.contains("algeon_datafusion_native")),
             "EXPLAIN VERBOSE must retain optimizer rule traces"

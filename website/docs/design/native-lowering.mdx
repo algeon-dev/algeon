@@ -78,10 +78,12 @@ NativeAdmissionExec
 
 `AlgeonNativeExec` holds the native IR and compiled pipeline internally.
 During execution, the native operators remain inside `AlgeonNativeExec` and are
-not DataFusion child nodes. For `EXPLAIN`, `EXPLAIN VERBOSE`, and
-`EXPLAIN FORMAT TREE`, `AlgeonQueryPlanner` projects each `AlgeonNativeExec`
-into a display-only subtree with one node per native IR operator and sink so
-indent depth, join branches, and tree boxes reflect the native plan structure.
+not DataFusion child nodes. For `EXPLAIN` and `EXPLAIN FORMAT TREE`,
+`AlgeonQueryPlanner` projects each `AlgeonNativeExec` in the final physical
+plan into a display-only subtree with one node per native IR operator and
+sink, so indent depth, join branches and tree boxes reflect the native plan
+structure. `EXPLAIN VERBOSE` is planned and rendered by DataFusion and keeps
+the native IR on the `AlgeonNativeExec` line.
 
 The
 [distributed aggregate lowering tests](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native/lowering_tests/sql_aggregate_shapes/default_distributed.rs)
@@ -276,8 +278,8 @@ inputs. Incompatible replacements remain on CPU execution.
 
 Use the same SQL and session settings when inspecting the example. On the
 Flight SQL server, `EXPLAIN` displays the indented native IR tree under each
-`AlgeonNativeExec` wrapper, `EXPLAIN VERBOSE` adds the full per-node diagnostic
-fields and intermediate physical optimizer steps, and `EXPLAIN FORMAT TREE`
+`AlgeonNativeExec` wrapper, `EXPLAIN VERBOSE` adds the intermediate physical
+optimizer steps with the native IR of each wrapper on one line, and `EXPLAIN FORMAT TREE`
 renders each native IR node in its own box. `EXPLAIN GPU` returns native
 candidate outcomes and coverage of the completed plan:
 

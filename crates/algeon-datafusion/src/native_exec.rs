@@ -84,7 +84,7 @@ pub(crate) use self::composed::composed_admission_capability_evidence;
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped},
     composed::producer_bound_capability_evidence,
-    explain_display::{project_plan_for_display, project_plan_for_display_ref},
+    explain_display::project_plan_for_display,
     fragment::NativeOutput,
     metrics::{
         AlgeonNativeMetrics, GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, SealedAttemptMetricsTarget,
