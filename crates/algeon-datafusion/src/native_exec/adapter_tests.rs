@@ -103,7 +103,7 @@ fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
 
     let display = displayable(&exec).one_line().to_string();
     assert!(display.contains("AlgeonNativeExec"));
-    assert!(display.contains("sink=host_arrow"));
+    assert!(display.contains("sink=deferred_host_arrow"));
     assert!(display.contains("native_pipeline_execution_mode=bounded"));
     assert!(display.contains("edge_normalize_inserted=false"));
 
@@ -115,6 +115,10 @@ fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
     let verbose = displayable(&exec).indent(true).to_string();
     assert!(verbose.contains("native_plan=QueryPlan"), "{verbose}");
     assert!(verbose.contains("LocalParquetSource"), "{verbose}");
+
+    let raw_tree_render = displayable(&exec).tree_render().to_string();
+    assert!(raw_tree_render.contains("n0 LocalParquetSource"), "{raw_tree_render}");
+    assert!(raw_tree_render.contains("nodes: 1"), "{raw_tree_render}");
 }
 
 #[test]

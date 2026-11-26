@@ -134,6 +134,9 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
             self.config().get_or_insert_with(Default::default).options_mut(),
             config.execution_mode(),
         );
+        if self.query_planner().is_none() {
+            self = self.with_query_planner(Arc::new(AlgeonQueryPlanner::default()));
+        }
         let mut rules = take_physical_optimizer_rules(&mut self);
         install_algeon_native_rules(&mut rules, Arc::new(AlgeonNativePhysicalOptimizerRule::new(config)));
         self.with_physical_optimizer_rules(rules)
